@@ -7,7 +7,7 @@ Example cell lineages can be simulated with a modified version of the agent-base
 ### Required environment
 Create the required conda environment with `Lineage_simulation/env/lineage_sim.yml`:
 ```
-conda env create -n simulate -f Lineage_simulation/env/simulate.yaml
+conda env create -n simulate -f Lineage_simulation/env/lineage_sim.yml
 ```
 ### Cell simulation
 An executable file is provided in `Lineage_simulation/build/`. Or, to recompile the c++ code:
@@ -27,7 +27,7 @@ This will output a log file, which can be further split into `cellDivisionHistor
 
 Alternatively, clone the original MACHINA repo (https://github.com/raphael-group/machina) and modify the codes from `src/simulation` using `Lineage_simulation/src`. Compile and run simulation follow instructions from MACHINA.
 ### Lineage reconstruction
-Sample cells from simulation and build cell lineage tree using `cell_lineage.py`, which takes clonal cells and cell division history from simulation, samples cells from each clone with a proportion (default 1.0, use all cells), and coalescents them into a cell lineage tree. An example of cell lineage tree sampling 30% of cells:
+Sample cells from simulation and build cell lineage tree using `cell_lineage.py`, which takes clonal cells and cell division history from simulation, samples cells from each clone with a proportion (default 1.0, use all simulated cells), and coalescents them into a cell lineage tree. An example of cell lineage tree sampling 30% of simulated cells:
 ```
 cd ..
 python cell_lineage.py --cell_file sim/cloneCells.txt --history_file sim/cellDivisionHistory.txt --output_file m1_mig1e-2_K1e3_f1_p0.3.nwk -p 0.3
