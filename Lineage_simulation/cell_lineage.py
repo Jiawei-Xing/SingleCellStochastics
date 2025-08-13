@@ -29,6 +29,11 @@ with open(cell_file) as f1:
             mutations = line.split('\t')[1]        
             samples[(site, mutations)] = random.sample(cells, round(n * p))
 
+# output sampled cells
+with open("sampled_cells.txt", "w") as f:
+    for clone, cells in samples.items():
+        f.write(f"{','.join(clone)}: {','.join(cells)}\n")
+
 # select sampled cells from history and build newick tree
 class Node:
     def __init__(self, label=None):
