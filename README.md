@@ -23,11 +23,11 @@ Run an example simulation:
 ```
 ./simulate -C 100 -c ../sim/color.txt -m 1 -mig 1e-2 -K 1000 -f 1 > ../sim/m1_mig1e-2_K1e3_f1.log
 ```
-This will output a log file, which can be further split into `cellDivisionHistory.txt`, `cloneCells.txt` and `migrationCells.txt`. 
+This will output a log file, which can be further split into `cellDivisionHistory.txt` (generation, parent cell, child cell), `cloneCells.txt` (clone site, {clone mutations}, clone cells), and `migrationCells.txt` (cells migrating to other sites). 
 
-Alternatively, clone the original MACHINA repo (https://github.com/raphael-group/machina) and modify the codes from `src/simulation` using `Lineage_simulation/src`. Compile and run simulation follow instructions from MACHINA.
+Alternatively, clone the original MACHINA repo (https://github.com/raphael-group/machina) and modify codes from `src/simulation` using `Lineage_simulation/src`. Compile and run simulation by following instructions from MACHINA.
 ### Lineage reconstruction
-Sample cells from simulation and build cell lineage tree using `cell_lineage.py`, which takes clonal cells and cell division history from simulation, samples cells from each clone with a proportion (default 1.0, use all simulated cells), and coalescents them into a cell lineage tree. An example of cell lineage tree sampling 30% of simulated cells:
+Sample cells from simulation and build a cell lineage tree using `cell_lineage.py`. It takes clonal cells and cell division history from simulation, samples cells from each clone with a proportion (default p=1.0, using all simulated cells), and coalesces them into a cell lineage tree. An example of cell lineage tree sampling 30% of simulated cells:
 ```
 cd ..
 python cell_lineage.py --cell_file sim/cloneCells.txt --history_file sim/cellDivisionHistory.txt --output_file m1_mig1e-2_K1e3_f1_p0.3.nwk -p 0.3
