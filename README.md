@@ -5,9 +5,10 @@
 ## Lineage simulation
 Example cell lineages can be simulated with a modified version of the agent-based cancer cell simulator from [MACHINA](https://www.nature.com/articles/s41588-018-0106-z). 
 ### Required environment
-Create the required conda environment with `Lineage_simulation/env/lineage_sim.yml`:
+Create and activate the required conda environment with `Lineage_simulation/env/lineage_sim.yml`:
 ```
 conda env create -n simulate -f Lineage_simulation/env/lineage_sim.yml
+conda activate simulate
 ```
 ### Cell simulation
 An executable file is provided in `Lineage_simulation/build/`. Or, to recompile the c++ code:
