@@ -32,3 +32,7 @@ Sample cells from simulation and build a cell lineage tree using `cell_lineage.p
 cd ..
 python cell_lineage.py --cell_file sim/cloneCells.txt --history_file sim/cellDivisionHistory.txt --output_file m1_mig1e-2_K1e3_f1_p0.3.nwk -p 0.3
 ```
+## Stochastic simulation
+`Stochastic_simulation/prep_regime.ipynb` takes an example tree and cells for testing, and generates two regime files. Regime files are previously defined by [EvoGeneX](https://liebertpub.com/doi/10.1089/cmb.2022.0121), containing cell pairs and the label of their most recent common ancestor on the tree. The PRIregime file contains the same label for all nodes, representing the null hypothesis where all cells are the same. The METregime file contains different labels (e.g., different migration sites), corresponding to the alternative hypothesis where gene expressions shift in certain lineages. 
+
+`Stochastic_simulation/sim.ipynb` takes an example tree, lineages of cells for testing, and regime files, and simulates gene expression read counts with Brownian motion (negative control) and Ornstein-Uhlenbeck process (positive expression changes) along the tree. Simulated read counts and illustrations of stochastic processes are generated from the code. Parameters for both stochastic processes can be modified.
