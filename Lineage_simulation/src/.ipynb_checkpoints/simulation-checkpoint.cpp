@@ -618,31 +618,31 @@ bool Simulation::simulate(bool verbose)
         std::cout << "Maximum number of active anatomical sites reached" << std::endl;
         
         // *output cell division history
-        std::ofstream division_outfile("cellDivisionHistory.txt");
+        ofstream outfile("cellDivisionHistory.txt");
         for (const Cell& cell: cells)
         {
           //std::cout << cell.getGeneration() << "\t" << cell.getParent() << "\t" << cell.getID() << std::endl;
-          division_outfile << cell.getGeneration() << "\t" << cell.getParent() << "\t" << cell.getID() << std::endl;
+          outfile << cell.getGeneration() << "\t" << cell.getParent() << "\t" << cell.getID() << std::endl;
         }
-        division_outfile.close();  
+        outfile.close();  
         
         // *output migration cells
-        std::ofstream migration_outfile("migrationCells.txt");
+        ofstream outfile("migrationCells.txt");
         int s = 0;
         for (const CellVector& migratingCells: _seedingCells)
         {
           //std::cout << "Site " << s << ": ";
-          migration_outfile << "Site " << s << ": ";
+          outfile << "Site " << s << ": ";
           for (const Cell& cell: migratingCells)
           {
             //std::cout << cell.getID() << ",";
-            migration_outfile << cell.getID() << ",";
+            outfile << cell.getID() << ",";
           }
           //std::cout << std::endl;
-          migration_outfile << std::endl;
+          outfile << std::endl;
           ++s;
         }
-        migration_outfile.close();
+        outfile.close();
       }
       break;
     }
@@ -1071,14 +1071,14 @@ void Simulation::constructCloneTree()
   }
   
   // *output cells each clone
-  std::ofstream clone_outfile("cloneCells.txt");
+  ofstream outfile("cloneCells.txt");
   //std::cout << "Total clones: " << cloneCells.size() << std::endl;
-  clone_outfile << "Total clones: " << cloneCells.size() << std::endl;
+  outfile << "Total clones: " << cloneCells.size() << std::endl;
 
   for (const auto& kv: cloneCells)
   {
     //std::cout << "Clone size: " << kv.second.size() << std::endl;
-    clone_outfile << "Clone size: " << kv.second.size() << std::endl;
+    outfile << "Clone size: " << kv.second.size() << std::endl;
 
     int s = kv.first.first;
     if (!_isActiveAnatomicalSite[s]) continue;
@@ -1087,24 +1087,24 @@ void Simulation::constructCloneTree()
     {
       const IntSet& driverMutations = kv.first.second;
       //std::cout << s << "\t{";
-      clone_outfile << s << "\t{";
+      outfile << s << "\t{";
       for (int i : driverMutations)
       {
         //std::cout << i << ",";
-        clone_outfile << i << ",";
+        outfile << i << ",";
       }
       //std::cout << "}\t";
-      clone_outfile << "}\t";
+      outfile << "}\t";
       for (int j : kv.second)
       {
         //std::cout << j << ",";
-        clone_outfile << j << ",";
+        outfile << j << ",";
       }
       //std::cout << std::endl;
-      clone_outfile << std::endl;
+      outfile << std::endl;
     }
   }
-  clone_outfile.close();
+  outfile.close();
   
   // construct perfect phylogeny matrix
   _observableMutationToCellTreeMutation = IntVector(observableMutations.size());
@@ -1496,12 +1496,6 @@ bool Simulation::constructSampledCloneTree()
         }
       }
     }
-  }
-  
-  //*If no leaves were sampled, there is nothing to construct
-  if (_sampledLeaves.empty())
-  {
-    return false;
   }
   
   Digraph newT;
