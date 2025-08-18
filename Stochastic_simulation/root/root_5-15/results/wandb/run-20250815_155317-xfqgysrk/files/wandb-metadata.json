@@ -1,0 +1,34 @@
+{
+  "os":  "Linux-4.18.0-348.12.2.el8_5.x86_64-x86_64-with-glibc2.28",
+  "python":  "CPython 3.12.9",
+  "startedAt":  "2025-08-15T19:53:17.989051Z",
+  "args":  [
+    "--help"
+  ],
+  "program":  "/grid/siepel/home/xing/gene_expression_evolution/SingleCellStochastics/Stochastic_simulation/root_5-15/results/OUP.py",
+  "codePath":  "Stochastic_simulation/root_5-15/results/OUP.py",
+  "codePathLocal":  "OUP.py",
+  "git":  {
+    "remote":  "https://github.com/Jiawei-Xing/SingleCellStochastics",
+    "commit":  "28825e9e33a90ec0b8e5a380348662df6fa28c2f"
+  },
+  "email":  "jiaweixing99@gmail.com",
+  "root":  "/grid/siepel/home/xing/gene_expression_evolution/SingleCellStochastics/Stochastic_simulation/root_5-15/results",
+  "host":  "bam15",
+  "executable":  "/grid/siepel/home/xing/.conda/envs/OUP/bin/python",
+  "cpu_count":  48,
+  "cpu_count_logical":  96,
+  "disk":  {
+    "/":  {
+      "total":  "32196526080",
+      "used":  "17780940800"
+    }
+  },
+  "memory":  {
+    "total":  "809989525504"
+  },
+  "slurm":  {
+    "conf":  "/cm/shared/apps/slurm/var/etc/slurm/slurm.conf"
+  },
+  "writerId":  "x1u75fwxtixfk5qb4fagu1ucxm4zxadi"
+}

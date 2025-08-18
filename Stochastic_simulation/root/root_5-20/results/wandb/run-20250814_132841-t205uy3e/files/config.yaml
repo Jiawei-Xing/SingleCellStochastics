@@ -1,0 +1,68 @@
+_wandb:
+    value:
+        cli_version: 0.21.0
+        e:
+            waja6wjh5o1q5qdv02dm9h3phkoolyz4:
+                args:
+                    - -t
+                    - m1_mig1e-2_k1e3_f1_p0.3
+                    - -n
+                    - "1"
+                    - -g
+                    - ../readcounts_BM.tsv
+                    - -m1
+                    - ../m1_mig1e-2_k1e3_f1_p0.3_PRIregime.csv
+                    - -m2
+                    - ../m1_mig1e-2_k1e3_f1_p0.3_METregime.csv
+                    - -b
+                    - "100"
+                    - -o
+                    - OUP_BM
+                codePath: Stochastic_simulation/results/OUP.py
+                codePathLocal: OUP.py
+                cpu_count: 40
+                cpu_count_logical: 80
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "32196526080"
+                        used: "23748325376"
+                email: jiaweixing99@gmail.com
+                executable: /grid/siepel/home/xing/.conda/envs/OUP/bin/python
+                git:
+                    commit: 28825e9e33a90ec0b8e5a380348662df6fa28c2f
+                    remote: https://github.com/Jiawei-Xing/SingleCellStochastics
+                gpu: Tesla V100-SXM2-32GB
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Volta
+                      cudaCores: 5120
+                      memoryTotal: "34359738368"
+                      name: Tesla V100-SXM2-32GB
+                      uuid: GPU-16354f59-cbc1-5071-810a-fadcb68c6a6a
+                host: bamgpu09
+                memory:
+                    total: "810143338496"
+                os: Linux-4.18.0-513.18.1.el8_9.x86_64-x86_64-with-glibc2.28
+                program: /grid/siepel/home/xing/gene_expression_evolution/SingleCellStochastics/Stochastic_simulation/results/OUP.py
+                python: CPython 3.12.9
+                root: /grid/siepel/home/xing/gene_expression_evolution/SingleCellStochastics/Stochastic_simulation/results
+                slurm:
+                    conf: /cm/shared/apps/slurm/var/etc/slurm/slurm.conf
+                startedAt: "2025-08-14T17:28:41.388030Z"
+                writerId: waja6wjh5o1q5qdv02dm9h3phkoolyz4
+        m: []
+        python_version: 3.12.9
+        t:
+            "1":
+                - 1
+                - 53
+            "2":
+                - 1
+                - 53
+            "3":
+                - 13
+            "4": 3.12.9
+            "5": 0.21.0
+            "12": 0.21.0
+            "13": linux-x86_64
