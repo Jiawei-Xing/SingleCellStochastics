@@ -3,6 +3,22 @@
 * Detecting lineage-specific differential gene expressions by hypothesis testing on stochastic expression models.
 * Reconstructing possible ancestral cell states with deep generative models along cell lineage.
 
+## Run example
+Create and activate required conda environment:
+```
+conda env create -n OUP -f env/OUP.yml
+conda activate OUP
+```
+Run examples:
+```
+# run positive simulation
+python src/OUP.py --tree data/tree.nwk --expr data/readcounts_OU_tip5-10.tsv --regime data/regime_tip.csv --null 0 --output data/OU-results
+
+# run negative control
+python src/OUP.py --tree data/tree.nwk --expr data/readcounts_BM_tip5-10.tsv --regime data/regime_tip.csv --null 0 --output data/BM-results
+```
+Using GPU and wandb for optimization is recommended.
+
 ## Lineage simulation
 Example cell lineages can be simulated with a modified version of the agent-based cancer cell simulator from [MACHINA](https://www.nature.com/articles/s41588-018-0106-z). 
 ### Required environment
