@@ -26,13 +26,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # input parameters
-parser = argparse.ArgumentParser(description="Script description")
+parser = argparse.ArgumentParser(description="Stochastic OUP model for gene expression evolution")
 parser.add_argument("--tree", type=str, required=True, help="Newick tree file (comma-separated if multiple clones)")
 parser.add_argument("--expr", type=str, required=True, help="Cell by gene count matrix (comma-separated if multiple clones)")
 parser.add_argument("--annot", type=str, default=None, help="Gene annotation file (optional)")
 parser.add_argument("--regime", type=str, required=True, help="Regime file (comma-separated if multiple clones)")
-parser.add_argument("--null", type=str, required=False, help="Regime for null hypothesis")
-parser.add_argument("--output", type=str, default="output.tsv", help="Output file")
+parser.add_argument("--null", type=str, required=True, help="Regime for null hypothesis")
+parser.add_argument("--output", type=str, default="output", help="Output file")
 parser.add_argument("--batch", type=int, default=100, help="Number of genes for batch processing")
 parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate for Adam optimizer")
 parser.add_argument("--iter", type=int, default=500, help="Max number of iterations for optimization")
@@ -54,6 +54,18 @@ output_file = args.output
 
 # precompute and store input data for later usage
 def process_data(tree_files, gene_files, regime_files, rnull):
+    '''
+    Precompute input data and store for optimization.
+
+    Returns:
+    tree_list: list of trees
+    cells_list: list of cells
+    df_list: list of expression data
+    diverge_list: list of divergence matrices (tree)
+    share_list: list of share matrices (tree)
+    epochs_list: list of depths (tree)
+    beta_list: list of active regimes (tree)
+    '''
     tree_list = []
     cells_list = []
     df_list = []
@@ -65,6 +77,7 @@ def process_data(tree_files, gene_files, regime_files, rnull):
     share_list_torch = []
     epochs_list_torch = []
     beta_list_torch = []
+    regime_list = []
 
     for tree_file, gene_file, regime_file in zip(tree_files, gene_files, regime_files):
         # Read the phylogenetic tree
@@ -96,9 +109,10 @@ def process_data(tree_files, gene_files, regime_files, rnull):
                 i = i + 1
         
         # Store paths from each node to root (add an extra root)
-        root = [Phylo.BaseTree.Clade(branch_length=0.0, name='root')]
-        paths = {'root': root}
-        paths.update({clade.name: root + tree.get_path(clade) for clade in clades})
+        #root = [Phylo.BaseTree.Clade(branch_length=0.0, name='root')]
+        #paths = {'root': root}
+        #paths.update({clade.name: root + tree.get_path(clade) for clade in clades})
+        paths = {clade.name: tree.get_path(clade) for clade in clades}
 
         # Precompute node index mapping for all nodes and cells
         node_names = list(paths.keys())
@@ -156,11 +170,12 @@ def process_data(tree_files, gene_files, regime_files, rnull):
                 # regime for each node
                 node_regime[node] = row[2]
                 regimes.add(row[2])
-        
+
         # sort regimes and move rnull to 1st
         regimes = sorted(list(regimes))
         regimes.remove(rnull)
         regimes.insert(0, rnull)
+        regime_list.append(regimes)
         regime_idx = {regime: i for i, regime in enumerate(regimes)}
 
         # beta is binary label for activation of regime along each lineage (leaf to root)
@@ -181,7 +196,7 @@ def process_data(tree_files, gene_files, regime_files, rnull):
         beta_list_torch.append(beta_torch)
 
     return tree_list, cells_list, df_list, diverge_list, share_list, epochs_list, beta_list, \
-        diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch
+        diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch, regime_list
 
 
 # calculate theta weight matrix
@@ -213,7 +228,7 @@ def theta_weight_W_numpy(alpha, epochs, beta):
 
 
 # calculate negative log likelihood of OU
-def ou_neg_log_lik_numpy(params, mode, expr, diverge_list, share_list, epochs_list, beta_list):
+def ou_neg_log_lik_numpy(params, mode, expr_list, diverge_list, share_list, epochs_list, beta_list):
     '''
     Compute two times negative log likelihood of OU along tree adapted from EvoGeneX.
     Use expression data directly as the OU output.
@@ -230,12 +245,13 @@ def ou_neg_log_lik_numpy(params, mode, expr, diverge_list, share_list, epochs_li
     W: theta weight (n_cells, n_regimes)
     '''
     alpha, sigma2, theta0 = params[:3]
-    n_cells = len(expr)
     n_trees = len(diverge_list)
 
     # share the same OU parameters for all trees
     loss_list = []
     for i in range(n_trees):
+        expr = expr_list[i]
+        n_cells = len(expr)
         diverge = diverge_list[i]
         share = share_list[i]
         epochs = epochs_list[i]
@@ -265,7 +281,7 @@ def ou_neg_log_lik_numpy(params, mode, expr, diverge_list, share_list, epochs_li
 
 
 # optimize OU likelihood with SciPy
-def ou_optimize_scipy(params_init, mode, expr, diverge_list, share_list, epochs_list, beta_list):
+def ou_optimize_scipy(params_init, mode, expr_list, diverge_list, share_list, epochs_list, beta_list):
     """
     Optimize OU likelihood with SciPy L-BFGS-B.
     Returns OU parameters for each batch and sim.
@@ -273,13 +289,14 @@ def ou_optimize_scipy(params_init, mode, expr, diverge_list, share_list, epochs_
 
     params_init: OU parameters (alpha, sigma2, theta0, theta1, ..., theta_n)
     mode: 1 for H0, 2 for H1
-    expr: expression data (batch_size, N_sim, n_cells)
+    expr: list of expression data (batch_size, N_sim, n_cells)
     """
-    batch_size, N_sim, n_cells = expr.shape
+    batch_size, N_sim, _ = expr_list[0].shape # same for all trees
     
     # optimize OU for batch i, sim j
     def fit_one(i, j):
-        res = minimize(ou_neg_log_lik_numpy, params_init, args=(mode, expr[i, j, :], 
+        expr = [x[i, j, :] for x in expr_list]
+        res = minimize(ou_neg_log_lik_numpy, params_init, args=(mode, expr, 
             diverge_list, share_list, epochs_list, beta_list),
             bounds=[(1e-6, None)]*len(params_init), method="L-BFGS-B")
         return i, j, res.x
@@ -327,11 +344,12 @@ def theta_weight_W_torch(alpha_batch, epochs, beta):
 
 
 # calculate expectation of negative OU log likelihood with torch
-def ou_neg_log_lik_torch(params_batch, mode, expr_batch, diverge, share, epochs, beta):
+def ou_neg_log_lik_torch(params_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta):
     """
     Same OU likelihood with torch. Used for ELBO with torch.
 
     params_batch: (batch_size, N_sim, ou_param_dim)
+    sigma2_q: (batch_size, N_sim, n_cells)
     expr_batch: (batch_size, N_sim, n_cells)
     diverge, share: (n_cells, n_cells)
     epochs, beta: list as before
@@ -360,36 +378,44 @@ def ou_neg_log_lik_torch(params_batch, mode, expr_batch, diverge, share, epochs,
         diff = expr_batch - torch.matmul(W, thetas.unsqueeze(-1)).squeeze(-1)  # (batch_size, N_sim, n_cells)
 
     L = torch.linalg.cholesky(V)  # (batch_size, N_sim, n_cells, n_cells)
-    # log_det for each batch
+    # log|V| = 2 * sum(log diag(L))
     log_det = 2 * torch.sum(torch.log(torch.diagonal(L, dim1=2, dim2=3)), dim=2)  # (batch_size, N_sim)
-    # Solve for exp for each batch
-    diff = diff.unsqueeze(-1)  # (batch_size, N_sim, n_cells, 1)
-    exp = torch.matmul(diff.transpose(2, 3), torch.cholesky_solve(diff, L)).squeeze(-1).squeeze(-1)  # (batch_size, N_sim)
 
-    # trace
-    
+    # d^T V^{-1} d = ||L^{-1} d||^2
+    d = diff.unsqueeze(-1)  # (batch, N_sim, n_cells, 1)
+    y = torch.linalg.solve_triangular(L, d, upper=False)  # y = L^{-1} d (batch, N_sim, n_cells, 1)
+    exp = (y.squeeze(-1) ** 2).sum(dim=-1)  # sum(y^2) = y^T y = ||y||^2 (batch, N_sim)
 
-    loss = log_det + n_cells * torch.log(sigma2).squeeze(-1).squeeze(-1) + exp / sigma2.squeeze(-1).squeeze(-1)
+    # trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
+    S_half = torch.diag_embed(torch.sqrt(sigma2_q))         # Σ^{1/2} = diag(σ_i), shape (..., n, n)
+    Y = torch.linalg.solve_triangular(L, S_half, upper=False) # Y = L^{-1} Σ^{1/2}
+    tr_term = (Y ** 2).sum(dim=(-2, -1))                      # ||Y||_F^2 = tr(C^{-1} Σ)
+
+    loss = log_det + n_cells * torch.log(sigma2).squeeze(-1).squeeze(-1) + exp / sigma2.squeeze(-1).squeeze(-1) - 2 * tr_term
     return loss  # (batch_size, N_sim)
 
+
 # calculate negative log likelihood of ELBO with torch
-def Lq_neg_log_lik_torch(params_tensor, mode, x_tensor, diverge, share, epochs, beta):
+def Lq_neg_log_lik_torch(Lq_params, ou_params, mode, x_tensor, diverge, share, epochs, beta):
     """
     ELBO for approximating model evidence.
-    params_tensor: (batch_size, N_sim, all_param_dim)
+
+    Lq_params: (batch_size, N_sim, 2*n_cells)
+    ou_params: (batch_size, N_sim, ou_param_dim)
     mode: 1 for H0, 2 for H1
     x_tensor: (batch_size, N_sim, n_cells)
+    diverge, share: (n_cells, n_cells)
+    epochs, beta: list as before
     Returns: (batch_size, N_sim) tensor of losses
     """
-    batch_size, N_sim, n_cells = x_tensor.shape
-    m = params_tensor[:, :, :n_cells]  # (batch_size, N_sim, n_cells)
-    s2 = params_tensor[:, :, n_cells:2*n_cells]  # (batch_size, N_sim, n_cells)
-    ou_params = params_tensor[:, :, 2*n_cells:] # (batch_size, N_sim, ou_param_dim)
+    n_cells = x_tensor.shape[-1]
+    m = Lq_params[:, :, :n_cells]  # (batch_size, N_sim, n_cells)
+    s2 = Lq_params[:, :, n_cells:]  # (batch_size, N_sim, n_cells)
     
     # OU -log lik
-    term1 = 0.5 * ou_neg_log_lik_torch(ou_params, mode, m, diverge, share, epochs, beta)  # (batch_size, N_sim)
+    term1 = 0.5 * ou_neg_log_lik_torch(ou_params, s2, mode, m, diverge, share, epochs, beta)  # (batch_size, N_sim)
 
-    # Approximation for E[log(softplus(z))] and E[softplus(z)]
+    # Approximation for E[log(softplus(z))] and E[softplus(z)] TODO: try exponential instead of softplus
     def E_log_softplus(u, sigma2): # Taylor series for E[log]
         result = torch.empty_like(u)
         
@@ -446,53 +472,63 @@ def Lq_neg_log_lik_torch(params_tensor, mode, x_tensor, diverge, share, epochs, 
     loss = term1 + term2 + term3  # (batch_size, N_sim)
     return loss  # (batch_size, N_sim)
 
+
 # optimize ELBO with Adam
-def Lq_optimize_torch(params, mode, x_tensor, gene_names, max_iter=max_iter, learning_rate=learning_rate):
+def Lq_optimize_torch(params, mode, x_tensor_list, gene_names, diverge_list_torch, share_list_torch, \
+            epochs_list_torch, beta_list_torch, max_iter=max_iter, learning_rate=learning_rate):
     """
-    Optimize ELBO with Adam.
+    Optimize ELBO with PyTorch Adam.
+
     params: (batch_size, N_sim, all_param_dim)
     mode: 1 for H0, 2 for H1
-    x_tensor: (batch_size, N_sim, n_cells)
+    x_tensor: list of (batch_size, N_sim, n_cells)
     gene_names: list of gene names
+    diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: list of tensors
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
-    params_tensor = params.clone().detach().requires_grad_(True) # (batch_size, N_sim, all_param_dim)
-    batch_size = params_tensor.shape[0]
-    N_sim = params_tensor.shape[1]
-    best_params = params.clone().detach()
+    params_tensor = [p.clone().detach().requires_grad_(True) for p in params] # list of (batch_size, N_sim, param_dim)
+    batch_size, N_sim, _ = params_tensor[0].shape
+    n_trees = len(x_tensor_list)
+    best_params = params[-1].clone().detach() # (batch_size, N_sim, ou_param_dim)
     best_loss = torch.full((batch_size, N_sim), float('inf'), device=device)
-    optimizer = torch.optim.Adam([params_tensor], lr=learning_rate)
+    optimizer = torch.optim.Adam(params_tensor, lr=learning_rate)
     
     for n in range(max_iter):
         optimizer.zero_grad()
 
         # get loss for each tree
-        loss_matrix = torch.zeros(batch_size, N_sim, ntrees, device=device)
-        for i in range(ntrees):
+        loss_matrix = torch.zeros(batch_size, N_sim, n_trees, device=device)
+        for i in range(n_trees):
+            x_tensor = x_tensor_list[i]
+            Lq_params = params_tensor[i]
+            ou_params = params_tensor[-1]
             diverge = diverge_list_torch[i]
             share = share_list_torch[i]
             epochs = epochs_list_torch[i]
             beta = beta_list_torch[i]
-            loss = Lq_neg_log_lik_torch(params_tensor, mode, x_tensor, diverge, share, epochs, beta)
+            loss = Lq_neg_log_lik_torch(Lq_params, ou_params, mode, x_tensor, diverge, share, epochs, beta)
             loss_matrix[:, :, i] = loss
 
-        # average loss across trees
-        # Use torch.logsumexp for better numerical stability
-        average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(torch.tensor(ntrees, device=device, dtype=loss_matrix.dtype)) # (batch_size, N_sim)
+        # average loss across trees (use torch.logsumexp for better numerical stability)
+        average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(torch.tensor(n_trees, device=device, dtype=torch.float32)) # (batch_size, N_sim)
 
         # update params
         loss = average_loss.sum()
         loss.backward()
 
         with torch.no_grad():
-            # s2, alpha, sigma2 should be positive
-            if (params_tensor[:, :, len(cells):-len(regimes)] < 1e-6).any():
-                params_tensor[:, :, len(cells):-len(regimes)].clamp_(min=1e-6)
+            # s2, alpha, sigma2 should be positive TODO: try log/square transform
+            for i in range(n_trees-1):
+                n_cells = x_tensor_list[i].shape[-1]
+                if (params_tensor[i][:, :, n_cells:] < 1e-6).any():
+                    params_tensor[i][:, :, n_cells:].clamp_(min=1e-6)
+            if (params_tensor[-1][:, :, :2] < 1e-6).any():
+                params_tensor[-1][:, :, :2].clamp_(min=1e-6)
 
             # update best params
             mask = average_loss < best_loss 
             best_loss[mask] = average_loss[mask].clone().detach()
-            best_params[mask] = params_tensor[mask].clone().detach()
+            best_params[mask] = params_tensor[-1][mask].clone().detach()
 
             # plot loss of first gene in batch
             wandb.log({f"{gene_names[0]}_h{mode-1}_loss": best_loss[0, 0], "iter": n})
@@ -501,10 +537,12 @@ def Lq_optimize_torch(params, mode, x_tensor, gene_names, max_iter=max_iter, lea
         
     return best_params.clone().detach().cpu().numpy(), best_loss.clone().detach().cpu().numpy()
 
-# simulate null distribution for each gene
+
+# simulate null distribution for each gene TODO: sim for each tree separately
 def simulate_null_each(trees, h0_params, N_sim, cells):
     """
     Simulate N_sim OU processes along all trees in parallel for a batch of genes.
+
     h0_params: (batch_size, 1, all_param_dim) numpy array
     Returns: (batch_size, N_sim, n_cells) numpy array
     """
@@ -516,11 +554,11 @@ def simulate_null_each(trees, h0_params, N_sim, cells):
     for i, tree in enumerate(trees):
         # get number of simulations for this tree   
         n_sims = sims_per_tree + (1 if i < remainder else 0)
-        alpha = np.tile(h0_params[:, 0, -len(regimes)-2][:, np.newaxis], (1, n_sims)) # (batch_size, n_sims)
-        sigma2 = np.tile(h0_params[:, 0, -len(regimes)-1][:, np.newaxis], (1, n_sims)) # (batch_size, n_sims)
-        theta0 = np.tile(h0_params[:, 0, -len(regimes)][:, np.newaxis], (1, n_sims)) # (batch_size, n_sims)
+        alpha = np.tile(h0_params[:, 0, 2*len(cells)][:, np.newaxis], (1, n_sims)) # (batch_size, n_sims)
+        sigma2 = np.tile(h0_params[:, 0, 2*len(cells)+1][:, np.newaxis], (1, n_sims)) # (batch_size, n_sims)
+        theta0 = np.tile(h0_params[:, 0, 2*len(cells)+2][:, np.newaxis], (1, n_sims)) # (batch_size, n_sims)
 
-        # simulate z_values for this tree
+        # simulate z_values for this tree by OU process
         std = np.sqrt(np.maximum(sigma2 / (2 * alpha), 1e-10)) # (batch_size, n_sims)
         z_root = np.random.normal(loc=theta0, scale=std) # (batch_size, n_sims)
         z_values = {tree.root.name: z_root} # (batch_size, n_sims)
@@ -549,10 +587,12 @@ def simulate_null_each(trees, h0_params, N_sim, cells):
     x_sim_matrix = np.concatenate(x_sim_list, axis=1)  # (batch_size, N_sims, n_cells)
     return x_sim_matrix
 
-# simulate null distribution for all genes
+
+# simulate null distribution for all genes TODO: sim for each tree separately
 def simulate_null_all(trees, h0_params, N_sim_all, cells):
     """
     Sample ou params and simulate N_sim_all OU processes along all trees in parallel for all genes.
+    
     h0_params: (gene_num, all_param_dim) numpy array
     Returns: (N_sim_all, n_cells) numpy array
     """
@@ -565,17 +605,19 @@ def simulate_null_all(trees, h0_params, N_sim_all, cells):
     idx1 = np.random.choice(n_genes, size=sims_per_tree+1, replace=True)
     idx2 = np.random.choice(n_genes, size=sims_per_tree+1, replace=True)
     idx3 = np.random.choice(n_genes, size=sims_per_tree+1, replace=True)
-    alpha_sample = h0_params[idx1, -len(regimes)-2] # (sims_per_tree+1,)
-    sigma2_sample = h0_params[idx2, -len(regimes)-1] # (sims_per_tree+1,)
-    theta0_sample = h0_params[idx3, -len(regimes)] # (sims_per_tree+1,)
+    alpha_sample = h0_params[idx1, 2*len(cells)] # (sims_per_tree+1,)
+    sigma2_sample = h0_params[idx2, 2*len(cells)+1] # (sims_per_tree+1,)
+    theta0_sample = h0_params[idx3, 2*len(cells)+2] # (sims_per_tree+1,)
 
     x_sim_list = []
+    start_idx = 0
     for i, tree in enumerate(trees):
         # get number of simulations for this tree   
         n_sims = sims_per_tree + (1 if i < remainder else 0)
-        alpha = alpha_sample[:n_sims] # (n_sims,)
-        sigma2 = sigma2_sample[:n_sims] # (n_sims,)
-        theta0 = theta0_sample[:n_sims] # (n_sims,)
+        alpha = alpha_sample[start_idx:start_idx+n_sims] # (n_sims,)
+        sigma2 = sigma2_sample[start_idx:start_idx+n_sims] # (n_sims,)
+        theta0 = theta0_sample[start_idx:start_idx+n_sims] # (n_sims,)
+        start_idx += n_sims
 
         # simulate z_values for this tree
         std = np.sqrt(np.maximum(sigma2 / (2 * alpha), 1e-10)) # (n_sims,)
@@ -606,34 +648,45 @@ def simulate_null_all(trees, h0_params, N_sim_all, cells):
     x_sim_matrix = np.concatenate(x_sim_list, axis=0)  # (N_sim_all, n_cells)
     return x_sim_matrix
     
+
 # likelihood ratio test
-def likelihood_ratio_test(x_original, gene_names):
+def likelihood_ratio_test(x_original, n_regimes, diverge_list, share_list, epochs_list, beta_list, \
+    diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch, gene_names):
     """
     Hypothesis testing for lineage-specific gene expression change.
+
     x_original: (batch_size, N_sim, n_cells) numpy array
+    diverge_list, share_list, epochs_list, beta_list: list of numpy arrays
+    diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: list of tensors
     gene_names: list of gene names
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
-    x_pseudo = np.maximum(x_original, 1e-6) # add small value to avoid log(0)
-    m_init = np.log(np.expm1(x_pseudo)) # reverse read counts as Gaussian mean
-    ou_params_init = np.ones((len(regimes)+2)) # shape: (len(regimes)+2)
+    x_pseudo = [np.maximum(x, 1e-6) for x in x_original] # add small value to avoid log(0)
+    m_init = [np.log(np.expm1(x)) for x in x_pseudo] # reverse read counts as Gaussian mean z
+    ou_params_init = np.ones((n_regimes+2)) # shape: (n_regimes+2)
 
     # optimize OU for null model
-    ou_params_h0 = ou_optimize_scipy(ou_params_init, 1, m_init) # (batch_size, N_sim, len(regimes)+2)
+    ou_params_h0 = ou_optimize_scipy(ou_params_init, 1, m_init, diverge_list, share_list, epochs_list, beta_list) # (batch_size, N_sim, n_regimes+2)
 
     # optimize Lq for null model
-    m_init_tensor = torch.tensor(m_init, dtype=torch.float32, device=device) # (batch_size, N_sim, n_cells)
-    pois_params_init = torch.cat((m_init_tensor, torch.ones_like(m_init_tensor, device=device)), dim=2) # (batch_size, N_sim, 2*n_cells)
-    x_original_tensor = torch.tensor(x_original, dtype=torch.float32, device=device)  # (batch_size, N_sim, n_cells)
-    h0_params, h0_loss = Lq_optimize_torch(torch.cat((pois_params_init, ou_params_h0), dim=2), 1, x_original_tensor, gene_names) # (batch_size, N_sim, all_param_dim)
+    m_init_tensor = [torch.tensor(m, dtype=torch.float32, device=device) for m in m_init] # list of (batch_size, N_sim, n_cells)
+    pois_params_init = [torch.cat((m, torch.ones_like(m, device=device)), dim=2) for m in m_init_tensor] # list of (batch_size, N_sim, 2*n_cells)
+    init_params = pois_params_init + [ou_params_h0] # list of (batch_size, N_sim, param_dim)
+    
+    x_original_tensor = [torch.tensor(x, dtype=torch.float32, device=device) for x in x_original] # list of (batch_size, N_sim, n_cells)
+    h0_params, h0_loss = Lq_optimize_torch(init_params, 1, x_original_tensor, \
+        gene_names, diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch) # (batch_size, N_sim, all_param_dim)
 
     # optimize OU for alternative model
-    ou_params_h1 = ou_optimize_scipy(ou_params_init, 2, m_init) # (batch_size, N_sim, len(regimes)+2)
+    ou_params_h1 = ou_optimize_scipy(ou_params_init, 2, m_init, diverge_list, share_list, epochs_list, beta_list) # (batch_size, N_sim, n_regimes+2)
 
     # optimize Lq for alternative model
-    h1_params, h1_loss = Lq_optimize_torch(torch.cat((pois_params_init, ou_params_h1), dim=2), 2, x_original_tensor, gene_names) # (batch_size, N_sim, all_param_dim)
+    init_params = pois_params_init + [ou_params_h1] # list of (batch_size, N_sim, param_dim)
+    h1_params, h1_loss = Lq_optimize_torch(init_params, 2, x_original_tensor, \
+        gene_names, diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch) # (batch_size, N_sim, all_param_dim)
     
     return h0_params, h0_loss, h1_params, h1_loss
+
 
 # main
 if __name__ == "__main__":
@@ -642,41 +695,52 @@ if __name__ == "__main__":
     results_empirical_all = {}
     ou_params_all = []
     lr_all = []
+
+    # process data
+    tree_list, cells_list, df_list, diverge_list, share_list, epochs_list, beta_list, \
+        diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch, regime_list = \
+        process_data(tree_files, gene_files, regime_files, rnull)
+
+    regimes = list(dict.fromkeys(x for sub in regime_list for x in sub)) # regimes by order
+    n_regimes = len(regimes)
+
     # loop over gene batches
-    for batch_start in range(0, len(df.columns), batch_size):
+    for batch_start in range(0, len(df_list[0].columns), batch_size):
         # gene expression in tissues (batch)
-        batch_genes = df.columns[batch_start:batch_start+batch_size]
+        batch_genes = df_list[0].columns[batch_start:batch_start+batch_size]
         # gene names
         if annot_file:
             df_annot = pd.read_csv(annot_file, sep="\t", index_col=0, header=None)
             batch_gene_names = df_annot.loc[batch_genes, 0].tolist()
         else:
             batch_gene_names = batch_genes
-        print(f"\ntree{name}, gene batch {batch_start}-{batch_start+len(batch_genes)-1}: {list(batch_gene_names)}", flush=True)
+        print(f"\ngene batch {batch_start}-{batch_start+len(batch_genes)-1}: {list(batch_gene_names)}", flush=True)
         
         # pseudocount and init params
-        x_original = df[batch_genes].values.T # shape: (batch_size, n_cells)
-        x_original = np.expand_dims(x_original, axis=1) # shape: (batch_size, 1, n_cells)
+        x_original = [df[batch_genes].values.T for df in df_list] # list of (batch_size, n_cells)
+        x_original = [np.expand_dims(x, axis=1) for x in x_original] # list of (batch_size, 1, n_cells)
 
         # likelihood ratio test (default)
-        h0_params, h0_loss, h1_params, h1_loss = likelihood_ratio_test(x_original, batch_gene_names) # (batch_size, 1, ...)
+        h0_params, h0_loss, h1_params, h1_loss = likelihood_ratio_test(x_original, n_regimes, \
+            diverge_list, share_list, epochs_list, beta_list, \
+            diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch, batch_gene_names) # (batch_size, 1, ...)
         lr = h0_loss - h1_loss # substract -log likelihood
-        p_value = 1 - chi2.cdf(lr.flatten(), len(regimes)-1)
+        p_value = 1 - chi2.cdf(lr.flatten(), n_regimes-1)
         
         # for each gene in batch (chi-squared test)
         for i in range(batch_size): 
-            h0_theta = np.log1p(np.exp(h0_params[i, 0, -len(regimes)]))
-            h1_theta = np.log1p(np.exp(h1_params[i, 0, -len(regimes):]))
+            h0_theta = np.log1p(np.exp(h0_params[i, 0, -n_regimes]))
+            h1_theta = np.log1p(np.exp(h1_params[i, 0, -n_regimes:]))
             result = [batch_start + i, batch_genes[i], h0_theta] + h1_theta.tolist() + \
                 [h0_loss[i, 0], h1_loss[i, 0], lr[i, 0], p_value[i]]
             results[batch_start + i] = result
             print("default result: " + '\t'.join(list(map(str, result))))
 
         # collect all ou params
-        ou_params_all.append(h0_params[:, 0, -len(regimes)-2:]) # (batch_size, ...)
+        ou_params_all.append(h0_params[:, 0, :]) # (batch_size, ...)
         lr_all.append(lr[:, 0]) # (batch_size,)
 
-        # empirical null distribution for each gene
+        # empirical null distribution for each gene TODO: sim for each tree separately
         if N_sim_each:
             x_original = simulate_null_each(tree_list, h0_params, N_sim_each, cells) # (batch_size, N_sim, n_cells)
             _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(x_original, batch_gene_names) # (batch_size, N_sim, ...)
@@ -701,7 +765,7 @@ if __name__ == "__main__":
             f.write(f"{output}\t{q_values[i]}\t{signif[i]}\n")
             f.flush()
 
-    # using empirical for each gene
+    # using empirical for each gene TODO: sim for each tree separately
     if N_sim_each: 
         results_empirical = sorted(list(results_empirical.values()), key=lambda x: x[-1])
         p_values = [r[-1] for r in results_empirical]
@@ -714,7 +778,7 @@ if __name__ == "__main__":
                 f.write(f"{output}\t{q_values[i]}\t{signif[i]}\n")
                 f.flush()
 
-    # empirical null distribution for all genes
+    # empirical null distribution for all genes TODO: sim for each tree separately TODO: output sims
     if N_sim_all:
         # simulate null for all genes
         ou_params_all = np.concatenate(ou_params_all, axis=0) # (gene_num, ...)
