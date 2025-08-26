@@ -12,10 +12,10 @@ conda activate OUP
 Run examples:
 ```
 # run positive simulation
-python src/OUP.py --tree data/tree.nwk --expr data/readcounts_OU_tip5-10.tsv --regime data/regime_tip.csv --null 0 --output data/OU-results
+python src/OUP.py --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts_OU_tip5-10_downsampled.tsv --regime examples/input_data/regime_tip.csv --null 0 --output examples/output_results/test_ou
 
 # run negative control
-python src/OUP.py --tree data/tree.nwk --expr data/readcounts_BM_tip5-10.tsv --regime data/regime_tip.csv --null 0 --output data/BM-results
+python src/OUP.py --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts_BM_tip5-10_downsampled.tsv --regime examples/input_data/regime_tip.csv --null 0 --output examples/output_results/test_bm
 ```
 Using GPU and wandb for optimization is recommended.
 
