@@ -18,7 +18,8 @@ dependencies = [
     "statsmodels",
     "torch",
     "wandb",
-    "joblib"
+    "joblib",
+    "black"
 ]
 readme = "README.md"
 requires-python = ">=3.7"

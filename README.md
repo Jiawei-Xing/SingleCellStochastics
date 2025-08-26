@@ -29,7 +29,7 @@ run-ou-poisson --tree examples/input_data/tree.nwk --expr examples/input_data/re
 
 It is also possible to run the python directly from `singlecellstochastics/oup.py` by replacing `run-ou-poisson` in the commands above with `python -m singlecellstochastics.oup`.
 
-Users can also import specific functions within a python interactive terminal such as `import singlecellstochastics.lrt.likelihood_ratio_test` or other functions that one needs to access.
+Users can also import specific functions within a python interactive terminal such as `from singlecellstochastics.lrt import likelihood_ratio_test` or other functions that one needs to access.
 
 <!-- TO JIAWEI: I did not change the code, just updated the formatting to be proper with python package standards. I did not work with the simulation parts of the original script.
 I instead commented out simulation parts since you said you need to work on them more for now. I also ignored the wandb for now, but that can be added back in with little effort.
