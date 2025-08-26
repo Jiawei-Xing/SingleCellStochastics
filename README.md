@@ -1,23 +1,37 @@
 # SingleCellStochastics
-* Stochastic modeling of single-cell gene expression dynamics along cell lineage using Ornstein-Uhlenbeck process and Poisson observation.
-* Detecting lineage-specific differential gene expressions by hypothesis testing on stochastic expression models.
-* Reconstructing possible ancestral cell states with deep generative models along cell lineage.
+
+This repository provides tools for stochastic modeling and analysis of single-cell gene expression dynamics along cell lineages, particularly supporting the detection of significant gene expression changes on metastatic branches within a metastatic cancer cell lineage. We also provide some simulation tools used to evaluate the model.
+
+## Installation
+We have made the package pip installable, but not yet available publicly on pypi, so users must install locally by cloning this repo and then within the repo (and prefereably within a clean and isolated environment) running:
+```
+pip install -e .
+```
+
+Once installed, you can check for the executable with:
+```
+which run-ou-poisson
+```
 
 ## Run example
-Create and activate required conda environment:
-```
-conda env create -n OUP -f env/OUP.yml
-conda activate OUP
-```
-Run examples:
+In the bash terminal, run the following:
 ```
 # run positive simulation
-python src/OUP.py --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts_OU_tip5-10_downsampled.tsv --regime examples/input_data/regime_tip.csv --null 0 --output examples/output_results/test_ou
+run-ou-poisson --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts_OU_tip5-10_downsampled.tsv --regime examples/input_data/regime_tip.csv --null 0 --output examples/output_results/test_ou
 
 # run negative control
-python src/OUP.py --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts_BM_tip5-10_downsampled.tsv --regime examples/input_data/regime_tip.csv --null 0 --output examples/output_results/test_bm
+run-ou-poisson --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts_BM_tip5-10_downsampled.tsv --regime examples/input_data/regime_tip.csv --null 0 --output examples/output_results/test_bm
 ```
-Using GPU and wandb for optimization is recommended.
+
+It is also possible to run the python directly from `singlecellstochastics/oup.py` by replacing `run-ou-poisson` in the commands above with `python -m singlecellstochastics.oup`.
+
+Users can also import specific functions within a python interactive terminal such as `import singlecellstochastics.lrt.likelihood_ratio_test` or other functions that one needs to access.
+
+<!-- TO JIAWEI: I did not change the code, just updated the formatting to be proper with python package standards. I did not work with the simulation parts of the original script.
+I instead commented out simulation parts since you said you need to work on them more for now. I also ignored the wandb for now, but that can be added back in with little effort.
+-->
+
+<!-- Using GPU and wandb for optimization is recommended.
 
 ## Lineage simulation
 Example cell lineages can be simulated with a modified version of the agent-based cancer cell simulator from [MACHINA](https://www.nature.com/articles/s41588-018-0106-z). 
@@ -63,4 +77,4 @@ python src/stochas_sim.py --tree data/tree.nwk --regime data/regime_root.csv --t
 python src/stochas_sim.py --tree data/tree.nwk --regime data/regime_tip.csv --test 1 --root 5 --optim 10 --out sim --label tip5-10
 python src/stochas_sim.py --tree data/tree.nwk --regime data/regime_both.csv --test 1 --root 5 --optim 10 --out sim --label both5-10
 ```
-
+ -->

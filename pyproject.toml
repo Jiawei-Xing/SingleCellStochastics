@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "SingleCellStochastics"
+version = "0.1.0"
+description = "An OU-Poisson model for metastatic cancer gene expression changes along a cell lineage tree."
+authors = [
+    {name = "Jiawei Xing", email = "xing@cshl.edu"},
+    {name = "Stephen Staklinski", email = "staklins@cshl.edu"}
+]
+dependencies = [
+    "biopython",
+    "numpy",
+    "scipy",
+    "pandas",
+    "statsmodels",
+    "torch",
+    "wandb",
+    "joblib"
+]
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+
+[project.urls]
+"Homepage" = "https://github.com/Jiawei-Xing/SingleCellStochastics"
+
+[project.scripts]
+run-ou-poisson = "singlecellstochastics.oup:run_ou_poisson"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
