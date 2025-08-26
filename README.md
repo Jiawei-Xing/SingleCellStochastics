@@ -1,6 +1,10 @@
 # SingleCellStochastics
 
-This repository provides tools for stochastic modeling and analysis of single-cell gene expression dynamics along cell lineages, particularly supporting the detection of significant gene expression changes on metastatic branches within a metastatic cancer cell lineage. We also provide some simulation tools used to evaluate the model.
+This repository provides tools for stochastic modeling and analysis of single-cell gene expression dynamics along cell lineages, particularly supporting the detection of significant gene expression changes on metastatic branches within a metastatic cancer cell lineage via likelihood ratio test. We also provide some simulation tools used to evaluate the model.
+
+<div style="text-align: left;">
+  <img src="ou_poisson_graphical_model.png" alt="OU-Poisson graphical model" width="400"/>
+</div>
 
 ## Installation
 We have made the package pip installable, but not yet available publicly on pypi, so users must install locally by cloning this repo and then within the repo (and prefereably within a clean and isolated environment) running:
