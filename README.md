@@ -28,7 +28,7 @@ conda env create -n simulate -f Lineage_simulation/env/lineage_sim.yml
 conda activate simulate
 ```
 ### Cell simulation
-An executable `simulate` file is provided in `Lineage_simulation/build/`. Or, to recompile the C++ code:
+To compile the C++ code:
 ```
 cd Lineage_simulation
 rm -r build
