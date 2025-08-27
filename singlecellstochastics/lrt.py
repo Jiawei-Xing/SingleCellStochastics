@@ -20,6 +20,7 @@ def likelihood_ratio_test(
     device="cpu",
     max_iter=500,
     learning_rate=1e-3,
+    wandb_flag=False,
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -47,8 +48,8 @@ def likelihood_ratio_test(
         share_list,
         epochs_list,
         beta_list,
-        max_iter=500,
-        learning_rate=1e-3,
+        max_iter=max_iter,
+        learning_rate=learning_rate,
         device=device,
     )  # (batch_size, N_sim, n_regimes+2)
 
@@ -75,9 +76,10 @@ def likelihood_ratio_test(
         share_list_torch,
         epochs_list_torch,
         beta_list_torch,
-        max_iter=500,
-        learning_rate=1e-3,
+        max_iter=max_iter,
+        learning_rate=learning_rate,
         device=device,
+        wandb_flag=wandb_flag,
     )  # (batch_size, N_sim, all_param_dim)
 
     # optimize OU for alternative model
@@ -89,8 +91,8 @@ def likelihood_ratio_test(
         share_list,
         epochs_list,
         beta_list,
-        max_iter=500,
-        learning_rate=1e-3,
+        max_iter=max_iter,
+        learning_rate=learning_rate,
         device=device,
     )  # (batch_size, N_sim, n_regimes+2)
 
@@ -107,9 +109,10 @@ def likelihood_ratio_test(
         share_list_torch,
         epochs_list_torch,
         beta_list_torch,
-        max_iter=500,
-        learning_rate=1e-3,
+        max_iter=max_iter,
+        learning_rate=learning_rate,
         device=device,
+        wandb_flag=wandb_flag,
     )  # (batch_size, N_sim, all_param_dim)
 
     return h0_params, h0_loss, h1_params, h1_loss

@@ -25,7 +25,7 @@ def Lq_neg_log_lik_torch(
 
     # OU -log lik
     term1 = 0.5 * ou_neg_log_lik_torch(
-        ou_params, s2, mode, m, diverge, share, epochs, beta
+        ou_params, s2, mode, m, diverge, share, epochs, beta, device=device
     )  # (batch_size, N_sim)
 
     # Approximation for E[log(softplus(z))] and E[softplus(z)] TODO: try exponential instead of softplus

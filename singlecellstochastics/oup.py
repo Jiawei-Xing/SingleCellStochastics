@@ -120,7 +120,7 @@ def run_ou_poisson():
         epochs_list_torch,
         beta_list_torch,
         regime_list,
-    ) = process_data(tree_files, gene_files, regime_files, rnull)
+    ) = process_data(tree_files, gene_files, regime_files, rnull, device=device)
 
     regimes = list(
         dict.fromkeys(x for sub in regime_list for x in sub)
@@ -171,6 +171,7 @@ def run_ou_poisson():
             learning_rate=learning_rate,
             max_iter=max_iter,
             device=device,
+            wandb_flag=wandb_flag,
         )  # (batch_size, 1, ...)
         lr = h0_loss - h1_loss  # substract -log likelihood
         p_value = 1 - chi2.cdf(lr.flatten(), n_regimes - 1)
