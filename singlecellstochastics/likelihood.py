@@ -131,7 +131,6 @@ def ou_neg_log_lik_torch(
     loss = (
         log_det
         + n_cells * torch.log(sigma2).squeeze(-1).squeeze(-1)
-        + exp / sigma2.squeeze(-1).squeeze(-1)
-        - 2 * tr_term
+        + (exp + tr_term) / sigma2.squeeze(-1).squeeze(-1)
     )
     return loss  # (batch_size, N_sim)
