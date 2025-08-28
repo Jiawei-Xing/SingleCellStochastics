@@ -48,7 +48,8 @@ def run_ou_poisson():
     parser.add_argument(
         "--null", type=str, required=True, help="Regime for null hypothesis"
     )
-    parser.add_argument("--output", type=str, default="output", help="Output file")
+    parser.add_argument("--outdir", type=str, default="./", help="Output directory")
+    parser.add_argument("--prefix", type=str, default="result", help="Prefix for output files")
     parser.add_argument(
         "--batch",
         type=int,
@@ -93,7 +94,8 @@ def run_ou_poisson():
     N_sim_all = args.sim1
     N_sim_each = args.sim2
     annot_file = args.annot
-    output_file = args.output
+    output_dir = args.outdir
+    prefix = args.prefix
     wandb_flag = args.wandb
 
     if wandb_flag:
@@ -172,6 +174,7 @@ def run_ou_poisson():
             max_iter=max_iter,
             device=device,
             wandb_flag=wandb_flag,
+            cache_dir=output_dir
         )  # (batch_size, 1, ...)
         lr = h0_loss - h1_loss  # substract -log likelihood
         p_value = 1 - chi2.cdf(lr.flatten(), n_regimes - 1)
@@ -222,7 +225,7 @@ def run_ou_poisson():
     p_values = [r[-1] for r in results]
     signif, q_values = multipletests(p_values, alpha=0.05, method="fdr_bh")[:2]
 
-    with open(output_file + "_chi-squared.tsv", "w") as f:
+    with open(output_dir + prefix + "_chi-squared.tsv", "w") as f:
         f.write(
             f"ID\tgene\th0_theta\t"
             + "\t".join(["h1_theta" + r for r in regimes])
@@ -241,7 +244,7 @@ def run_ou_poisson():
         p_values = [r[-1] for r in results_empirical]
         signif, q_values = multipletests(p_values, alpha=0.05, method="fdr_bh")[:2]
 
-        with open(output_file + "_empirical_each.tsv", "w") as f:
+        with open(output_dir + prefix + "_empirical_each.tsv", "w") as f:
             f.write(
                 f"ID\tgene\th0_theta\t"
                 + "\t".join(["h1_theta" + r for r in regimes])
@@ -287,7 +290,7 @@ def run_ou_poisson():
         p_values = [r[-1] for r in results_empirical_all]
         signif, q_values = multipletests(p_values, alpha=0.05, method="fdr_bh")[:2]
 
-        with open(output_file + "_empirical_all.tsv", "w") as f:
+        with open(output_dir + prefix + "_empirical_all.tsv", "w") as f:
             f.write(
                 f"ID\tgene\th0_theta\t"
                 + "\t".join(["h1_theta" + r for r in regimes])

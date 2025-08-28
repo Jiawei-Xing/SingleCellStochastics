@@ -1,5 +1,7 @@
 import numpy as np
 import torch
+import pickle
+import os
 
 from .optimize import ou_optimize_scipy, Lq_optimize_torch
 
@@ -21,6 +23,7 @@ def likelihood_ratio_test(
     max_iter=500,
     learning_rate=1e-3,
     wandb_flag=False,
+    cache_dir=None,
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -40,8 +43,33 @@ def likelihood_ratio_test(
     ]  # reverse read counts as Gaussian mean z
     ou_params_init = np.ones((n_regimes + 2))  # shape: (n_regimes+2)
 
-    # optimize OU for null model
-    ou_params_h0 = ou_optimize_scipy(
+    # Try to load cached OU parameters if cache_dir is provided
+    ou_params_h0 = None
+    ou_params_h1 = None
+    loaded_from_cache = False
+    
+    if cache_dir is not None:
+        os.makedirs(cache_dir, exist_ok=True)
+        h0_cache_file = os.path.join(cache_dir, "ou_params_h0.pkl")
+        h1_cache_file = os.path.join(cache_dir, "ou_params_h1.pkl")
+        
+        # Try to load cached parameters
+        if os.path.exists(h0_cache_file) and os.path.exists(h1_cache_file):
+            try:
+                with open(h0_cache_file, 'rb') as f:
+                    ou_params_h0 = pickle.load(f)
+                with open(h1_cache_file, 'rb') as f:
+                    ou_params_h1 = pickle.load(f)
+                loaded_from_cache = True
+                print(f"Loaded cached OU parameters from {cache_dir}")
+            except Exception as e:
+                print(f"Failed to load cached parameters: {e}")
+                ou_params_h0 = None
+                ou_params_h1 = None
+
+    # optimize OU for null model (only if not loaded from cache)
+    if ou_params_h0 is None:
+        ou_params_h0 = ou_optimize_scipy(
         ou_params_init,
         1,
         m_init,
@@ -81,17 +109,32 @@ def likelihood_ratio_test(
         wandb_flag=wandb_flag,
     )  # (batch_size, N_sim, all_param_dim)
 
-    # optimize OU for alternative model
-    ou_params_h1 = ou_optimize_scipy(
-        ou_params_init,
-        2,
-        m_init,
-        diverge_list,
-        share_list,
-        epochs_list,
-        beta_list,
-        device=device,
-    )  # (batch_size, N_sim, n_regimes+2)
+    # optimize OU for alternative model (only if not loaded from cache)
+    if ou_params_h1 is None:
+        ou_params_h1 = ou_optimize_scipy(
+            ou_params_init,
+            2,
+            m_init,
+            diverge_list,
+            share_list,
+            epochs_list,
+            beta_list,
+            device=device,
+        )  # (batch_size, N_sim, n_regimes+2)
+
+    # Save OU parameters to cache if cache_dir is provided and parameters were computed (not loaded)
+    if cache_dir is not None and not loaded_from_cache and ou_params_h0 is not None and ou_params_h1 is not None:
+        try:
+            h0_cache_file = os.path.join(cache_dir, "ou_params_h0.pkl")
+            h1_cache_file = os.path.join(cache_dir, "ou_params_h1.pkl")
+            
+            with open(h0_cache_file, 'wb') as f:
+                pickle.dump(ou_params_h0, f)
+            with open(h1_cache_file, 'wb') as f:
+                pickle.dump(ou_params_h1, f)
+            print(f"Saved OU parameters to cache in {cache_dir}")
+        except Exception as e:
+            print(f"Failed to save parameters to cache: {e}")
 
     # optimize Lq for alternative model
     init_params = pois_params_init + [
