@@ -6,7 +6,7 @@ from .approx import E_log_softplus_taylor, E_softplus_taylor, E_log_softplus_MC,
     
 # calculate negative log likelihood of ELBO with torch
 def Lq_neg_log_lik_torch(
-    Lq_params, ou_params, mode, x_tensor, diverge, share, epochs, beta, device="cpu"
+    Lq_params, ou_params, mode, x_tensor, diverge, share, epochs, beta, device="cpu", approx="softplus_MC"
 ):
     """
     ELBO for approximating model evidence.
@@ -29,9 +29,15 @@ def Lq_neg_log_lik_torch(
     )  # (batch_size, N_sim)
 
     # Poisson -log lik
-    term2 = -torch.sum(
-        x_tensor * E_log_softplus_taylor(m, s2) - E_softplus_taylor(m, s2), dim=2
-    )  # (batch_size, N_sim)
+    if approx == "softplus_taylor":
+        term2 = -torch.sum(x_tensor * E_log_softplus_taylor(m, s2) - E_softplus_taylor(m, s2), dim=2)
+    elif approx == "softplus_MC":
+        term2 = -torch.sum(x_tensor * E_log_softplus_MC(m, s2) - E_softplus_MC(m, s2), dim=2)
+    elif approx == "exp":
+        term2 = -torch.sum(x_tensor * E_log_exp(m, s2) - E_exp(m, s2), dim=2)
+    else:
+        raise ValueError(f"Invalid approximation method: {approx}")
+    # (batch_size, N_sim)
 
     # -entropy
     term3 = -torch.sum(0.5 * torch.log(s2), dim=2)  # (batch_size, N_sim)

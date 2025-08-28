@@ -72,7 +72,8 @@ def Lq_optimize_torch(
     device="cpu",
     wandb_flag=False,
     window=100,
-    tol=1e-4
+    tol=1e-4,
+    approx="softplus_MC"
 ):
     """
     Optimize ELBO with PyTorch Adam.
@@ -84,6 +85,7 @@ def Lq_optimize_torch(
     diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: list of tensors
     window: number of recent iterations to check for convergence
     tol: convergence tolerance
+    approx: approximation method for Poisson likelihood expectation
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
     params_tensor = [
@@ -118,6 +120,7 @@ def Lq_optimize_torch(
                 epochs,
                 beta,
                 device=device,
+                approx=approx
             )
             loss_matrix[:, :, i] = loss
 
@@ -186,6 +189,7 @@ def Lq_optimize_torch(
             print(f"   - Increase max_iter (current: {max_iter})")
             print(f"   - Increase learning_rate (current: {learning_rate})")
             print(f"   - Increase tol (current: {tol})")
+            print(f"   - Decrease window (current: {window})")
             print(f"   - Check data quality for these genes")
 
     return (

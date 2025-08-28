@@ -62,14 +62,14 @@ def run_ou_poisson():
     parser.add_argument(
         "--iter",
         type=int,
-        default=500,
+        default=1000,
         help="Max number of iterations for optimization",
     )
     parser.add_argument(
         "--window", type=int, default=100, help="Number of iterations to check convergence"
     )
     parser.add_argument(
-        "--tol", type=float, default=1e-4, help="Convergence tolerance"
+        "--tol", type=float, default=1e-3, help="Convergence tolerance"
     )
     parser.add_argument(
         "--sim1",
@@ -88,6 +88,12 @@ def run_ou_poisson():
         action="store_true",
         help="Flag to enable logging to wandb (default: False)",
     )
+    parser.add_argument(
+        "--approx",
+        type=str,
+        default="softplus_MC",
+        help="Approximation method for Poisson likelihood expectation",
+    )
     args = parser.parse_args()
 
     tree_files = args.tree.split(",")
@@ -105,6 +111,7 @@ def run_ou_poisson():
     output_dir = args.outdir
     prefix = args.prefix
     wandb_flag = args.wandb
+    approx = args.approx
 
     if wandb_flag:
         wandb.login()
@@ -184,7 +191,8 @@ def run_ou_poisson():
             wandb_flag=wandb_flag,
             cache_dir=output_dir,
             window=window,
-            tol=tol
+            tol=tol,
+            approx=approx
         )  # (batch_size, 1, ...)
         lr = h0_loss - h1_loss  # substract -log likelihood
         p_value = 1 - chi2.cdf(lr.flatten(), n_regimes - 1)
