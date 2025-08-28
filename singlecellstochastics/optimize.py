@@ -17,8 +17,6 @@ def ou_optimize_scipy(
     share_list,
     epochs_list,
     beta_list,
-    max_iter=500,
-    learning_rate=1e-3,
     device="cpu",
 ):
     """
@@ -129,13 +127,13 @@ def Lq_optimize_torch(
         loss.backward()
 
         with torch.no_grad():
-            # s2, alpha, sigma2 should be positive TODO: try log/square transform
-            for i in range(n_trees - 1):
-                n_cells = x_tensor_list[i].shape[-1]
-                if (params_tensor[i][:, :, n_cells:] < 1e-6).any():
-                    params_tensor[i][:, :, n_cells:].clamp_(min=1e-6)
-            if (params_tensor[-1][:, :, :2] < 1e-6).any():
-                params_tensor[-1][:, :, :2].clamp_(min=1e-6)
+            # s2, alpha, sigma2 should be positive (instead of clamping, optimize square)
+            #for i in range(n_trees - 1):
+            #    n_cells = x_tensor_list[i].shape[-1]
+            #    if (params_tensor[i][:, :, n_cells:] < 1e-6).any():
+            #        params_tensor[i][:, :, n_cells:].clamp_(min=1e-6)
+            #if (params_tensor[-1][:, :, :2] < 1e-6).any():
+            #    params_tensor[-1][:, :, :2].clamp_(min=1e-6)
 
             # update best params
             mask = average_loss < best_loss

@@ -81,8 +81,8 @@ def ou_neg_log_lik_torch(
     batch_size, N_sim, n_cells = expr_batch.shape
 
     # Extract parameters
-    alpha = params_batch[:, :, 0]  # (batch_size, N_sim)
-    sigma2 = params_batch[:, :, 1]  # (batch_size, N_sim)
+    alpha = params_batch[:, :, 0]**2 + 1e-6  # (batch_size, N_sim)
+    sigma2 = params_batch[:, :, 1]**2 + 1e-6  # (batch_size, N_sim)
     thetas = params_batch[:, :, 2:]  # (batch_size, N_sim, n_regimes)
 
     # Compute V for all batches (broadcast alpha)

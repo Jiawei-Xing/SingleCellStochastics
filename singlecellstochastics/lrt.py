@@ -36,6 +36,7 @@ def likelihood_ratio_test(
     ]  # add small value to avoid log(0)
     m_init = [
         np.log(np.expm1(x)) for x in x_pseudo
+        #np.log(x) for x in x_pseudo 
     ]  # reverse read counts as Gaussian mean z
     ou_params_init = np.ones((n_regimes + 2))  # shape: (n_regimes+2)
 
@@ -48,8 +49,6 @@ def likelihood_ratio_test(
         share_list,
         epochs_list,
         beta_list,
-        max_iter=max_iter,
-        learning_rate=learning_rate,
         device=device,
     )  # (batch_size, N_sim, n_regimes+2)
 
@@ -61,7 +60,7 @@ def likelihood_ratio_test(
         torch.cat((m, torch.ones_like(m, device=device)), dim=2) for m in m_init_tensor
     ]  # list of (batch_size, N_sim, 2*n_cells)
     init_params = pois_params_init + [
-        ou_params_h0
+        torch.cat((ou_params_h0[:, :, :2].sqrt(), ou_params_h0[:, :, 2:]), dim=2)
     ]  # list of (batch_size, N_sim, param_dim)
 
     x_original_tensor = [
@@ -91,14 +90,12 @@ def likelihood_ratio_test(
         share_list,
         epochs_list,
         beta_list,
-        max_iter=max_iter,
-        learning_rate=learning_rate,
         device=device,
     )  # (batch_size, N_sim, n_regimes+2)
 
     # optimize Lq for alternative model
     init_params = pois_params_init + [
-        ou_params_h1
+        torch.cat((ou_params_h1[:, :, :2].sqrt(), ou_params_h1[:, :, 2:]), dim=2)
     ]  # list of (batch_size, N_sim, param_dim)
     h1_params, h1_loss = Lq_optimize_torch(
         init_params,

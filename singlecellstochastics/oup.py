@@ -180,6 +180,8 @@ def run_ou_poisson():
         for i in range(batch_size):
             h0_theta = np.log1p(np.exp(h0_params[i, 0, -n_regimes]))
             h1_theta = np.log1p(np.exp(h1_params[i, 0, -n_regimes:]))
+            #h0_theta = np.exp(h0_params[i, 0, -n_regimes])
+            #h1_theta = np.exp(h1_params[i, 0, -n_regimes:])
             result = (
                 [batch_start + i, batch_genes[i], h0_theta]
                 + h1_theta.tolist()
