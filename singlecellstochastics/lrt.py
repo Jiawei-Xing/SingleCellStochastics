@@ -24,6 +24,8 @@ def likelihood_ratio_test(
     learning_rate=1e-3,
     wandb_flag=False,
     cache_dir=None,
+    window=100,
+    tol=1e-4
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -107,6 +109,8 @@ def likelihood_ratio_test(
         learning_rate=learning_rate,
         device=device,
         wandb_flag=wandb_flag,
+        window=window,
+        tol=tol
     )  # (batch_size, N_sim, all_param_dim)
 
     # optimize OU for alternative model (only if not loaded from cache)
@@ -153,6 +157,8 @@ def likelihood_ratio_test(
         learning_rate=learning_rate,
         device=device,
         wandb_flag=wandb_flag,
+        window=window,
+        tol=tol
     )  # (batch_size, N_sim, all_param_dim)
 
     return h0_params, h0_loss, h1_params, h1_loss

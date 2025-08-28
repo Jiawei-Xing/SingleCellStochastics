@@ -57,13 +57,19 @@ def run_ou_poisson():
         help="Number of genes for batch processing. Will be adjusted to the number of genes if input value is larger.",
     )
     parser.add_argument(
-        "--lr", type=float, default=1e-3, help="Learning rate for Adam optimizer"
+        "--lr", type=float, default=1e-1, help="Learning rate for Adam optimizer"
     )
     parser.add_argument(
         "--iter",
         type=int,
         default=500,
         help="Max number of iterations for optimization",
+    )
+    parser.add_argument(
+        "--window", type=int, default=100, help="Number of iterations to check convergence"
+    )
+    parser.add_argument(
+        "--tol", type=float, default=1e-4, help="Convergence tolerance"
     )
     parser.add_argument(
         "--sim1",
@@ -91,6 +97,8 @@ def run_ou_poisson():
     rnull = args.null
     learning_rate = args.lr
     max_iter = args.iter
+    window = min(args.window, args.iter)
+    tol = args.tol
     N_sim_all = args.sim1
     N_sim_each = args.sim2
     annot_file = args.annot
@@ -174,7 +182,9 @@ def run_ou_poisson():
             max_iter=max_iter,
             device=device,
             wandb_flag=wandb_flag,
-            cache_dir=output_dir
+            cache_dir=output_dir,
+            window=window,
+            tol=tol
         )  # (batch_size, 1, ...)
         lr = h0_loss - h1_loss  # substract -log likelihood
         p_value = 1 - chi2.cdf(lr.flatten(), n_regimes - 1)
@@ -191,7 +201,7 @@ def run_ou_poisson():
                 + [h0_loss[i, 0], h1_loss[i, 0], lr[i, 0], p_value[i]]
             )
             results[batch_start + i] = result
-            print("default result: " + "\t".join(list(map(str, result))))
+            #print("default result: " + "\t".join(list(map(str, result))))
 
         # collect all ou params
         ou_params_all.append(h0_params[:, 0, :])  # (batch_size, ...)

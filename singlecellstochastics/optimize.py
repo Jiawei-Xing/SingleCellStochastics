@@ -71,6 +71,8 @@ def Lq_optimize_torch(
     learning_rate=1e-3,
     device="cpu",
     wandb_flag=False,
+    window=100,
+    tol=1e-4
 ):
     """
     Optimize ELBO with PyTorch Adam.
@@ -80,6 +82,8 @@ def Lq_optimize_torch(
     x_tensor: list of (batch_size, N_sim, n_cells)
     gene_names: list of gene names
     diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: list of tensors
+    window: number of recent iterations to check for convergence
+    tol: convergence tolerance
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
     params_tensor = [
@@ -146,7 +150,43 @@ def Lq_optimize_torch(
                     {f"{gene_names[0]}_h{mode-1}_loss": best_loss[0, 0], "iter": n}
                 )
 
+            # check convergence in window
+            if n == max_iter - window:
+                prev_loss = best_loss.clone().detach()
+
         optimizer.step()
+
+    # Check convergence status for each gene and print warnings at the end
+    if prev_loss is not None:
+        final_losses = best_loss.cpu().numpy()
+        prev_losses = prev_loss.cpu().numpy()
+        
+        # Calculate relative loss decrease for each gene
+        non_converged_genes = []
+        for i in range(batch_size):
+            for j in range(N_sim):
+                gene_name = gene_names[i]
+                
+                # Calculate relative loss decrease for this gene
+                relative_decrease = abs(final_losses[i, j] - prev_losses[i, j]) / max(1, abs(prev_losses[i, j]))
+                
+                # Check if this gene didn't converge
+                if relative_decrease >= tol:
+                    non_converged_genes.append((gene_name, relative_decrease, final_losses[i, j]))
+        
+        # Print warnings for non-converged genes
+        if non_converged_genes:
+            print(f"\n⚠️  WARNING: {len(non_converged_genes)}/{batch_size} genes did not converge:")
+            print(f"   Gene Name{' ' * 20} | Relative Decrease | Final Loss")
+            print(f"   {'-' * 50}")
+            for gene_name, rel_decrease, final_loss in non_converged_genes:
+                print(f"   {gene_name:<25} | {rel_decrease:.2e}          | {final_loss:.6f}")
+            
+            print(f"\n💡 Recommendations for non-converged genes:")
+            print(f"   - Increase max_iter (current: {max_iter})")
+            print(f"   - Increase learning_rate (current: {learning_rate})")
+            print(f"   - Increase tol (current: {tol})")
+            print(f"   - Check data quality for these genes")
 
     return (
         best_params.clone().detach().cpu().numpy(),
