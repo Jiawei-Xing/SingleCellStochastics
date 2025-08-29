@@ -17,7 +17,7 @@ def ou_optimize_scipy(
     share_list,
     epochs_list,
     beta_list,
-    device="cpu",
+    device,
 ):
     """
     Optimize OU likelihood with SciPy L-BFGS-B.
@@ -67,18 +67,20 @@ def Lq_optimize_torch(
     share_list_torch,
     epochs_list_torch,
     beta_list_torch,
-    max_iter=500,
-    learning_rate=1e-3,
-    device="cpu",
-    wandb_flag=False,
-    window=100,
-    tol=1e-4,
-    approx="softplus_MC"
+    max_iter,
+    learning_rate,
+    device,
+    wandb_flag,
+    window,
+    tol,
+    approx,
+    em
 ):
     """
     Optimize ELBO with PyTorch Adam.
 
-    params: (batch_size, N_sim, all_param_dim)
+    params: List of (batch_size, N_sim, all_param_dim)
+            [Lq_params tree1, Lq_params tree2, ..., Lq_params treeN, shared OU_params]
     mode: 1 for H0, 2 for H1
     x_tensor: list of (batch_size, N_sim, n_cells)
     gene_names: list of gene names
@@ -86,14 +88,37 @@ def Lq_optimize_torch(
     window: number of recent iterations to check for convergence
     tol: convergence tolerance
     approx: approximation method for Poisson likelihood expectation
+    em: "e" for E-step, "m" for M-step, None for both together
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
+    # Determine which parameters should have gradients based on EM mode
+    if em == "e":
+        # E-step: optimize ELBO with fixed OU parameters
+        requires_grad_mask = [True] * (len(params) - 1) + [False]
+    elif em == "m":
+        # M-step: optimize OU parameters with fixed ELBO
+        requires_grad_mask = [False] * (len(params) - 1) + [True]
+    else:
+        # optimize both ELBO and OU parameters
+        requires_grad_mask = [True] * len(params)
+    
+    # Create params_tensor with appropriate gradient requirements
     params_tensor = [
-        p.clone().detach().requires_grad_(True) for p in params
+        p.clone().detach().requires_grad_(requires_grad) 
+        for p, requires_grad in zip(params, requires_grad_mask)
     ]  # list of (batch_size, N_sim, param_dim)
+
     batch_size, N_sim, _ = params_tensor[0].shape
     n_trees = len(x_tensor_list)
-    best_params = params[-1].clone().detach()  # (batch_size, N_sim, ou_param_dim)
+    
+    # Track best parameters for all parameter types
+    if em is None:
+        # For full optimization, only track OU parameters (original behavior)
+        best_params = params[-1].clone().detach()  # (batch_size, N_sim, ou_param_dim)
+    else:
+        # For EM steps, track all parameters
+        best_params = [p.clone().detach() for p in params]
+    
     best_loss = torch.full((batch_size, N_sim), float("inf"), device=device)
     optimizer = torch.optim.Adam(params_tensor, lr=learning_rate)
 
@@ -145,12 +170,19 @@ def Lq_optimize_torch(
             # update best params
             mask = average_loss < best_loss
             best_loss[mask] = average_loss[mask].clone().detach()
-            best_params[mask] = params_tensor[-1][mask].clone().detach()
+            
+            if em is None:
+                # For full optimization, only update OU parameters
+                best_params[mask] = params_tensor[-1][mask].clone().detach()
+            else:
+                # For EM steps, update all parameters
+                for i, param in enumerate(params_tensor):
+                    best_params[i][mask] = param[mask].clone().detach()
 
             if wandb_flag:
                 # plot loss of first gene in batch
                 wandb.log(
-                    {f"{gene_names[0]}_h{mode-1}_loss": best_loss[0, 0], "iter": n}
+                    {f"{gene_names[0]}_h{mode-1}_{em}_loss": best_loss[0, 0], "iter": n}
                 )
 
             # check convergence in window
@@ -192,7 +224,15 @@ def Lq_optimize_torch(
             print(f"   - Decrease window (current: {window})")
             print(f"   - Check data quality for these genes")
 
-    return (
-        best_params.clone().detach().cpu().numpy(),
-        best_loss.clone().detach().cpu().numpy(),
-    )
+    if em is None:
+        return (
+            best_params.clone().detach().cpu().numpy(),
+            best_loss.clone().detach().cpu().numpy(),
+        )
+    else:
+        # For EM steps, return all best parameters as a list
+        best_params_list = [p.clone().detach() for p in best_params]
+        return (
+            best_params_list,
+            best_loss.clone().detach(),
+        )

@@ -4,7 +4,7 @@ import pickle
 import os
 
 from .optimize import ou_optimize_scipy, Lq_optimize_torch
-
+from .em import run_em
 
 # likelihood ratio test
 def likelihood_ratio_test(
@@ -19,14 +19,15 @@ def likelihood_ratio_test(
     epochs_list_torch,
     beta_list_torch,
     gene_names,
-    device="cpu",
-    max_iter=500,
-    learning_rate=1e-3,
-    wandb_flag=False,
-    cache_dir=None,
-    window=100,
-    tol=1e-4,
-    approx="softplus_MC"
+    device,
+    max_iter,
+    learning_rate,
+    wandb_flag,
+    cache_dir,
+    window,
+    tol,
+    approx, 
+    em_iter
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -35,6 +36,7 @@ def likelihood_ratio_test(
     diverge_list, share_list, epochs_list, beta_list: list of numpy arrays
     diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: list of tensors
     gene_names: list of gene names
+    em_iter: number of EM iterations
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
     x_pseudo = [
@@ -98,23 +100,45 @@ def likelihood_ratio_test(
     x_original_tensor = [
         torch.tensor(x, dtype=torch.float32, device=device) for x in x_original
     ]  # list of (batch_size, N_sim, n_cells)
-    h0_params, h0_loss = Lq_optimize_torch(
-        init_params,
-        1,
-        x_original_tensor,
-        gene_names,
-        diverge_list_torch,
-        share_list_torch,
-        epochs_list_torch,
-        beta_list_torch,
-        max_iter=max_iter,
-        learning_rate=learning_rate,
-        device=device,
-        wandb_flag=wandb_flag,
-        window=window,
-        tol=tol,
-        approx=approx
-    )  # (batch_size, N_sim, all_param_dim)
+
+    if em_iter == 0: # optimize all params
+        h0_params, h0_loss = Lq_optimize_torch(
+            init_params,
+            1,
+            x_original_tensor,
+            gene_names,
+            diverge_list_torch,
+            share_list_torch,
+            epochs_list_torch,
+            beta_list_torch,
+            max_iter=max_iter,
+            learning_rate=learning_rate,
+            device=device,
+            wandb_flag=wandb_flag,
+            window=window,
+            tol=tol,
+            approx=approx,
+            em=None
+        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
+    else: # EM
+        h0_params, h0_loss = run_em(
+            init_params,
+            1,
+            x_original_tensor,
+            gene_names,
+            diverge_list_torch,
+            share_list_torch,
+            epochs_list_torch,
+            beta_list_torch,
+            max_iter=max_iter,
+            learning_rate=learning_rate,
+            device=device,
+            wandb_flag=wandb_flag,
+            window=window,
+            tol=tol,
+            approx=approx,
+            em_iter=em_iter
+        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
 
     # optimize OU for alternative model (only if not loaded from cache)
     if ou_params_h1 is None:
@@ -147,22 +171,44 @@ def likelihood_ratio_test(
     init_params = pois_params_init + [
         torch.cat((ou_params_h1[:, :, :2].sqrt(), ou_params_h1[:, :, 2:]), dim=2)
     ]  # list of (batch_size, N_sim, param_dim)
-    h1_params, h1_loss = Lq_optimize_torch(
-        init_params,
-        2,
-        x_original_tensor,
-        gene_names,
-        diverge_list_torch,
-        share_list_torch,
-        epochs_list_torch,
-        beta_list_torch,
-        max_iter=max_iter,
-        learning_rate=learning_rate,
-        device=device,
-        wandb_flag=wandb_flag,
-        window=window,
-        tol=tol,
-        approx=approx
-    )  # (batch_size, N_sim, all_param_dim)
+
+    if em_iter == 0: # optimize all params
+        h1_params, h1_loss = Lq_optimize_torch(
+            init_params,
+            2,
+            x_original_tensor,
+            gene_names,
+            diverge_list_torch,
+            share_list_torch,
+            epochs_list_torch,
+            beta_list_torch,
+            max_iter=max_iter,
+            learning_rate=learning_rate,
+            device=device,
+            wandb_flag=wandb_flag,
+            window=window,
+            tol=tol,
+            approx=approx,
+            em=None
+        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
+    else: # EM
+        h1_params, h1_loss = run_em(
+            init_params,
+            2,
+            x_original_tensor,
+            gene_names,
+            diverge_list_torch,
+            share_list_torch,
+            epochs_list_torch,
+            beta_list_torch,
+            max_iter=max_iter,
+            learning_rate=learning_rate,
+            device=device,
+            wandb_flag=wandb_flag,
+            window=window,
+            tol=tol,
+            approx=approx,
+            em_iter=em_iter
+        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
 
     return h0_params, h0_loss, h1_params, h1_loss

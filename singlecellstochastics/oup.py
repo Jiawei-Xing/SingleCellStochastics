@@ -49,31 +49,31 @@ def run_ou_poisson():
         "--null", type=str, required=True, help="Regime for null hypothesis"
     )
     parser.add_argument(
-        "--outdir", type=str, default="./", help="Output directory"
+        "--outdir", type=str, default="./", help="Output directory (default: ./)"
     )
     parser.add_argument(
-        "--prefix", type=str, default="result", help="Prefix for output files"
+        "--prefix", type=str, default="result", help="Prefix for output files (default: result)"
     )
     parser.add_argument(
         "--batch",
         type=int,
         default=100,
-        help="Number of genes for batch processing. Will be adjusted to the number of genes if input value is larger.",
+        help="Number of genes for batch processing. Must not be larger than the total number of genes. (default: 100)",
     )
     parser.add_argument(
-        "--lr", type=float, default=1e-1, help="Learning rate for Adam optimizer"
+        "--lr", type=float, default=1e-1, help="Learning rate for Adam optimizer (default: 1e-1)"
     )
     parser.add_argument(
         "--iter",
         type=int,
         default=1000,
-        help="Max number of iterations for optimization",
+        help="Max number of iterations for optimization (default: 1000)",
     )
     parser.add_argument(
-        "--window", type=int, default=100, help="Number of iterations to check convergence"
+        "--window", type=int, default=100, help="Number of iterations to check convergence (default: 100)"
     )
     parser.add_argument(
-        "--tol", type=float, default=1e-3, help="Convergence tolerance"
+        "--tol", type=float, default=1e-3, help="Convergence tolerance (default: 1e-3)"
     )
     parser.add_argument(
         "--sim1",
@@ -96,7 +96,13 @@ def run_ou_poisson():
         "--approx",
         type=str,
         default="softplus_MC",
-        help="Approximation method for Poisson likelihood expectation",
+        help="Approximation method for Poisson likelihood expectation (default: softplus_MC)",
+    )
+    parser.add_argument(
+        "--em_iter",
+        type=int,
+        default=0,
+        help="Number of EM iterations (default: 0, optimize all params together)"
     )
     args = parser.parse_args()
 
@@ -116,6 +122,7 @@ def run_ou_poisson():
     prefix = args.prefix
     wandb_flag = args.wandb
     approx = args.approx
+    em_iter = args.em_iter
 
     if wandb_flag:
         wandb.login()
@@ -189,14 +196,15 @@ def run_ou_poisson():
             epochs_list_torch,
             beta_list_torch,
             batch_gene_names,
-            learning_rate=learning_rate,
             max_iter=max_iter,
+            learning_rate=learning_rate,
             device=device,
             wandb_flag=wandb_flag,
             cache_dir=output_dir,
             window=window,
             tol=tol,
-            approx=approx
+            approx=approx,
+            em_iter=em_iter
         )  # (batch_size, 1, ...)
         lr = h0_loss - h1_loss  # substract -log likelihood
         p_value = 1 - chi2.cdf(lr.flatten(), n_regimes - 1)
@@ -230,9 +238,14 @@ def run_ou_poisson():
             _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
                 x_original,
                 batch_gene_names,
-                learning_rate=learning_rate,
                 max_iter=max_iter,
+                learning_rate=learning_rate,
                 device=device,
+                cache_dir=output_dir,
+                window=window,
+                tol=tol,
+                approx=approx,
+                em_iter=em_iter
             )  # (batch_size, N_sim, ...)
             null_LRs = h0_loss_sim - h1_loss_sim  # (batch_size, N_sim)
 
@@ -296,9 +309,14 @@ def run_ou_poisson():
         _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
             x_original,
             gene_names,
-            learning_rate=learning_rate,
             max_iter=max_iter,
+            learning_rate=learning_rate,
             device=device,
+            cache_dir=output_dir,
+            window=window,
+            tol=tol,
+            approx=approx,
+            em_iter=em_iter
         )  # (N_sim_all, 1, ...)
         null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
 

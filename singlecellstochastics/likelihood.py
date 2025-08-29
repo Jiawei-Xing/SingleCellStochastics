@@ -66,7 +66,7 @@ def ou_neg_log_lik_numpy(
 
 # calculate expectation of negative OU log likelihood with torch
 def ou_neg_log_lik_torch(
-    params_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device="cpu"
+    params_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device
 ):
     """
     Same OU likelihood with torch. Used for ELBO with torch.

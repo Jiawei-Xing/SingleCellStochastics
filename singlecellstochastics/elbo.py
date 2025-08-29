@@ -6,7 +6,7 @@ from .approx import E_log_softplus_taylor, E_softplus_taylor, E_log_softplus_MC,
     
 # calculate negative log likelihood of ELBO with torch
 def Lq_neg_log_lik_torch(
-    Lq_params, ou_params, mode, x_tensor, diverge, share, epochs, beta, device="cpu", approx="softplus_MC"
+    Lq_params, ou_params, mode, x_tensor, diverge, share, epochs, beta, device, approx
 ):
     """
     ELBO for approximating model evidence.
