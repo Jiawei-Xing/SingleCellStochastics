@@ -5,6 +5,8 @@ import argparse
 from scipy.stats import chi2
 from statsmodels.stats.multitest import multipletests
 import wandb
+import os
+import pickle
 
 from .preprocess import process_data
 from .lrt import likelihood_ratio_test
@@ -76,13 +78,13 @@ def run_ou_poisson():
         "--tol", type=float, default=1e-3, help="Convergence tolerance (default: 1e-3)"
     )
     parser.add_argument(
-        "--sim1",
+        "--sim_all",
         type=int,
         default=None,
         help="Number of simulations for empirical null distribution (one distribution for all genes)",
     )
     parser.add_argument(
-        "--sim2",
+        "--sim_each",
         type=int,
         default=None,
         help="Number of simulations for empirical null distribution (one distribution for each gene)",
@@ -115,8 +117,8 @@ def run_ou_poisson():
     max_iter = args.iter
     window = min(args.window, args.iter)
     tol = args.tol
-    N_sim_all = args.sim1
-    N_sim_each = args.sim2
+    N_sim_all = args.sim_all
+    N_sim_each = args.sim_each
     annot_file = args.annot
     output_dir = args.outdir
     prefix = args.prefix
@@ -129,7 +131,7 @@ def run_ou_poisson():
         wandb.init(project="SingleCellStochastics", name="OUP")
 
     results = {}
-    results_empirical = {}
+    results_empirical_each = {}
     results_empirical_all = {}
     ou_params_all = []
     lr_all = []
@@ -230,18 +232,28 @@ def run_ou_poisson():
         ou_params_all.append(h0_params[:, 0, :])  # (batch_size, ...)
         lr_all.append(lr[:, 0])  # (batch_size,)
 
-        # empirical null distribution for each gene TODO: sim for each tree separately
+        # empirical null distribution for each gene
         if N_sim_each:
             x_original = simulate_null_each(
-                tree_list, h0_params, N_sim_each, cells
-            )  # (batch_size, N_sim, n_cells)
+                tree_list, h0_params, N_sim_each, cells_list
+            )  # list of (batch_size, N_sim, n_cells)
             _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
                 x_original,
+                n_regimes,
+                diverge_list,
+                share_list,
+                epochs_list,
+                beta_list,
+                diverge_list_torch,
+                share_list_torch,
+                epochs_list_torch,
+                beta_list_torch,
                 batch_gene_names,
                 max_iter=max_iter,
                 learning_rate=learning_rate,
                 device=device,
-                cache_dir=output_dir,
+                wandb_flag=wandb_flag,
+                cache_dir=None,
                 window=window,
                 tol=tol,
                 approx=approx,
@@ -255,8 +267,8 @@ def run_ou_poisson():
                     len(null_LRs[i, :]) + 1
                 )
                 result = results[batch_start + i][:-1] + [p_empirical]
-                results_empirical[batch_start + i] = result
-                print("sim_gene result: " + "\t".join(list(map(str, result))))
+                results_empirical_each[batch_start + i] = result
+                #print("sim_gene result: " + "\t".join(list(map(str, result))))
 
     # FDR by Benjamini-Hochberg procedure
     results = sorted(list(results.values()), key=lambda x: x[-1])
@@ -274,12 +286,12 @@ def run_ou_poisson():
             f.write(f"{output}\t{q_values[i]}\t{signif[i]}\n")
             f.flush()
 
-    # using empirical for each gene TODO: sim for each tree separately
+    # using empirical for each gene
     if N_sim_each:
-        results_empirical = sorted(
-            list(results_empirical.values()), key=lambda x: x[-1]
+        results_empirical_each = sorted(
+            list(results_empirical_each.values()), key=lambda x: x[-1]
         )
-        p_values = [r[-1] for r in results_empirical]
+        p_values = [r[-1] for r in results_empirical_each]
         signif, q_values = multipletests(p_values, alpha=0.05, method="fdr_bh")[:2]
 
         with open(output_dir + prefix + "_empirical_each.tsv", "w") as f:
@@ -288,38 +300,70 @@ def run_ou_poisson():
                 + "\t".join(["h1_theta" + r for r in regimes])
                 + f"\th0\th1\tLR\tp\tq\tsignif\n"
             )
-            for i in range(len(results_empirical)):
-                output = "\t".join(list(map(str, results_empirical[i])))
+            for i in range(len(results_empirical_each)):
+                output = "\t".join(list(map(str, results_empirical_each[i])))
                 f.write(f"{output}\t{q_values[i]}\t{signif[i]}\n")
                 f.flush()
 
-    # # empirical null distribution for all genes TODO: sim for each tree separately TODO: output sims
+    # empirical null distribution for all genes
     if N_sim_all:
-        # simulate null for all genes
-        ou_params_all = np.concatenate(ou_params_all, axis=0)  # (gene_num, ...)
-        x_original = simulate_null_all(
-            tree_list, ou_params_all, N_sim_all, cells
-        )  # (N_sim_all, n_cells)
+        # load cached parameters
+        null_LRs = None
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            sim_all_cache_file = os.path.join(output_dir, f"sim_all_null_LRs_{N_sim_all}.pkl")
 
-        # empirical null distribution for all genes
-        x_original = np.expand_dims(
-            x_original, axis=1
-        )  # shape: (N_sim_all, 1, n_cells)
-        gene_names = ["sim_all"] * N_sim_all  # (N_sim_all,)
-        _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
-            x_original,
-            gene_names,
-            max_iter=max_iter,
-            learning_rate=learning_rate,
-            device=device,
-            cache_dir=output_dir,
-            window=window,
-            tol=tol,
-            approx=approx,
-            em_iter=em_iter
-        )  # (N_sim_all, 1, ...)
-        null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
+            # Try to load cached parameters
+            if os.path.exists(sim_all_cache_file):
+                try:
+                    with open(sim_all_cache_file, 'rb') as f:
+                        null_LRs = pickle.load(f)
+                    print(f"Loaded cached null LRs from {sim_all_cache_file}")
+                except Exception as e:
+                    print(f"Failed to load cached parameters: {e}")
 
+        # no cached sim_all
+        if null_LRs is None:
+            # simulate null for all genes
+            ou_params_all = np.concatenate(ou_params_all, axis=0)  # (gene_num, ...)
+            x_original = simulate_null_all(
+                tree_list, ou_params_all, N_sim_all, cells_list
+            )  # list of (N_sim_all, n_cells)
+
+            # empirical null distribution for all genes
+            x_original = np.expand_dims(
+                x_original, axis=1
+            )  # shape: (N_sim_all, 1, n_cells)
+            gene_names = ["sim_all"] * N_sim_all  # (N_sim_all,)
+            _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
+                x_original,
+                n_regimes,
+                diverge_list,
+                share_list,
+                epochs_list,
+                beta_list,
+                diverge_list_torch,
+                share_list_torch,
+                epochs_list_torch,
+                beta_list_torch,
+                gene_names,
+                max_iter=max_iter,
+                learning_rate=learning_rate,
+                device=device,
+                wandb_flag=wandb_flag,
+                cache_dir=None,
+                window=window,
+                tol=tol,
+                approx=approx,
+                em_iter=em_iter
+            )  # (N_sim_all, 1, ...)
+            null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
+
+            # save null LRs
+            if output_dir is not None:
+                with open(sim_all_cache_file, 'wb') as f:
+                    pickle.dump(null_LRs, f)
+        
         # LRT using empirical null distribution
         lr_all = np.concatenate(lr_all, axis=0)  # (gene_num,)
         for i in range(lr_all.shape[0]):
