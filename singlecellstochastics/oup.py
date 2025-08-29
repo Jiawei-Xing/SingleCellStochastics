@@ -48,8 +48,12 @@ def run_ou_poisson():
     parser.add_argument(
         "--null", type=str, required=True, help="Regime for null hypothesis"
     )
-    parser.add_argument("--outdir", type=str, default="./", help="Output directory")
-    parser.add_argument("--prefix", type=str, default="result", help="Prefix for output files")
+    parser.add_argument(
+        "--outdir", type=str, default="./", help="Output directory"
+    )
+    parser.add_argument(
+        "--prefix", type=str, default="result", help="Prefix for output files"
+    )
     parser.add_argument(
         "--batch",
         type=int,
@@ -199,10 +203,13 @@ def run_ou_poisson():
 
         # for each gene in batch (chi-squared test)
         for i in range(batch_size):
-            h0_theta = np.log1p(np.exp(h0_params[i, 0, -n_regimes]))
-            h1_theta = np.log1p(np.exp(h1_params[i, 0, -n_regimes:]))
-            #h0_theta = np.exp(h0_params[i, 0, -n_regimes])
-            #h1_theta = np.exp(h1_params[i, 0, -n_regimes:])
+            if approx != "exp": # softplus
+                h0_theta = np.log1p(np.exp(h0_params[i, 0, -n_regimes]))
+                h1_theta = np.log1p(np.exp(h1_params[i, 0, -n_regimes:]))
+            else: # exp
+                h0_theta = np.exp(h0_params[i, 0, -n_regimes])
+                h1_theta = np.exp(h1_params[i, 0, -n_regimes:])
+                
             result = (
                 [batch_start + i, batch_genes[i], h0_theta]
                 + h1_theta.tolist()

@@ -41,9 +41,10 @@ def likelihood_ratio_test(
         np.maximum(x, 1e-6) for x in x_original
     ]  # add small value to avoid log(0)
     m_init = [
-        np.log(np.expm1(x)) for x in x_pseudo
-        #np.log(x) for x in x_pseudo 
-    ]  # reverse read counts as Gaussian mean z
+        np.log(np.expm1(x)) if approx != "exp" 
+        else np.log(x) 
+        for x in x_pseudo
+    ] # reverse read counts as Gaussian mean z
     ou_params_init = np.ones((n_regimes + 2))  # shape: (n_regimes+2)
 
     # Try to load cached OU parameters if cache_dir is provided

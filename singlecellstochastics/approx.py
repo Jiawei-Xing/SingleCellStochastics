@@ -2,6 +2,23 @@ import torch
 
 # Taylor approximation for E[log(softplus(z))] and E[softplus(z)] 
 def E_log_softplus_taylor(u, sigma2):  # Taylor series for E[log]
+    """
+    Taylor approximation for E[log(softplus(z))] where z ~ N(u, sigma2)
+    Expansions done around the Taylor approximation at zero.
+    Approximations are separated for different ranges of u.
+
+    Parameters:
+    -----------
+    u : torch.Tensor
+        Mean of the normal distribution
+    sigma2 : torch.Tensor
+        Variance of the normal distribution
+
+    Returns:
+    --------
+    result : torch.Tensor
+        Taylor approximation of E[log(softplus(z))]
+    """
     result = torch.empty_like(u)
 
     # u < 2, taylor0 + log(exp(z))
@@ -41,6 +58,23 @@ def E_log_softplus_taylor(u, sigma2):  # Taylor series for E[log]
 
 
 def E_softplus_taylor(u, sigma2):  # Taylor series for E[softplus]
+    """
+    Taylor approximation for E[softplus(z)] where z ~ N(u, sigma2)
+    Expansions done around the Taylor approximation < 5
+    Approximation is separated for different ranges of u.
+    
+    Parameters:
+    -----------
+    u : torch.Tensor
+        Mean of the normal distribution
+    sigma2 : torch.Tensor
+        Variance of the normal distribution
+
+    Returns:
+    --------
+    result : torch.Tensor
+        Taylor approximation of E[softplus(z)]
+    """
     result = torch.empty_like(u)
 
     # u < 5, taylor(u)
