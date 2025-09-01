@@ -5,6 +5,7 @@ from scipy.optimize import minimize
 import wandb
 
 from .likelihood import ou_neg_log_lik_numpy
+from .likelihood import ou_neg_log_lik_torch
 from .elbo import Lq_neg_log_lik_torch
 
 
@@ -55,6 +56,99 @@ def ou_optimize_scipy(
         result_tensor[i, j, :] = torch.tensor(x, dtype=torch.float32, device=device)
 
     return result_tensor
+
+
+# optimize OU likelihood with PyTorch Adam
+def ou_optimize_torch(
+    params_init,
+    mode,
+    expr_list_torch,
+    diverge_list_torch,
+    share_list_torch,
+    epochs_list_torch,
+    beta_list_torch,
+    device,
+    max_iter,
+    learning_rate,
+    wandb_flag,
+    gene_names,
+    window,
+    tol,
+):
+    """
+    Optimize the OU-only likelihood with PyTorch Adam.
+    Returns OU parameters for each batch and sim.
+    Used for initializing OU parameters for ELBO with expression data.
+
+    params_init: OU parameters (alpha, sigma2, theta0, theta1, ..., theta_n)
+    mode: 1 for H0, 2 for H1
+    expr_list_torch: list of expression data (batch_size, N_sim, n_cells)
+    diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: list of tensors
+    device: device to use
+    max_iter: maximum number of iterations
+    learning_rate: learning rate for Adam
+    wandb_flag: whether to use wandb
+    gene_names: list of gene names
+    window: number of recent iterations to check for convergence
+    tol: convergence tolerance
+    """
+    ou_params = params_init.clone().detach().requires_grad_(True)
+    batch_size, N_sim, _ = expr_list_torch[0].shape
+    n_trees = len(expr_list_torch)
+
+    # Track best parameters for all parameter types
+    best_params = params_init.clone().detach()
+    
+    best_loss = torch.full((batch_size, N_sim), float("inf"), device=device)
+    optimizer = torch.optim.Adam([ou_params], lr=learning_rate)
+
+    for n in range(max_iter):
+        optimizer.zero_grad()
+
+        # get loss for each tree
+        loss_matrix = torch.zeros(batch_size, N_sim, n_trees, device=device)
+        for i in range(n_trees):
+            expr_tensor = expr_list_torch[i]
+            sigma2_q = torch.zeros_like(expr_tensor) # trace term = 0
+            diverge = diverge_list_torch[i]
+            share = share_list_torch[i]
+            epochs = epochs_list_torch[i]
+            beta = beta_list_torch[i]
+            loss = ou_neg_log_lik_torch(
+                ou_params,
+                sigma2_q,
+                mode,
+                expr_tensor,
+                diverge,
+                share,
+                epochs,
+                beta,
+                device=device
+            )
+            loss_matrix[:, :, i] = loss
+
+        # average loss across trees (use torch.logsumexp for better numerical stability)
+        average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
+            torch.tensor(n_trees, device=device, dtype=torch.float32)
+        )  # (batch_size, N_sim)
+
+        # update params
+        loss = average_loss.sum()
+        loss.backward()
+
+        with torch.no_grad():
+            mask = average_loss < best_loss
+            best_loss[mask] = average_loss[mask].clone().detach()
+            best_params[mask] = ou_params[mask].clone().detach()
+
+            if wandb_flag:
+                wandb.log(
+                    {f"{gene_names[0]}_h{mode-1}_ou_loss": best_loss[0, 0], "iter": n}
+                )
+
+        optimizer.step()
+
+    return best_params, best_loss
 
 
 # optimize ELBO with Adam
@@ -181,9 +275,14 @@ def Lq_optimize_torch(
 
             if wandb_flag:
                 # plot loss of first gene in batch
-                wandb.log(
-                    {f"{gene_names[0]}_h{mode-1}_{em}_loss": best_loss[0, 0], "iter": n}
-                )
+                if em is None:
+                    wandb.log(
+                        {f"{gene_names[0]}_h{mode-1}_all_loss": best_loss[0, 0], "iter": n}
+                    )
+                else:
+                    wandb.log(
+                        {f"{gene_names[0]}_h{mode-1}_{em}_loss": best_loss[0, 0], "iter": n}
+                    )
 
             # check convergence in window
             if n == max_iter - window:

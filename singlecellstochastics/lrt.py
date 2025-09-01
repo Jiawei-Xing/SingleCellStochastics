@@ -3,7 +3,7 @@ import torch
 import pickle
 import os
 
-from .optimize import ou_optimize_scipy, Lq_optimize_torch
+from .optimize import ou_optimize_scipy, ou_optimize_torch, Lq_optimize_torch
 from .em import run_em
 
 # likelihood ratio test
@@ -47,6 +47,8 @@ def likelihood_ratio_test(
         else np.log(x) 
         for x in x_pseudo
     ] # reverse read counts as Gaussian mean z
+
+    '''
     ou_params_init = np.ones((n_regimes + 2))  # shape: (n_regimes+2)
 
     # Try to load cached OU parameters if cache_dir is provided
@@ -85,17 +87,46 @@ def likelihood_ratio_test(
         beta_list,
         device=device,
     )  # (batch_size, N_sim, n_regimes+2)
+    '''
 
-    # optimize Lq for null model
+    # optimize OU for null model
     m_init_tensor = [
         torch.tensor(m, dtype=torch.float32, device=device) for m in m_init
     ]  # list of (batch_size, N_sim, n_cells)
+
+    batch_size, N_sim, _ = m_init_tensor[0].shape
+    ou_params_init_tensor = torch.ones(
+        (batch_size, N_sim, n_regimes+2), dtype=torch.float32, device=device
+    ) * 10 # (batch_size, N_sim, n_regimes+2)
+    
+    ou_params_h0, ou_loss_h0 = ou_optimize_torch(
+        ou_params_init_tensor,
+        1,
+        m_init_tensor,
+        diverge_list_torch,
+        share_list_torch,
+        epochs_list_torch,
+        beta_list_torch,
+        device=device,
+        max_iter=max_iter,
+        learning_rate=learning_rate,
+        wandb_flag=wandb_flag,
+        gene_names=gene_names,
+        window=window,
+        tol=tol,
+    )
+    
     pois_params_init = [
         torch.cat((m, torch.ones_like(m, device=device)), dim=2) for m in m_init_tensor
     ]  # list of (batch_size, N_sim, 2*n_cells)
+
+    '''
     init_params = pois_params_init + [
         torch.cat((ou_params_h0[:, :, :2].sqrt(), ou_params_h0[:, :, 2:]), dim=2)
     ]  # list of (batch_size, N_sim, param_dim)
+    '''
+
+    init_params = pois_params_init + [ou_params_h0]  # list of (batch_size, N_sim, param_dim)
 
     x_original_tensor = [
         torch.tensor(x, dtype=torch.float32, device=device) for x in x_original
@@ -141,6 +172,7 @@ def likelihood_ratio_test(
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
 
     # optimize OU for alternative model (only if not loaded from cache)
+    '''
     if ou_params_h1 is None:
         ou_params_h1 = ou_optimize_scipy(
             ou_params_init,
@@ -166,11 +198,33 @@ def likelihood_ratio_test(
             print(f"Saved OU parameters to cache in {cache_dir}")
         except Exception as e:
             print(f"Failed to save parameters to cache: {e}")
+    '''
 
+    ou_params_h1, ou_loss_h1 = ou_optimize_torch(
+        ou_params_init_tensor,
+        2,
+        m_init_tensor,
+        diverge_list_torch,
+        share_list_torch,
+        epochs_list_torch,
+        beta_list_torch,
+        device=device,
+        max_iter=max_iter,
+        learning_rate=learning_rate,
+        wandb_flag=wandb_flag,
+        gene_names=gene_names,
+        window=window,
+        tol=tol,
+    )
+
+    '''
     # optimize Lq for alternative model
     init_params = pois_params_init + [
         torch.cat((ou_params_h1[:, :, :2].sqrt(), ou_params_h1[:, :, 2:]), dim=2)
     ]  # list of (batch_size, N_sim, param_dim)
+    '''
+
+    init_params = pois_params_init + [ou_params_h1]  # list of (batch_size, N_sim, param_dim)
 
     if em_iter == 0: # optimize all params
         h1_params, h1_loss = Lq_optimize_torch(
