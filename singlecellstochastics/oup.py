@@ -72,7 +72,7 @@ def run_ou_poisson():
         help="Max number of iterations for optimization (default: 1000)",
     )
     parser.add_argument(
-        "--window", type=int, default=100, help="Number of iterations to check convergence (default: 100)"
+        "--window", type=int, default=50, help="Number of iterations to check convergence (default: 100)"
     )
     parser.add_argument(
         "--tol", type=float, default=1e-3, help="Convergence tolerance (default: 1e-3)"
@@ -331,9 +331,7 @@ def run_ou_poisson():
             )  # list of (N_sim_all, n_cells)
 
             # empirical null distribution for all genes
-            x_original = np.expand_dims(
-                x_original, axis=1
-            )  # shape: (N_sim_all, 1, n_cells)
+            x_original = [np.expand_dims(x, axis=1) for x in x_original]  # list of (N_sim_all, 1, n_cells)
             gene_names = ["sim_all"] * N_sim_all  # (N_sim_all,)
             _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
                 x_original,
