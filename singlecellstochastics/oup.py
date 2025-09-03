@@ -72,10 +72,10 @@ def run_ou_poisson():
         help="Max number of iterations for optimization (default: 1000)",
     )
     parser.add_argument(
-        "--window", type=int, default=50, help="Number of iterations to check convergence (default: 100)"
+        "--window", type=int, default=100, help="Number of iterations to check convergence (default: 100)"
     )
     parser.add_argument(
-        "--tol", type=float, default=1e-3, help="Convergence tolerance (default: 1e-3)"
+        "--tol", type=float, default=1e-4, help="Convergence tolerance (default: 1e-3)"
     )
     parser.add_argument(
         "--sim_all",
@@ -91,8 +91,9 @@ def run_ou_poisson():
     )
     parser.add_argument(
         "--wandb",
-        action="store_true",
-        help="Flag to enable logging to wandb (default: False)",
+        type=str,
+        default=None,
+        help="Flag to enable using wandb with this name (default: None)",
     )
     parser.add_argument(
         "--approx",
@@ -128,7 +129,7 @@ def run_ou_poisson():
 
     if wandb_flag:
         wandb.login()
-        wandb.init(project="SingleCellStochastics", name="OUP")
+        wandb.init(project="SingleCellStochastics", name=wandb_flag)
 
     results = {}
     results_empirical_each = {}
@@ -202,7 +203,7 @@ def run_ou_poisson():
             learning_rate=learning_rate,
             device=device,
             wandb_flag=wandb_flag,
-            cache_dir=output_dir,
+            cache_dir=f"{output_dir}/{prefix}",
             window=window,
             tol=tol,
             approx=approx,
@@ -219,10 +220,13 @@ def run_ou_poisson():
             else: # exp
                 h0_theta = np.exp(h0_params[i, 0, -n_regimes])
                 h1_theta = np.exp(h1_params[i, 0, -n_regimes:])
+
+            h0_alpha, h0_sigma2 = h0_params[i, 0, 0:2] ** 2
+            h1_alpha, h1_sigma2 = h1_params[i, 0, 0:2] ** 2
                 
             result = (
-                [batch_start + i, batch_genes[i], h0_theta]
-                + h1_theta.tolist()
+                [batch_start + i, batch_genes[i], h0_alpha, h0_sigma2, h0_theta]
+                + [h1_alpha, h1_sigma2] + h1_theta.tolist()
                 + [h0_loss[i, 0], h1_loss[i, 0], lr[i, 0], p_value[i]]
             )
             results[batch_start + i] = result
@@ -277,7 +281,7 @@ def run_ou_poisson():
 
     with open(output_dir + prefix + "_chi-squared.tsv", "w") as f:
         f.write(
-            f"ID\tgene\th0_theta\t"
+            f"ID\tgene\th0_alpha\th0_sigma2\th0_theta\th1_alpha\th1_sigma2\t"
             + "\t".join(["h1_theta" + r for r in regimes])
             + f"\th0\th1\tLR\tp\tq\tsignif\n"
         )
@@ -296,7 +300,7 @@ def run_ou_poisson():
 
         with open(output_dir + prefix + "_empirical_each.tsv", "w") as f:
             f.write(
-                f"ID\tgene\th0_theta\t"
+                f"ID\tgene\th0_alpha\th0_sigma2\th0_theta\th1_alpha\th1_sigma2\t"
                 + "\t".join(["h1_theta" + r for r in regimes])
                 + f"\th0\th1\tLR\tp\tq\tsignif\n"
             )
@@ -377,7 +381,7 @@ def run_ou_poisson():
 
         with open(output_dir + prefix + "_empirical_all.tsv", "w") as f:
             f.write(
-                f"ID\tgene\th0_theta\t"
+                f"ID\tgene\th0_alpha\th0_sigma2\th0_theta\th1_alpha\th1_sigma2\t"
                 + "\t".join(["h1_theta" + r for r in regimes])
                 + f"\th0\th1\tLR\tp\tq\tsignif\n"
             )

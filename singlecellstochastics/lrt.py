@@ -36,6 +36,10 @@ def likelihood_ratio_test(
     diverge_list, share_list, epochs_list, beta_list: list of numpy arrays
     diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: list of tensors
     gene_names: list of gene names
+    cache_dir: directory to save the cached init OU parameters
+    window: number of iterations to check convergence
+    tol: convergence tolerance
+    approx: approximation method
     em_iter: number of EM iterations
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
@@ -48,7 +52,7 @@ def likelihood_ratio_test(
         for x in x_pseudo
     ] # reverse read counts as Gaussian mean z
 
-    '''
+    ''' comment out: init OU with scipy
     ou_params_init = np.ones((n_regimes + 2))  # shape: (n_regimes+2)
 
     # Try to load cached OU parameters if cache_dir is provided
@@ -97,8 +101,8 @@ def likelihood_ratio_test(
     batch_size, N_sim, _ = m_init_tensor[0].shape
     ou_params_init_tensor = torch.ones(
         (batch_size, N_sim, n_regimes+2), dtype=torch.float32, device=device
-    ) * 10 # (batch_size, N_sim, n_regimes+2)
-    
+    ) * 5 # (batch_size, N_sim, n_regimes+2)
+
     ou_params_h0, ou_loss_h0 = ou_optimize_torch(
         ou_params_init_tensor,
         1,
@@ -113,14 +117,19 @@ def likelihood_ratio_test(
         wandb_flag=wandb_flag,
         gene_names=gene_names,
         window=window,
-        tol=tol,
+        tol=tol
     )
+
+    # save init h0 OU parameters to cache
+    if cache_dir is not None:
+        file_path = cache_dir + "_OUinit_h0.tsv"
+        save_ou(file_path, ou_params_h0, ou_loss_h0, gene_names, approx, "1")
     
     pois_params_init = [
         torch.cat((m, torch.ones_like(m, device=device)), dim=2) for m in m_init_tensor
     ]  # list of (batch_size, N_sim, 2*n_cells)
 
-    '''
+    ''' # comment out: root squared OU parameters
     init_params = pois_params_init + [
         torch.cat((ou_params_h0[:, :, :2].sqrt(), ou_params_h0[:, :, 2:]), dim=2)
     ]  # list of (batch_size, N_sim, param_dim)
@@ -171,8 +180,8 @@ def likelihood_ratio_test(
             em_iter=em_iter
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
 
+    ''' # comment out: init OU with scipy
     # optimize OU for alternative model (only if not loaded from cache)
-    '''
     if ou_params_h1 is None:
         ou_params_h1 = ou_optimize_scipy(
             ou_params_init,
@@ -200,6 +209,7 @@ def likelihood_ratio_test(
             print(f"Failed to save parameters to cache: {e}")
     '''
 
+    # read h1 OU parameters from cache
     ou_params_h1, ou_loss_h1 = ou_optimize_torch(
         ou_params_init_tensor,
         2,
@@ -214,10 +224,15 @@ def likelihood_ratio_test(
         wandb_flag=wandb_flag,
         gene_names=gene_names,
         window=window,
-        tol=tol,
+        tol=tol
     )
 
-    '''
+    # save init h1 OU parameters to cache
+    if cache_dir is not None:
+        file_path = cache_dir + "_OUinit_h1.tsv"
+        save_ou(file_path, ou_params_h1, ou_loss_h1, gene_names, approx, "2")
+
+    ''' # comment out: root squared OU parameters
     # optimize Lq for alternative model
     init_params = pois_params_init + [
         torch.cat((ou_params_h1[:, :, :2].sqrt(), ou_params_h1[:, :, 2:]), dim=2)
@@ -266,3 +281,43 @@ def likelihood_ratio_test(
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
 
     return h0_params, h0_loss, h1_params, h1_loss
+
+
+# save init OU parameters and loss in TSV file with descriptive headers
+def save_ou(file_path, ou_params, ou_loss, gene_names, approx, mode):
+    """
+    Save OU parameters and loss in TSV format with descriptive headers.
+    
+    file_path : path to save the TSV file
+    ou_params : tensor of shape (batch_size, 1, param_dim)
+    ou_loss : tensor of shape (batch_size, 1)
+    gene_names : list of gene names
+    mode : "1" for h0 or "2" for h1
+    approx : approximation method
+    """
+    batch_size, N_sim, param_dim = ou_params.shape # N_sim should be 1
+    
+    # Create parameter names and header
+    if mode == "1": # h0
+        thetas = ["theta0"]
+        ou_params = ou_params[:, :, :3]
+    else: # h1
+        thetas = [f"theta{i}" for i in range(param_dim - 2)]
+    header = ["gene_name"] + ["alpha", "sigma2"] + thetas + ["loss"]
+    
+    with open(file_path, 'a') as f:
+        f.write('\t'.join(header) + '\n')
+        for i in range(batch_size):
+            row = [
+                gene_names[i], # gene name
+                ou_params[i, 0, 0] ** 2, # alpha
+                ou_params[i, 0, 1] ** 2 # sigma2 
+            ] + [
+                torch.nn.functional.softplus(x) if approx != "exp" 
+                else torch.exp(x) 
+                for x in ou_params[i, 0, 2:] # thetas
+            ] + [
+                ou_loss[i, 0] # loss
+            ] 
+            f.write('\t'.join(map(str, row)) + '\n')
+    
