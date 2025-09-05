@@ -310,14 +310,14 @@ def save_ou(file_path, ou_params, ou_loss, gene_names, approx, mode):
         for i in range(batch_size):
             row = [
                 gene_names[i], # gene name
-                ou_params[i, 0, 0] ** 2, # alpha
-                ou_params[i, 0, 1] ** 2 # sigma2 
+                ou_params[i, 0, 0].item() ** 2, # alpha
+                ou_params[i, 0, 1].item() ** 2 # sigma2 
             ] + [
-                torch.nn.functional.softplus(x) if approx != "exp" 
-                else torch.exp(x) 
-                for x in ou_params[i, 0, 2:] # thetas
-            ] + [
-                ou_loss[i, 0] # loss
+                torch.nn.functional.softplus(x).item() if approx != "exp" 
+                else torch.exp(x).item() 
+                for x in ou_params[i, 0, :] # thetas
+            ][2:] + [
+                ou_loss[i, 0].item() # loss
             ] 
             f.write('\t'.join(map(str, row)) + '\n')
     

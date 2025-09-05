@@ -98,24 +98,41 @@ def ou_optimize_torch(
 
     # Track best parameters for all parameter types
     best_params = params_init.clone().detach()
-    
     best_loss = torch.full((batch_size, N_sim), float("inf"), device=device)
     optimizer = torch.optim.Adam([ou_params], lr=learning_rate)
+    
+    # Track loss history for convergence checking
+    loss_history = []
+    converged_mask = torch.zeros((batch_size, N_sim), dtype=torch.bool, device=device)
 
     for n in range(max_iter):
         optimizer.zero_grad()
 
-        # get loss for each tree
+        # initialize loss matrix and store indices of not yet converged genes
         loss_matrix = torch.zeros(batch_size, N_sim, n_trees, device=device)
+        active_batch, active_sim = (~converged_mask).nonzero(as_tuple=True)
+
+        # get loss for each tree for not yet converged genes
         for i in range(n_trees):
-            expr_tensor = expr_list_torch[i]
+            expr_tensor = expr_list_torch[i][active_batch, active_sim, :] # only use not yet converged genes
+            ou_params_tensor = ou_params[active_batch, active_sim, :] # only optimize not yet converged genes
+
+            # fix shape if batch or sim is 1
+            if batch_size == 1:
+                expr_tensor = expr_tensor.unsqueeze(0) 
+                ou_params_tensor = ou_params_tensor.unsqueeze(0)
+            if N_sim == 1:
+                expr_tensor = expr_tensor.unsqueeze(1) 
+                ou_params_tensor = ou_params_tensor.unsqueeze(1)
+            
             sigma2_q = torch.zeros_like(expr_tensor) # trace term = 0
             diverge = diverge_list_torch[i]
             share = share_list_torch[i]
             epochs = epochs_list_torch[i]
             beta = beta_list_torch[i]
+
             loss = ou_neg_log_lik_torch(
-                ou_params,
+                ou_params_tensor,
                 sigma2_q,
                 mode,
                 expr_tensor,
@@ -125,19 +142,16 @@ def ou_optimize_torch(
                 beta,
                 device=device
             )
-            loss_matrix[:, :, i] = loss
+            loss_matrix[active_batch, active_sim, i:i+1] = loss
 
         # average loss across trees (use torch.logsumexp for better numerical stability)
         average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
             torch.tensor(n_trees, device=device, dtype=torch.float32)
         )  # (batch_size, N_sim)
 
-        # update params
-        loss = average_loss.sum()
-        loss.backward()
-
+        # update best params for not yet converged genes
         with torch.no_grad():
-            mask = average_loss < best_loss
+            mask = (average_loss < best_loss) & ~converged_mask
             best_loss[mask] = average_loss[mask].clone().detach()
             best_params[mask] = ou_params[mask].clone().detach()
 
@@ -146,7 +160,49 @@ def ou_optimize_torch(
                     {f"{gene_names[0]}_h{mode-1}_ou_loss": best_loss[0, 0], "iter": n}
                 )
 
+        # Store loss history
+        loss_history.append(average_loss.clone().detach())
+
+        # Check for convergence
+        if n >= window:
+            # Check if loss has stabilized within window
+            start_loss = loss_history[-window]
+            denom = torch.maximum(start_loss.abs(), torch.tensor(1.0, device=device))
+            relative_decrease = torch.abs(start_loss - best_loss) / denom
+            
+            # Mark as newly converged if variance is below tolerance
+            newly_converged = (relative_decrease < tol) & ~converged_mask
+
+            # update converged mask if found newly converged genes
+            if newly_converged.any():
+                converged_mask = converged_mask | newly_converged # update converged mask
+                if converged_mask.all(): # break if all genes have converged
+                    break
+
+        # backpropagate for not yet converged genes
+        loss = average_loss[~converged_mask].mean()
+        loss.backward()
         optimizer.step()
+
+    # warning if not all genes have converged
+    print(f"\nChecking convergence for h{mode-1} OU init...")
+    if not converged_mask.all():
+        print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
+        print(f"   Gene Name | Relative Decrease | Final Loss")
+        print(f"   {'-' * 25}")
+        for i in range(batch_size):
+            for j in range(N_sim):
+                if not converged_mask[i, j]:
+                    print(
+                        f"   {gene_names[i]}: {relative_decrease[i, j].item():.2e} | " +
+                        f"{best_loss[i, j].item():.2e}"
+                    )
+        print(f"\n💡 Recommendations for non-converged genes:")
+        print(f"   - Increase max_iter (current: {max_iter})")
+        print(f"   - Increase learning_rate (current: {learning_rate})")
+        print(f"   - Increase tol (current: {tol})")
+        print(f"   - Decrease window (current: {window})")
+        print(f"   - Check data quality for these genes")
 
     return best_params, best_loss
 
@@ -216,19 +272,38 @@ def Lq_optimize_torch(
     best_loss = torch.full((batch_size, N_sim), float("inf"), device=device)
     optimizer = torch.optim.Adam(params_tensor, lr=learning_rate)
 
+    # Track loss history for convergence checking
+    loss_history = []
+    converged_mask = torch.zeros((batch_size, N_sim), dtype=torch.bool, device=device)
+
     for n in range(max_iter):
         optimizer.zero_grad()
 
-        # get loss for each tree
+        # initialize loss matrix and store indices of not yet converged genes
         loss_matrix = torch.zeros(batch_size, N_sim, n_trees, device=device)
+        active_batch, active_sim = (~converged_mask).nonzero(as_tuple=True)
+
+        # get loss for each tree for not yet converged genes
         for i in range(n_trees):
-            x_tensor = x_tensor_list[i]
-            Lq_params = params_tensor[i]
-            ou_params = params_tensor[-1]
+            x_tensor = x_tensor_list[i][active_batch, active_sim, :]
+            Lq_params = params_tensor[i][active_batch, active_sim, :]
+            ou_params = params_tensor[-1][active_batch, active_sim, :]
+
+            # fix shape if batch or sim is 1
+            if batch_size == 1:
+                x_tensor = x_tensor.unsqueeze(0)
+                Lq_params = Lq_params.unsqueeze(0)
+                ou_params = ou_params.unsqueeze(0)
+            if N_sim == 1:
+                x_tensor = x_tensor.unsqueeze(1)
+                Lq_params = Lq_params.unsqueeze(1)
+                ou_params = ou_params.unsqueeze(1)
+
             diverge = diverge_list_torch[i]
             share = share_list_torch[i]
             epochs = epochs_list_torch[i]
             beta = beta_list_torch[i]
+
             loss = Lq_neg_log_lik_torch(
                 Lq_params,
                 ou_params,
@@ -241,17 +316,14 @@ def Lq_optimize_torch(
                 device=device,
                 approx=approx
             )
-            loss_matrix[:, :, i] = loss
+            loss_matrix[active_batch, active_sim, i:i+1] = loss
 
         # average loss across trees (use torch.logsumexp for better numerical stability)
         average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
             torch.tensor(n_trees, device=device, dtype=torch.float32)
         )  # (batch_size, N_sim)
 
-        # update params
-        loss = average_loss.sum()
-        loss.backward()
-
+        # update best params for not yet converged genes
         with torch.no_grad():
             # s2, alpha, sigma2 should be positive (instead of clamping, optimize square)
             #for i in range(n_trees - 1):
@@ -262,7 +334,7 @@ def Lq_optimize_torch(
             #    params_tensor[-1][:, :, :2].clamp_(min=1e-6)
 
             # update best params
-            mask = average_loss < best_loss
+            mask = (average_loss < best_loss) & ~converged_mask
             best_loss[mask] = average_loss[mask].clone().detach()
             
             if em is None:
@@ -283,45 +355,50 @@ def Lq_optimize_torch(
                     wandb.log(
                         {f"{gene_names[0]}_h{mode-1}_{em}_loss": best_loss[0, 0], "iter": n}
                     )
+        
+        # Store loss history
+        loss_history.append(average_loss.clone().detach())
 
-            # check convergence in window
-            if n == max_iter - window:
-                prev_loss = best_loss.clone().detach()
+        # check convergence in window   
+        if n >= window:
+            # Check if loss has stabilized within window
+            start_loss = loss_history[-window]
+            denom = torch.maximum(start_loss.abs(), torch.tensor(1.0, device=device))
+            relative_decrease = torch.abs(start_loss - best_loss) / denom
+            
+            # Mark as newly converged if variance is below tolerance
+            newly_converged = (relative_decrease < tol) & ~converged_mask
+            
+            # update converged mask if found newly converged genes
+            if newly_converged.any():
+                converged_mask = converged_mask | newly_converged # update converged mask
+                if converged_mask.all(): # break if all genes have converged
+                    break
 
+        # backpropagate for not yet converged genes
+        loss = average_loss[~converged_mask].mean()
+        loss.backward()
         optimizer.step()
 
-    # Check convergence status for each gene and print warnings at the end
-    if prev_loss is not None:
-        final_losses = best_loss.cpu().numpy()
-        prev_losses = prev_loss.cpu().numpy()
-        
-        # Calculate relative loss decrease for each gene
-        non_converged_genes = []
+    # warning if not all genes have converged
+    print(f"\nChecking convergence for h{mode-1} ELBO...")
+    if not converged_mask.all():
+        print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
+        print(f"   Gene Name | Relative Decrease | Final Loss")
+        print(f"   {'-' * 25}")
         for i in range(batch_size):
             for j in range(N_sim):
-                gene_name = gene_names[i]
-                
-                # Calculate relative loss decrease for this gene
-                relative_decrease = abs(final_losses[i, j] - prev_losses[i, j]) / max(1, abs(prev_losses[i, j]))
-                
-                # Check if this gene didn't converge
-                if relative_decrease >= tol:
-                    non_converged_genes.append((gene_name, relative_decrease, final_losses[i, j]))
-        
-        # Print warnings for non-converged genes
-        if non_converged_genes:
-            print(f"\n⚠️  WARNING: {len(non_converged_genes)}/{batch_size} genes did not converge:")
-            print(f"   Gene Name{' ' * 20} | Relative Decrease | Final Loss")
-            print(f"   {'-' * 50}")
-            for gene_name, rel_decrease, final_loss in non_converged_genes:
-                print(f"   {gene_name:<25} | {rel_decrease:.2e}          | {final_loss:.6f}")
-            
-            print(f"\n💡 Recommendations for non-converged genes:")
-            print(f"   - Increase max_iter (current: {max_iter})")
-            print(f"   - Increase learning_rate (current: {learning_rate})")
-            print(f"   - Increase tol (current: {tol})")
-            print(f"   - Decrease window (current: {window})")
-            print(f"   - Check data quality for these genes")
+                if not converged_mask[i, j]:
+                    print(
+                        f"   {gene_names[i]}: {relative_decrease[i, j].item():.2e} | " +
+                        f"{best_loss[i, j].item():.2e}"
+                    )
+        print(f"\n💡 Recommendations for non-converged genes:")
+        print(f"   - Increase max_iter (current: {max_iter})")
+        print(f"   - Increase learning_rate (current: {learning_rate})")
+        print(f"   - Increase tol (current: {tol})")
+        print(f"   - Decrease window (current: {window})")
+        print(f"   - Check data quality for these genes")
 
     if em is None:
         return (
