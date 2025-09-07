@@ -64,6 +64,12 @@ def likelihood_ratio_test(
         beta_list,
         device=device,
     )  # (1, 1, n_regimes+2)
+    
+    # root square of alpha and sigma2
+    ou_params_init_h0_sqrt = torch.cat([
+        ou_params_init_h0[:, :, :2].sqrt(), 
+        ou_params_init_h0[:, :, 2:]
+    ], dim=-1)
 
     # optimize OU for null model
     m_init_tensor = [
@@ -71,7 +77,7 @@ def likelihood_ratio_test(
     ]  # list of (batch_size, N_sim, n_cells)
 
     ou_params_h0, ou_loss_h0 = ou_optimize_torch(
-        ou_params_init_h0,
+        ou_params_init_h0_sqrt,
         1,
         m_init_tensor,
         diverge_list_torch,
@@ -154,10 +160,16 @@ def likelihood_ratio_test(
         beta_list,
         device=device,
     )  # (1, 1, n_regimes+2)
+    
+    # root square of alpha and sigma2
+    ou_params_init_h1_sqrt = torch.cat([
+        ou_params_init_h1[:, :, :2].sqrt(), 
+        ou_params_init_h1[:, :, 2:]
+    ], dim=-1)
 
     # optimize OU for alternative model
     ou_params_h1, ou_loss_h1 = ou_optimize_torch(
-        ou_params_init_h1,
+        ou_params_init_h1_sqrt,
         2,
         m_init_tensor,
         diverge_list_torch,
