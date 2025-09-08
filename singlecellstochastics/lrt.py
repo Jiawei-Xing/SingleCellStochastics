@@ -52,12 +52,17 @@ def likelihood_ratio_test(
         for x in x_pseudo
     ] # reverse read counts as Gaussian mean z
 
+    # use the first gene as the example gene
+    m_first = [
+        m[0:1, 0:1, :] for m in m_init
+    ] # (n_cells,)
+
     # init OU parameters with one example gene
     ou_params_init = np.ones((n_regimes + 2))  # shape: (n_regimes+2)
     ou_params_init_h0 = ou_optimize_scipy(
         ou_params_init,
         1,
-        [m_init[0]], # use one example gene
+        m_first,
         diverge_list,
         share_list,
         epochs_list,
@@ -75,6 +80,10 @@ def likelihood_ratio_test(
     m_init_tensor = [
         torch.tensor(m, dtype=torch.float32, device=device) for m in m_init
     ]  # list of (batch_size, N_sim, n_cells)
+    
+    # Expand params_init to match batch size
+    batch_size, N_sim, _ = m_init_tensor[0].shape
+    ou_params_init_h0_sqrt = ou_params_init_h0_sqrt.expand(batch_size, N_sim, -1)
 
     ou_params_h0, ou_loss_h0 = ou_optimize_torch(
         ou_params_init_h0_sqrt,
@@ -153,7 +162,7 @@ def likelihood_ratio_test(
     ou_params_init_h1 = ou_optimize_scipy(
         ou_params_init,
         2,
-        [m_init[0]], # use one example gene
+        m_first,
         diverge_list,
         share_list,
         epochs_list,
@@ -166,6 +175,9 @@ def likelihood_ratio_test(
         ou_params_init_h1[:, :, :2].sqrt(), 
         ou_params_init_h1[:, :, 2:]
     ], dim=-1)
+    
+    # Expand params_init to match batch size
+    ou_params_init_h1_sqrt = ou_params_init_h1_sqrt.expand(batch_size, N_sim, -1)
 
     # optimize OU for alternative model
     ou_params_h1, ou_loss_h1 = ou_optimize_torch(

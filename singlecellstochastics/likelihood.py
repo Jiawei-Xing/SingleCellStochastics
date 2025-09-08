@@ -44,6 +44,10 @@ def ou_neg_log_lik_numpy(
             * np.exp(-alpha * diverge)
             * (1 - np.exp(-2 * alpha * share))
         )
+        
+        # Add regularization to prevent singular matrix
+        regularization = 1e-6
+        V_reg = V + regularization * np.eye(n_cells)
 
         # diff = observed expression - expected values (n_cells, 1)
         if mode == 1:
@@ -54,8 +58,8 @@ def ou_neg_log_lik_numpy(
             diff = expr - W @ params[-n_regimes:]
 
         # log(det V) + (diff @ V^-1 @ diff) / sigma2 + n_cells * log(sigma2)
-        log_det = np.linalg.slogdet(V)[1]  # log det V
-        exp = (diff @ np.linalg.solve(V, diff)).item()  # diff @ V^-1 @ diff
+        log_det = np.linalg.slogdet(V_reg)[1]  # log det V
+        exp = (diff @ np.linalg.solve(V_reg, diff)).item()  # diff @ V^-1 @ diff
         loss = log_det + exp / sigma2 + n_cells * np.log(sigma2)  # -2 * log likelihood
         loss_list.append(loss)
 
@@ -95,6 +99,10 @@ def ou_neg_log_lik_torch(
         * torch.exp(-alpha * diverge)
         * (1 - torch.exp(-2 * alpha * share))
     )  # (batch_size, N_sim, n_cells, n_cells)
+    
+    # Add regularization to prevent singular matrix
+    regularization = 1e-6
+    V_reg = V + regularization * torch.eye(n_cells, device=device, dtype=torch.float32)
 
     # Compute W and diff
     if mode == 1:
@@ -108,7 +116,7 @@ def ou_neg_log_lik_torch(
             -1
         )  # (batch_size, N_sim, n_cells)
 
-    L = torch.linalg.cholesky(V)  # (batch_size, N_sim, n_cells, n_cells)
+    L = torch.linalg.cholesky(V_reg)  # (batch_size, N_sim, n_cells, n_cells)
     # log|V| = 2 * sum(log diag(L))
     log_det = 2 * torch.sum(
         torch.log(torch.diagonal(L, dim1=2, dim2=3)), dim=2
