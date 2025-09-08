@@ -110,20 +110,12 @@ def ou_optimize_torch(
 
         # initialize loss matrix and store indices of not yet converged genes
         loss_matrix = torch.zeros(batch_size, N_sim, n_trees, device=device)
-        active_batch, active_sim = (~converged_mask).nonzero(as_tuple=True)
+        active_batch = (~converged_mask).any(dim=1)
 
         # get loss for each tree for not yet converged genes
         for i in range(n_trees):
-            expr_tensor = expr_list_torch[i][active_batch, active_sim, :] # only use not yet converged genes
-            ou_params_tensor = ou_params[active_batch, active_sim, :] # only optimize not yet converged genes
-
-            # fix shape if batch or sim is 1
-            if batch_size == 1:
-                expr_tensor = expr_tensor.unsqueeze(0) 
-                ou_params_tensor = ou_params_tensor.unsqueeze(0)
-            if N_sim == 1:
-                expr_tensor = expr_tensor.unsqueeze(1) 
-                ou_params_tensor = ou_params_tensor.unsqueeze(1)
+            expr_tensor = expr_list_torch[i][active_batch, :, :] # only use not yet converged genes
+            ou_params_tensor = ou_params[active_batch, :, :] # only optimize not yet converged genes
             
             sigma2_q = torch.zeros_like(expr_tensor) # trace term = 0
             diverge = diverge_list_torch[i]
@@ -142,7 +134,7 @@ def ou_optimize_torch(
                 beta,
                 device=device
             )
-            loss_matrix[active_batch, active_sim, i:i+1] = loss
+            loss_matrix[active_batch, :, i] = loss
 
         # average loss across trees (use torch.logsumexp for better numerical stability)
         average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
@@ -281,23 +273,13 @@ def Lq_optimize_torch(
 
         # initialize loss matrix and store indices of not yet converged genes
         loss_matrix = torch.zeros(batch_size, N_sim, n_trees, device=device)
-        active_batch, active_sim = (~converged_mask).nonzero(as_tuple=True)
+        active_batch = (~converged_mask).any(dim=1)
 
         # get loss for each tree for not yet converged genes
         for i in range(n_trees):
-            x_tensor = x_tensor_list[i][active_batch, active_sim, :]
-            Lq_params = params_tensor[i][active_batch, active_sim, :]
-            ou_params = params_tensor[-1][active_batch, active_sim, :]
-
-            # fix shape if batch or sim is 1
-            if batch_size == 1:
-                x_tensor = x_tensor.unsqueeze(0)
-                Lq_params = Lq_params.unsqueeze(0)
-                ou_params = ou_params.unsqueeze(0)
-            if N_sim == 1:
-                x_tensor = x_tensor.unsqueeze(1)
-                Lq_params = Lq_params.unsqueeze(1)
-                ou_params = ou_params.unsqueeze(1)
+            x_tensor = x_tensor_list[i][active_batch, :, :]
+            Lq_params = params_tensor[i][active_batch, :, :]
+            ou_params = params_tensor[-1][active_batch, :, :]
 
             diverge = diverge_list_torch[i]
             share = share_list_torch[i]
@@ -316,7 +298,7 @@ def Lq_optimize_torch(
                 device=device,
                 approx=approx
             )
-            loss_matrix[active_batch, active_sim, i:i+1] = loss
+            loss_matrix[active_batch, :, i] = loss
 
         # average loss across trees (use torch.logsumexp for better numerical stability)
         average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
