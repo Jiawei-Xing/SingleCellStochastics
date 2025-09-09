@@ -23,7 +23,6 @@ def likelihood_ratio_test(
     max_iter,
     learning_rate,
     wandb_flag,
-    cache_dir,
     window,
     tol,
     approx, 
@@ -101,11 +100,6 @@ def likelihood_ratio_test(
         window=window,
         tol=tol
     )
-
-    # save init h0 OU parameters to cache
-    if cache_dir is not None:
-        file_path = cache_dir + "_OUinit_h0.tsv"
-        save_ou(file_path, ou_params_h0, ou_loss_h0, gene_names, approx, "1")
 
     # init Lq with expression data
     pois_params_init = [
@@ -197,11 +191,6 @@ def likelihood_ratio_test(
         tol=tol
     )
 
-    # save init h1 OU parameters to cache
-    if cache_dir is not None:
-        file_path = cache_dir + "_OUinit_h1.tsv"
-        save_ou(file_path, ou_params_h1, ou_loss_h1, gene_names, approx, "2")
-
     # optimize Lq for alternative model
     init_params = pois_params_init + [ou_params_h1]  # list of (batch_size, N_sim, param_dim)
 
@@ -244,44 +233,10 @@ def likelihood_ratio_test(
             em_iter=em_iter
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
 
-    return h0_params, h0_loss, h1_params, h1_loss
+    return h0_params, h0_loss, h1_params, h1_loss, \
+        ou_params_h0.clone().detach().cpu().numpy(), \
+        ou_loss_h0.clone().detach().cpu().numpy(), \
+        ou_params_h1.clone().detach().cpu().numpy(), \
+        ou_loss_h1.clone().detach().cpu().numpy()
 
-
-# save init OU parameters and loss in TSV file with descriptive headers
-def save_ou(file_path, ou_params, ou_loss, gene_names, approx, mode):
-    """
-    Save OU parameters and loss in TSV format with descriptive headers.
-    
-    file_path : path to save the TSV file
-    ou_params : tensor of shape (batch_size, 1, param_dim)
-    ou_loss : tensor of shape (batch_size, 1)
-    gene_names : list of gene names
-    mode : "1" for h0 or "2" for h1
-    approx : approximation method
-    """
-    batch_size, N_sim, param_dim = ou_params.shape # N_sim should be 1
-    
-    # Create parameter names and header
-    if mode == "1": # h0
-        thetas = ["theta0"]
-        ou_params = ou_params[:, :, :3]
-    else: # h1
-        thetas = [f"theta{i}" for i in range(param_dim - 2)]
-    header = ["gene_name"] + ["alpha", "sigma2"] + thetas + ["loss"]
-    
-    with open(file_path, 'a') as f:
-        f.write('\t'.join(header) + '\n')
-        for i in range(batch_size):
-            row = [
-                gene_names[i], # gene name
-                ou_params[i, 0, 0].item() ** 2, # alpha
-                ou_params[i, 0, 1].item() ** 2 # sigma2 
-            ] + [
-                torch.nn.functional.softplus(x).item() if approx != "exp" 
-                else torch.exp(x).item() 
-                for x in ou_params[i, 0, :] # thetas
-            ][2:] + [
-                ou_loss[i, 0].item() # loss
-            ] 
-            f.write('\t'.join(map(str, row)) + '\n')
     

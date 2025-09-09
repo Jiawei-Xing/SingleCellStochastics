@@ -2,8 +2,6 @@ import torch
 import numpy as np
 import pandas as pd
 import argparse
-from scipy.stats import chi2
-from statsmodels.stats.multitest import multipletests
 import wandb
 import os
 import pickle
@@ -11,7 +9,7 @@ import pickle
 from .preprocess import process_data
 from .lrt import likelihood_ratio_test
 from .simulate import simulate_null_all, simulate_null_each
-
+from .output import save_result, output_results
 
 def run_ou_poisson():
     # seed
@@ -132,6 +130,7 @@ def run_ou_poisson():
         wandb.init(project="SingleCellStochastics", name=wandb_flag)
 
     results = {}
+    results_ou = {}
     results_empirical_each = {}
     results_empirical_all = {}
     ou_params_all = []
@@ -187,7 +186,9 @@ def run_ou_poisson():
         ]  # list of (batch_size, 1, n_cells)
 
         # likelihood ratio test (default)
-        h0_params, h0_loss, h1_params, h1_loss = likelihood_ratio_test(
+        h0_params, h0_loss, h1_params, h1_loss, \
+            ou_params_h0, ou_loss_h0, ou_params_h1, ou_loss_h1 = \
+            likelihood_ratio_test(
             x_original,
             n_regimes,
             diverge_list,
@@ -203,37 +204,21 @@ def run_ou_poisson():
             learning_rate=learning_rate,
             device=device,
             wandb_flag=wandb_flag,
-            cache_dir=f"{output_dir}/{prefix}",
             window=window,
             tol=tol,
             approx=approx,
             em_iter=em_iter
         )  # (batch_size, 1, ...)
-        lr = h0_loss - h1_loss  # substract -log likelihood
-        p_value = 1 - chi2.cdf(lr.flatten(), n_regimes - 1)
 
-        # for each gene in batch (chi-squared test)
-        for i in range(batch_size):
-            if approx != "exp": # softplus
-                h0_theta = np.log1p(np.exp(h0_params[i, 0, -n_regimes]))
-                h1_theta = np.log1p(np.exp(h1_params[i, 0, -n_regimes:]))
-            else: # exp
-                h0_theta = np.exp(h0_params[i, 0, -n_regimes])
-                h1_theta = np.exp(h1_params[i, 0, -n_regimes:])
+        # save result
+        results = save_result(batch_start, batch_size, batch_genes, \
+            h0_params, h1_params, h0_loss, h1_loss, results, approx)
+        results_ou = save_result(batch_start, batch_size, batch_genes, \
+            ou_params_h0, ou_params_h1, ou_loss_h0, ou_loss_h1, results_ou, approx)
 
-            h0_alpha, h0_sigma2 = h0_params[i, 0, 0:2] ** 2
-            h1_alpha, h1_sigma2 = h1_params[i, 0, 0:2] ** 2
-                
-            result = (
-                [batch_start + i, batch_genes[i], h0_alpha, h0_sigma2, h0_theta]
-                + [h1_alpha, h1_sigma2] + h1_theta.tolist()
-                + [h0_loss[i, 0], h1_loss[i, 0], lr[i, 0], p_value[i]]
-            )
-            results[batch_start + i] = result
-            #print("default result: " + "\t".join(list(map(str, result))))
-
-        # collect all ou params
+        # collect all ou params and lr
         ou_params_all.append(h0_params[:, 0, :])  # (batch_size, ...)
+        lr = h0_loss - h1_loss  # (batch_size, 1)
         lr_all.append(lr[:, 0])  # (batch_size,)
 
         # empirical null distribution for each gene
@@ -241,7 +226,7 @@ def run_ou_poisson():
             x_original = simulate_null_each(
                 tree_list, h0_params, N_sim_each, cells_list
             )  # list of (batch_size, N_sim, n_cells)
-            _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
+            _, h0_loss_sim, _, h1_loss_sim, _, _, _, _ = likelihood_ratio_test(
                 x_original,
                 n_regimes,
                 diverge_list,
@@ -257,7 +242,6 @@ def run_ou_poisson():
                 learning_rate=learning_rate,
                 device=device,
                 wandb_flag=wandb_flag,
-                cache_dir=None,
                 window=window,
                 tol=tol,
                 approx=approx,
@@ -274,43 +258,17 @@ def run_ou_poisson():
                 results_empirical_each[batch_start + i] = result
                 #print("sim_gene result: " + "\t".join(list(map(str, result))))
 
-    # FDR by Benjamini-Hochberg procedure
-    results = sorted(list(results.values()), key=lambda x: x[-1])
-    p_values = [r[-1] for r in results]
-    signif, q_values = multipletests(p_values, alpha=0.05, method="fdr_bh")[:2]
-
-    with open(output_dir + prefix + "_chi-squared.tsv", "w") as f:
-        f.write(
-            f"ID\tgene\th0_alpha\th0_sigma2\th0_theta\th1_alpha\th1_sigma2\t"
-            + "\t".join(["h1_theta" + r for r in regimes])
-            + f"\th0\th1\tLR\tp\tq\tsignif\n"
-        )
-        for i in range(len(results)):
-            output = "\t".join(list(map(str, results[i])))
-            f.write(f"{output}\t{q_values[i]}\t{signif[i]}\n")
-            f.flush()
-
+    # output results
+    output_results(results, output_dir + prefix + "_chi-squared.tsv", regimes)
+    output_results(results_ou, output_dir + prefix + "_ou-init.tsv", regimes)
+    
     # using empirical for each gene
     if N_sim_each:
-        results_empirical_each = sorted(
-            list(results_empirical_each.values()), key=lambda x: x[-1]
-        )
-        p_values = [r[-1] for r in results_empirical_each]
-        signif, q_values = multipletests(p_values, alpha=0.05, method="fdr_bh")[:2]
-
-        with open(output_dir + prefix + "_empirical_each.tsv", "w") as f:
-            f.write(
-                f"ID\tgene\th0_alpha\th0_sigma2\th0_theta\th1_alpha\th1_sigma2\t"
-                + "\t".join(["h1_theta" + r for r in regimes])
-                + f"\th0\th1\tLR\tp\tq\tsignif\n"
-            )
-            for i in range(len(results_empirical_each)):
-                output = "\t".join(list(map(str, results_empirical_each[i])))
-                f.write(f"{output}\t{q_values[i]}\t{signif[i]}\n")
-                f.flush()
+        output_results(results_empirical_each, output_dir + prefix + "_empirical-each.tsv", regimes)
 
     # empirical null distribution for all genes
     if N_sim_all:
+        print(f"\nUsing empirical null distribution for all genes ({N_sim_all} simulations)")
         # load cached parameters
         null_LRs = None
         if output_dir is not None:
@@ -322,9 +280,9 @@ def run_ou_poisson():
                 try:
                     with open(sim_all_cache_file, 'rb') as f:
                         null_LRs = pickle.load(f)
-                    print(f"Loaded cached null LRs from {sim_all_cache_file}")
+                    print(f"\nLoaded cached null LRs from {sim_all_cache_file}")
                 except Exception as e:
-                    print(f"Failed to load cached parameters: {e}")
+                    print(f"\nFailed to load cached parameters: {e}")
 
         # no cached sim_all
         if null_LRs is None:
@@ -337,7 +295,7 @@ def run_ou_poisson():
             # empirical null distribution for all genes
             x_original = [np.expand_dims(x, axis=1) for x in x_original]  # list of (N_sim_all, 1, n_cells)
             gene_names = ["sim_all"] * N_sim_all  # (N_sim_all,)
-            _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
+            _, h0_loss_sim, _, h1_loss_sim, _, _, _, _ = likelihood_ratio_test(
                 x_original,
                 n_regimes,
                 diverge_list,
@@ -353,7 +311,6 @@ def run_ou_poisson():
                 learning_rate=learning_rate,
                 device=device,
                 wandb_flag=wandb_flag,
-                cache_dir=None,
                 window=window,
                 tol=tol,
                 approx=approx,
@@ -373,22 +330,8 @@ def run_ou_poisson():
             result = results[i][:-1] + [p_empirical_all]
             results_empirical_all[i] = result
 
-        results_empirical_all = sorted(
-            list(results_empirical_all.values()), key=lambda x: x[-1]
-        )
-        p_values = [r[-1] for r in results_empirical_all]
-        signif, q_values = multipletests(p_values, alpha=0.05, method="fdr_bh")[:2]
-
-        with open(output_dir + prefix + "_empirical_all.tsv", "w") as f:
-            f.write(
-                f"ID\tgene\th0_alpha\th0_sigma2\th0_theta\th1_alpha\th1_sigma2\t"
-                + "\t".join(["h1_theta" + r for r in regimes])
-                + f"\th0\th1\tLR\tp\tq\tsignif\n"
-            )
-            for i in range(len(results_empirical_all)):
-                output = "\t".join(list(map(str, results_empirical_all[i])))
-                f.write(f"{output}\t{q_values[i]}\t{signif[i]}\n")
-                f.flush()
+        # output results
+        output_results(results_empirical_all, output_dir + prefix + "_empirical-all.tsv", regimes)
 
 
 if __name__ == "__main__":

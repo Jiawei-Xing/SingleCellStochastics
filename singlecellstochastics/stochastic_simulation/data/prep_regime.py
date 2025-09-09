@@ -31,7 +31,7 @@ for cell in tree.get_terminals():
 
 # regime file
 with open(args.regime, 'w') as f2:
-    f2.write(f"node1,node2,regime\n")
+    f2.write(f"node,node2,regime\n")
     # leaf
     for cell in tree.get_terminals():
         f2.write(f"{cell.name},,{lineage[cell.name].split('_')[0]}\n")
