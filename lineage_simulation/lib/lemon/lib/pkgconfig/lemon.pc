@@ -1,0 +1,10 @@
+prefix=/grid/siepel/home_norepl/staklins/bin/lemon
+exec_prefix=/grid/siepel/home_norepl/staklins/bin/lemon/bin
+libdir=/grid/siepel/home_norepl/staklins/bin/lemon/lib
+includedir=/grid/siepel/home_norepl/staklins/bin/lemon/include
+
+Name: LEMON
+Description: Library for Efficient Modeling and Optimization in Networks
+Version: 1.3.1
+Libs: -L${libdir} -lemon     
+Cflags: -I${includedir}

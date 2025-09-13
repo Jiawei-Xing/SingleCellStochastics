@@ -19,7 +19,11 @@ dependencies = [
     "torch",
     "wandb",
     "joblib",
-    "black"
+    "black",
+    "matplotlib",
+    "scanpy",
+    "anndata",
+    "scikit-learn"
 ]
 readme = "README.md"
 requires-python = ">=3.7"
@@ -30,6 +34,9 @@ license = {text = "MIT"}
 
 [project.scripts]
 run-ou-poisson = "singlecellstochastics.oup:run_ou_poisson"
+run-stochas-sim = "singlecellstochastics.stochas_sim:run_stochas_sim"
+run-dea = "singlecellstochastics.dea:run_dea"
+compare-results = "singlecellstochastics.results:compare_results"
 
 [tool.setuptools]
 include-package-data = true

@@ -28,13 +28,13 @@ def run_ou_poisson():
         "--tree",
         type=str,
         required=True,
-        help="Newick tree file (comma-separated if multiple clones)",
+        help="Newick tree file (comma-separated if multiple clones)"
     )
     parser.add_argument(
         "--expr",
         type=str,
         required=True,
-        help="Cell by gene count matrix (comma-separated if multiple clones)",
+        help="Cell by gene count matrix (comma-separated if multiple clones)"
     )
     parser.add_argument(
         "--annot", type=str, default=None, help="Gene annotation file (optional)"
@@ -43,7 +43,7 @@ def run_ou_poisson():
         "--regime",
         type=str,
         required=True,
-        help="Regime file (comma-separated if multiple clones)",
+        help="Regime file (comma-separated if multiple clones)"
     )
     parser.add_argument(
         "--null", type=str, required=True, help="Regime for null hypothesis"
@@ -58,7 +58,7 @@ def run_ou_poisson():
         "--batch",
         type=int,
         default=100,
-        help="Number of genes for batch processing. Must not be larger than the total number of genes. (default: 100)",
+        help="Number of genes for batch processing. Must not be larger than the total number of genes. (default: 100)"
     )
     parser.add_argument(
         "--lr", type=float, default=1e-1, help="Learning rate for Adam optimizer (default: 1e-1)"
@@ -67,7 +67,7 @@ def run_ou_poisson():
         "--iter",
         type=int,
         default=1000,
-        help="Max number of iterations for optimization (default: 1000)",
+        help="Max number of iterations for optimization (default: 1000)"
     )
     parser.add_argument(
         "--window", type=int, default=100, help="Number of iterations to check convergence (default: 100)"
@@ -79,25 +79,25 @@ def run_ou_poisson():
         "--sim_all",
         type=int,
         default=None,
-        help="Number of simulations for empirical null distribution (one distribution for all genes)",
+        help="Number of simulations for empirical null distribution (one distribution for all genes)"
     )
     parser.add_argument(
         "--sim_each",
         type=int,
         default=None,
-        help="Number of simulations for empirical null distribution (one distribution for each gene)",
+        help="Number of simulations for empirical null distribution (one distribution for each gene)"
     )
     parser.add_argument(
         "--wandb",
         type=str,
         default=None,
-        help="Flag to enable using wandb with this name (default: None)",
+        help="Flag to enable using wandb with this name (default: None)"
     )
     parser.add_argument(
         "--approx",
         type=str,
         default="softplus_MC",
-        help="Approximation method for Poisson likelihood expectation (default: softplus_MC)",
+        help="Approximation method for Poisson likelihood expectation (default: softplus_MC)"
     )
     parser.add_argument(
         "--em_iter",
@@ -174,7 +174,7 @@ def run_ou_poisson():
             batch_gene_names = batch_genes
         print(
             f"\ngene batch {batch_start}-{batch_start+len(batch_genes)-1}: {list(batch_gene_names)}",
-            flush=True,
+            flush=True
         )
 
         # pseudocount and init params

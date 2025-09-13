@@ -1,0 +1,303 @@
+Generation: 0, #cells: 1, #anatomical sites: 1/1 (1/1)
+Generation: 1, #cells: 2, #anatomical sites: 0/1 (1/1)
+Generation: 2, #cells: 2, #anatomical sites: 0/1 (1/1)
+Generation: 3, #cells: 2, #anatomical sites: 0/1 (1/1)
+Generation: 4, #cells: 4, #anatomical sites: 0/1 (1/1)
+Generation: 5, #cells: 6, #anatomical sites: 0/1 (1/1)
+Generation: 6, #cells: 10, #anatomical sites: 0/1 (1/1)
+New passenger {1} in 36
+Generation: 7, #cells: 10, #anatomical sites: 0/1 (1/2)
+Generation: 8, #cells: 10, #anatomical sites: 0/1 (1/2)
+New passenger {2} in 48
+New passenger {3} in 50
+Generation: 9, #cells: 10, #anatomical sites: 0/1 (1/4)
+Generation: 10, #cells: 14, #anatomical sites: 0/1 (1/4)
+Generation: 11, #cells: 20, #anatomical sites: 0/1 (1/4)
+New passenger {4} in 94
+New passenger {5} in 102
+New passenger {6} in 106
+Generation: 12, #cells: 28, #anatomical sites: 0/2 (1/7)
+New passenger {7} in 126
+New passenger {8} in 136
+Generation: 13, #cells: 26, #anatomical sites: 0/2 (1/9)
+Generation: 14, #cells: 32, #anatomical sites: 0/2 (1/9)
+Generation: 15, #cells: 40, #anatomical sites: 0/3 (1/9)
+New passenger {9} in 226
+New passenger {10} in 230
+New passenger {11} in 266
+New passenger {12} in 270
+Generation: 16, #cells: 54, #anatomical sites: 0/3 (1/13)
+New passenger {13} in 280
+New passenger {14} in 282
+New passenger {15} in 288
+New passenger {16} in 334
+Generation: 17, #cells: 66, #anatomical sites: 0/3 (1/17)
+New passenger {17} in 342
+New passenger {18} in 408
+Generation: 18, #cells: 94, #anatomical sites: 0/4 (1/19)
+New passenger {19} in 472
+New passenger {20} in 488
+New passenger {21} in 492
+New passenger {22} in 530
+Generation: 19, #cells: 108, #anatomical sites: 0/7 (1/23)
+Generation: 20, #cells: 142, #anatomical sites: 0/8 (1/23)
+New passenger {23} in 700
+New passenger {24} in 708
+New passenger {25} in 712
+New passenger {26} in 714
+New passenger {27} in 738
+New passenger {28} in 748
+New passenger {29} in 784
+New passenger {30} in 804
+New passenger {31} in 834
+Generation: 21, #cells: 156, #anatomical sites: 1/9 (1/32)
+New passenger {32} in 848
+New passenger {33} in 862
+New passenger {34} in 866
+New passenger {35} in 888
+New passenger {36} in 922
+New passenger {37} in 988
+New passenger {38} in 996
+Generation: 22, #cells: 168, #anatomical sites: 1/10 (1/39)
+New passenger {39} in 1056
+New passenger {40} in 1060
+New passenger {41} in 1086
+New passenger {42} in 1090
+New passenger {43} in 1110
+New passenger {44} in 1128
+New passenger {45} in 1136
+New passenger {46} in 1140
+New passenger {47} in 1148
+New passenger {48} in 1160
+New passenger {49} in 1206
+Generation: 23, #cells: 210, #anatomical sites: 1/12 (1/50)
+New passenger {50} in 1236
+New passenger {51} in 1238
+New passenger {52} in 1240
+New passenger {53} in 1252
+New passenger {54} in 1274
+New passenger {55} in 1308
+New passenger {56} in 1356
+New passenger {57} in 1392
+New passenger {58} in 1406
+New passenger {59} in 1418
+New passenger {60} in 1466
+New passenger {61} in 1468
+Generation: 24, #cells: 260, #anatomical sites: 1/13 (1/62)
+New passenger {62} in 1482
+New passenger {63} in 1488
+New passenger {64} in 1542
+New passenger {65} in 1550
+New passenger {66} in 1554
+New passenger {67} in 1594
+New passenger {68} in 1598
+New passenger {69} in 1614
+New passenger {70} in 1666
+New passenger {71} in 1728
+Generation: 25, #cells: 306, #anatomical sites: 1/14 (1/72)
+New passenger {72} in 1790
+New passenger {73} in 1804
+New passenger {74} in 1818
+New passenger {75} in 1842
+New passenger {76} in 1870
+New passenger {77} in 1904
+New passenger {78} in 1908
+New passenger {79} in 1924
+New passenger {80} in 1944
+New passenger {81} in 1964
+New passenger {82} in 1986
+New passenger {83} in 1988
+New passenger {84} in 2038
+New passenger {85} in 2046
+New passenger {86} in 2056
+New passenger {87} in 2098
+New passenger {88} in 2106
+New passenger {89} in 2108
+New passenger {90} in 2130
+New passenger {91} in 2136
+New passenger {92} in 2144
+Generation: 26, #cells: 366, #anatomical sites: 1/16 (1/93)
+New passenger {93} in 2156
+New passenger {94} in 2166
+New passenger {95} in 2174
+New passenger {96} in 2196
+New passenger {97} in 2218
+New passenger {98} in 2236
+New passenger {99} in 2272
+New passenger {100} in 2280
+New passenger {101} in 2326
+New passenger {102} in 2338
+New passenger {103} in 2354
+New passenger {104} in 2386
+New passenger {105} in 2390
+New passenger {106} in 2426
+New passenger {107} in 2448
+New passenger {108} in 2452
+New passenger {109} in 2518
+New passenger {110} in 2520
+New passenger {111} in 2536
+New passenger {112} in 2562
+Generation: 27, #cells: 418, #anatomical sites: 1/18 (1/113)
+New passenger {113} in 2572
+New passenger {114} in 2576
+New passenger {115} in 2596
+New passenger {116} in 2616
+New passenger {117} in 2678
+New passenger {118} in 2680
+New passenger {119} in 2740
+New passenger {120} in 2758
+New passenger {121} in 2762
+New passenger {122} in 2798
+New passenger {123} in 2800
+New passenger {124} in 2824
+New passenger {125} in 2842
+New passenger {126} in 2844
+New passenger {127} in 2850
+New passenger {128} in 2874
+New passenger {129} in 2920
+New passenger {130} in 2944
+New passenger {131} in 2986
+New passenger {132} in 3002
+New passenger {133} in 3012
+Generation: 28, #cells: 492, #anatomical sites: 1/21 (1/134)
+New passenger {134} in 3064
+New passenger {135} in 3154
+New passenger {136} in 3192
+New passenger {137} in 3226
+New passenger {138} in 3262
+New passenger {139} in 3310
+New passenger {140} in 3312
+New passenger {141} in 3318
+New passenger {142} in 3332
+New passenger {143} in 3358
+New passenger {144} in 3374
+New passenger {145} in 3384
+New passenger {146} in 3392
+New passenger {147} in 3398
+New passenger {148} in 3414
+New passenger {149} in 3426
+New passenger {150} in 3448
+New passenger {151} in 3454
+New passenger {152} in 3478
+New passenger {153} in 3486
+New passenger {154} in 3508
+New passenger {155} in 3526
+New passenger {156} in 3534
+New passenger {157} in 3536
+New passenger {158} in 3550
+New passenger {159} in 3562
+New passenger {160} in 3566
+Generation: 29, #cells: 510, #anatomical sites: 1/24 (1/161)
+New passenger {161} in 3570
+New passenger {162} in 3598
+New passenger {163} in 3608
+New passenger {164} in 3624
+New passenger {165} in 3652
+New passenger {166} in 3694
+New passenger {167} in 3696
+New passenger {168} in 3740
+New passenger {169} in 3744
+New passenger {170} in 3754
+New passenger {171} in 3756
+New passenger {172} in 3794
+New passenger {173} in 3820
+New passenger {174} in 3824
+New passenger {175} in 3842
+New passenger {176} in 3906
+New passenger {177} in 3920
+New passenger {178} in 3934
+New passenger {179} in 3944
+New passenger {180} in 3950
+New passenger {181} in 3992
+New passenger {182} in 4006
+New passenger {183} in 4034
+New passenger {184} in 4068
+New passenger {185} in 4080
+New passenger {186} in 4082
+New passenger {187} in 4138
+New passenger {188} in 4158
+New passenger {189} in 4166
+Generation: 30, #cells: 616, #anatomical sites: 1/27 (1/190)
+New passenger {190} in 4186
+New passenger {191} in 4190
+New passenger {192} in 4214
+New passenger {193} in 4250
+New passenger {194} in 4262
+New passenger {195} in 4286
+New passenger {196} in 4290
+New passenger {197} in 4322
+New passenger {198} in 4392
+New passenger {199} in 4400
+New passenger {200} in 4414
+New passenger {201} in 4476
+New passenger {202} in 4488
+New passenger {203} in 4502
+New passenger {204} in 4514
+New passenger {205} in 4522
+New passenger {206} in 4538
+New passenger {207} in 4544
+New passenger {208} in 4554
+New passenger {209} in 4590
+New passenger {210} in 4592
+New passenger {211} in 4664
+New passenger {212} in 4684
+New passenger {213} in 4738
+New passenger {214} in 4748
+New passenger {215} in 4774
+New passenger {216} in 4808
+New passenger {217} in 4826
+New passenger {218} in 4830
+New passenger {219} in 4836
+New passenger {220} in 4860
+New passenger {221} in 4872
+New passenger {222} in 4874
+New passenger {223} in 4892
+New passenger {224} in 4894
+Generation: 31, #cells: 712, #anatomical sites: 1/30 (1/225)
+New passenger {225} in 4946
+New passenger {226} in 4970
+New passenger {227} in 4978
+New passenger {228} in 4992
+New passenger {229} in 4998
+New passenger {230} in 5000
+New passenger {231} in 5026
+New passenger {232} in 5046
+New passenger {233} in 5064
+New passenger {234} in 5072
+New passenger {235} in 5094
+New passenger {236} in 5128
+New passenger {237} in 5138
+New passenger {238} in 5156
+New passenger {239} in 5178
+New passenger {240} in 5180
+New passenger {241} in 5182
+New passenger {242} in 5254
+New passenger {243} in 5282
+New passenger {244} in 5286
+New passenger {245} in 5324
+New passenger {246} in 5338
+New passenger {247} in 5346
+New passenger {248} in 5354
+New passenger {249} in 5356
+New passenger {250} in 5394
+New passenger {251} in 5400
+New passenger {252} in 5426
+New passenger {253} in 5428
+New passenger {254} in 5438
+New passenger {255} in 5448
+New passenger {256} in 5474
+New passenger {257} in 5488
+New passenger {258} in 5494
+New passenger {259} in 5528
+New passenger {260} in 5530
+New passenger {261} in 5540
+New passenger {262} in 5548
+New passenger {263} in 5560
+New passenger {264} in 5566
+New passenger {265} in 5600
+New passenger {266} in 5632
+New passenger {267} in 5636
+New passenger {268} in 5688
+New passenger {269} in 5714
+Maximum number of active anatomical sites reached
+Mutation 0 is a driver mutation
