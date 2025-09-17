@@ -55,9 +55,13 @@ def read_tree(tree_file, regime_file):
 
     return clades, cells, paths, node_regime, depth
 
+
 # simulate gene expression with BM process for all lineages
 def BM_expression(node, parent_expr=None, expr={}, root_expr=None, BM_sigma2=None):
-    
+    '''
+    BM for all lineages
+    dX_t = sigma * dW_t
+    '''
     # simulate expr for this node
     if node.name == 'node0': # init expr for root
         new_expr = root_expr
@@ -78,9 +82,13 @@ def BM_expression(node, parent_expr=None, expr={}, root_expr=None, BM_sigma2=Non
 
     return expr
 
+
 # simulate gene expression with OU process for the testing lineage
 def OU_expression(node, parent_expr=None, expr={}, root_expr=None, test_regime=None, optim=None, alpha=None, OU_sigma2=None, BM_sigma2=None, node_regime=None):
-    
+    '''
+    OU for the testing lineage, BM for all other lineages
+    dX_t = -alpha * (X_t - optim) * dt + sigma * dW_t
+    '''
     # simulate expr for this node
     if node.name == 'node0': # init expr for root
         new_expr = root_expr
@@ -107,16 +115,47 @@ def OU_expression(node, parent_expr=None, expr={}, root_expr=None, test_regime=N
 
     return expr
 
+
+# simulate gene expression with OU process for all lineages
+def OU_expression_all(node, parent_expr=None, expr={}, test_regime=None, root_expr=None, optim=None, alpha=None, sigma2=None, node_regime=None):
+    '''
+    OU for all lineages
+    dX_t = -alpha * (X_t - optim) * dt + sigma * dW_t
+    '''
+    # simulate expr for this node
+    if node.name == 'node0': # init expr for root
+        new_expr = root_expr
+    elif node_regime[node.name] == test_regime: # OU process (testing lineage)
+        mean = optim + (parent_expr - optim) * np.exp(-alpha * node.branch_length)
+        var = sigma2 / (2 * alpha) * (1 - np.exp(-2 * alpha * node.branch_length))
+        var = np.maximum(var, 1e-10)
+        std = np.sqrt(var)
+        new_expr = np.random.normal(loc=mean, scale=std)
+    else: # OU process (all other lineages)
+        mean = root_expr + (parent_expr - root_expr) * np.exp(-alpha * node.branch_length)
+        var = sigma2 / (2 * alpha) * (1 - np.exp(-2 * alpha * node.branch_length))
+        var = np.maximum(var, 1e-10)
+        std = np.sqrt(var)
+        new_expr = np.random.normal(loc=mean, scale=std)
+
+    # Add expr record
+    new_expr = max(0, new_expr)
+    expr[node.name] = new_expr
+
+    # Recursively simulate for child nodes
+    for child in node.clades:
+        OU_expression_all(child, new_expr, expr, test_regime, root_expr, optim, alpha, sigma2, node_regime)
+
+    return expr
+
+
 # simulate gene expression by BM or OU
-def simulate(mode, clades, cells, paths, node_regime, depth, n_genes, root_expr, test_regime, optim=None, alpha=None, OU_sigma2=None, BM_sigma2=None):
+def simulate(clades, cells, paths, node_regime, depth, n_genes, root_expr, test_regime, optim=None, alpha=None, sigma2=None):
     read_counts = []
     plots = []
     for _ in range(n_genes):
         plot = []
-        if mode == "BM":
-            expr = BM_expression(node=clades[0], root_expr=root_expr, BM_sigma2=BM_sigma2)
-        elif mode == "OU":
-            expr = OU_expression(node=clades[0], root_expr=root_expr, test_regime=test_regime, optim=optim, alpha=alpha, OU_sigma2=OU_sigma2, BM_sigma2=BM_sigma2, node_regime=node_regime)
+        expr = OU_expression_all(node=clades[0], test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma2=sigma2, node_regime=node_regime)
         read_counts.append({})
 
         # BM-OU
@@ -129,9 +168,9 @@ def simulate(mode, clades, cells, paths, node_regime, depth, n_genes, root_expr,
                 regime = node_regime[clade2.name]
                 
                 if regime == test_regime:
-                    plot.append((x, y, "OU"))
+                    plot.append((x, y, "h1"))
                 else:
-                    plot.append((x, y, "BM"))
+                    plot.append((x, y, "h0"))
 
         # Poisson
         for cell in cells:
@@ -142,15 +181,16 @@ def simulate(mode, clades, cells, paths, node_regime, depth, n_genes, root_expr,
             regime = node_regime[cell]
                 
             if regime == test_regime:
-                plot.append((x, y, "OU"))
+                plot.append((x, y, "h1"))
             else:
-                plot.append((x, y, "BM"))
+                plot.append((x, y, "h0"))
         
         plots.append(plot)
 
     return plots, read_counts
 
-def plot(mode, plots, n_genes, output_dir, label):
+
+def plot(plots, n_genes, output_dir, label):
     cols = math.ceil(math.sqrt(n_genes))
     rows = math.ceil(n_genes / cols)
 
@@ -165,22 +205,23 @@ def plot(mode, plots, n_genes, output_dir, label):
     for gene, plot in enumerate(plots):
         ax = axes_flat[gene]
         for l in set(plot):
-            if l[2] == "BM":
+            if l[2] == "h0":
                 ax.plot(l[0], l[1], color="black", marker="o", markersize=0.1, linewidth=0.1)
             else:
                 ax.plot(l[0], l[1], "ro-", markersize=0.1, linewidth=0.5)
-        ax.set_title(f"{mode} gene {gene+1}")
+        ax.set_title(f"gene {gene+1}")
 
     # Hide unused axes (if any)
     for ax in axes_flat[n_genes:]:
         ax.set_visible(False)
 
     plt.tight_layout(pad=0.5)
-    plt.savefig(f"{output_dir}/sim_{mode}_{label}.png", dpi=300, bbox_inches="tight")
+    plt.savefig(f"{output_dir}/sim_{label}.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-def write_read_counts(mode, read_counts, cells, n_genes, output_dir, label):
-    with open(f"{output_dir}/readcounts_{mode}_{label}.tsv", 'w') as f:
+
+def write_read_counts(read_counts, cells, n_genes, output_dir, label):
+    with open(f"{output_dir}/readcounts_{label}.tsv", 'w') as f:
         for i in range(1, n_genes + 1):
             f.write("\t" + str(i))
         f.write("\n")
@@ -197,12 +238,10 @@ def run_stochas_sim():
     parser.add_argument("--regime", type=str, required=True, help="File path of input regime")
     parser.add_argument("--test", type=str, required=True, help="Regime for testing (OU)")
     parser.add_argument("--root", type=int, required=True, help="Starting expression at the root")
-    parser.add_argument("--mode", type=str, default="BM,OU", help="Mode for simulation: BM or OU or BM,OU")
     parser.add_argument("--n_genes", type=int, default=100, help="Number of genes to simulate")
-    parser.add_argument("--BM_sigma2", type=float, default=5.0, help="Variance for BM")
+    parser.add_argument("--sigma2", type=float, required=True, help="Variance for BM or OU")
     parser.add_argument("--optim", type=int, default=None, help="Optimal expression for OU")
-    parser.add_argument("--alpha", type=float, default=5.0, help="Selective strength for OU")
-    parser.add_argument("--OU_sigma2", type=float, default=10.0, help="Variance for OU")
+    parser.add_argument("--alpha", type=float, required=True, help="Selective strength for OU")
     parser.add_argument("--out", type=str, default=".", help="Output directory")
     parser.add_argument("--label", type=str, default="", help="Label for output")
     args = parser.parse_args()
@@ -211,17 +250,10 @@ def run_stochas_sim():
     clades, cells, paths, node_regime, depth = read_tree(args.tree, args.regime)
 
     # simulate gene expression
-    if "BM" in args.mode:
-        plots, read_counts = simulate("BM", clades, cells, paths, node_regime, depth, 
-                                    args.n_genes, args.root, args.test, BM_sigma2=args.BM_sigma2)
-        plot("BM", plots, args.n_genes, args.out, args.label)
-        write_read_counts("BM", read_counts, cells, args.n_genes, args.out, args.label)
-
-    if "OU" in args.mode:
-        plots, read_counts = simulate("OU", clades, cells, paths, node_regime, depth, 
-                                    args.n_genes, args.root, args.test, args.optim, args.alpha, args.OU_sigma2, args.BM_sigma2)
-        plot("OU", plots, args.n_genes, args.out, args.label)
-        write_read_counts("OU", read_counts, cells, args.n_genes, args.out, args.label)
+    plots, read_counts = simulate(clades, cells, paths, node_regime, depth, 
+                                args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma2)
+    plot(plots, args.n_genes, args.out, args.label)
+    write_read_counts(read_counts, cells, args.n_genes, args.out, args.label)
 
 
 if __name__ == "__main__":
