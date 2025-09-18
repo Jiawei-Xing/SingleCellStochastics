@@ -213,7 +213,7 @@ def clamp_latent_gene_expression_at_tips(
     
     Args:
         tree (Tree): A Biopython `Tree` object with simulated expression values.
-        method (str): Method to handle negative expressions. Options are "clamp" (set
+        method (str): Method to handle negative expressions. Options are "clamp" (set to zero) or "softplus" (apply softplus transformation). Default is "clamp".
         
     Returns:
         None
@@ -245,7 +245,33 @@ def get_poisson_sampled_read_counts(
 
 
 # simulate gene expression by BM or OU
-def simulate(tree, n_genes, root_expr, test_regime, optim=None, alpha=None, sigma2=None):
+def simulate(
+    tree: Phylo.BaseTree.Tree,
+    n_genes: int,
+    root_expr: float,
+    test_regime: str,
+    optim: float = None,
+    alpha: float = None,
+    sigma2: float = None
+) -> tuple[list[str], dict[int, dict[str, int]]]:
+    """
+    Simulate gene expression data for multiple genes along a phylogenetic tree.
+    
+    Args:
+        tree (Tree): A Biopython `Tree` object with assigned regimes.
+        n_genes (int): Number of genes to simulate.
+        root_expr (float): Expression value at the root node.
+        test_regime (str): Regime label for which to apply the test OU process.
+        optim (float, optional): Optimal expression value (theta) for the OU process.
+        alpha (float, optional): Selective strength parameter for the OU process.
+        sigma2 (float, optional): Variance parameter for the OU/BM process.
+        
+    Returns:
+        tuple: A tuple containing:
+            - cells (list): List of cell (tip) names.
+            - read_counts (dict): A dictionary where keys are gene indices and values are dictionaries
+                mapping cell names to read counts.
+    """
     read_counts = {}
     plots = []
     for i in range(n_genes):
@@ -324,7 +350,30 @@ def simulate(tree, n_genes, root_expr, test_regime, optim=None, alpha=None, sigm
 #     plt.close(fig)
 
 
-def write_read_counts(read_counts, cells, n_genes, output_dir, label):
+def write_read_counts(
+    read_counts: dict[int, dict[str, int]],
+    cells: list[str],
+    n_genes: int,
+    output_dir: str,
+    label: str
+) -> None:
+    """
+    Writes read count data for multiple cells and genes to a TSV file.
+
+    The output file will have a header row with gene indices and each subsequent row will contain
+    the cell identifier followed by the read counts for each gene.
+
+    Args:
+        read_counts (dict): A dictionary where keys are gene indices (int) and values are dictionaries
+            mapping cell identifiers to read counts (int).
+        cells (iterable): An iterable of cell identifiers to include in the output.
+        n_genes (int): The number of genes (columns) to write for each cell.
+        output_dir (str): The directory where the output file will be saved.
+        label (str): A label to include in the output filename.
+
+    Output:
+        Creates a TSV file named 'readcounts_{label}.tsv' in the specified output directory.
+    """
     with open(f"{output_dir}/readcounts_{label}.tsv", 'w') as f:
         # Write header for all gene names
         f.write("\t" + "\t".join(str(i) for i in range(1, n_genes + 1)) + "\n")
