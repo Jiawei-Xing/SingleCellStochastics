@@ -10,7 +10,7 @@ def ou_neg_log_lik_numpy(
     params, mode, expr_list, diverge_list, share_list, epochs_list, beta_list
 ):
     """
-    Compute two times negative log likelihood of OU along tree adapted from EvoGeneX.
+    Compute negative log likelihood of OU along tree adapted from EvoGeneX.
     Use expression data directly as the OU output.
     Assume the same OU parameters for all trees and average likelihoods with log-sum-exp trick.
 
@@ -61,7 +61,7 @@ def ou_neg_log_lik_numpy(
         log_det = np.linalg.slogdet(V_reg)[1]  # log det V
         exp = (diff @ np.linalg.solve(V_reg, diff)).item()  # diff @ V^-1 @ diff
         loss = log_det + exp / sigma2 + n_cells * np.log(sigma2)  # -2 * log likelihood
-        loss_list.append(loss)
+        loss_list.append(loss/2)
 
     loss_list = np.array(loss_list)
     average_L = logsumexp(loss_list) - np.log(n_trees)
@@ -141,4 +141,4 @@ def ou_neg_log_lik_torch(
         + n_cells * torch.log(sigma2).squeeze(-1).squeeze(-1)
         + (exp + tr_term) / sigma2.squeeze(-1).squeeze(-1)
     )
-    return loss  # (batch_size, N_sim)
+    return loss/2  # (batch_size, N_sim)

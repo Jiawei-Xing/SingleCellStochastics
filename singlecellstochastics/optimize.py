@@ -38,7 +38,7 @@ def ou_optimize_scipy(
             ou_neg_log_lik_numpy,
             params_init,
             args=(mode, expr, diverge_list, share_list, epochs_list, beta_list),
-            bounds=[(1e-6, None)] * len(params_init),
+            bounds=[(1e-6, None)] * 2 + [(None, None)] * (len(params_init)-2),
             method="L-BFGS-B",
         )
         return i, j, res.x

@@ -24,7 +24,7 @@ def Lq_neg_log_lik_torch(
     s2 = Lq_params[:, :, n_cells:]**2 + 1e-6  # (batch_size, N_sim, n_cells)
 
     # OU -log lik
-    term1 = 0.5 * ou_neg_log_lik_torch(
+    term1 = ou_neg_log_lik_torch(
         ou_params, s2, mode, m, diverge, share, epochs, beta, device=device
     )  # (batch_size, N_sim)
 
