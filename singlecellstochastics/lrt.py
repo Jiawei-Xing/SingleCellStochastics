@@ -1,10 +1,11 @@
 
 import argparse
 import torch
+import scipy.stats
 
 from .tree_utils import read_tree, assign_nodes_to_regimes_from_file, assign_nodes_to_null_regimes, add_read_counts_to_tips
 from .input_output import load_read_count_tsv
-from .ornstein_uhlenbeck import ou_neg_log_likelihood
+from .optimization import adam_optimize_ou_parameters
 
 
 def run_lrt():
@@ -32,6 +33,7 @@ def run_lrt():
     read_count_data = load_read_count_tsv(args.expression_data)
     
     for gene in read_count_data.keys():
+        print(f"\nProcessing gene {gene}")
         add_read_counts_to_tips(null_tree, read_count_data[gene])
         add_read_counts_to_tips(alt_tree, read_count_data[gene])
         
@@ -40,14 +42,29 @@ def run_lrt():
         sigma2_init = torch.tensor(1.0, dtype=torch.float32)
         theta_dict_init = {"0": torch.tensor(2.0, dtype=torch.float32), "1": torch.tensor(5.0, dtype=torch.float32)} # Test example initialization, should be based on regimes in the data
         
+        theta_dict_init_null = {k: v.clone() for k, v in theta_dict_init.items() if k == args.null_regime}
+        
         # Fit null model
-        null_neg_log_lik = ou_neg_log_likelihood(null_tree, alpha_init, sigma2_init, theta_dict_init, root_expression)
+        print("\nFitting null model...")
+        null_optimal_negll, null_optimal_alpha, null_optima_sigma2, null_optimal_theta_dict = adam_optimize_ou_parameters(null_tree, alpha_init, sigma2_init, theta_dict_init_null, root_expression)
+        print(f"Gene {gene}: Null NLL = {null_optimal_negll.item()}")
+        print(f"\tNull optimal alpha: {null_optimal_alpha.item()}")
+        print(f"\tNull optimal sigma^2: {null_optima_sigma2.item()}")
+        print(f"\tNull optimal theta dict: { {k: v.item() for k, v in null_optimal_theta_dict.items()} }")
         
         # Fit alt model
-        alt_neg_log_lik = ou_neg_log_likelihood(alt_tree, alpha_init, sigma2_init, theta_dict_init, root_expression)
+        print("\nFitting alternative model...")
+        alt_optimal_negll, alt_optimal_alpha, alt_optima_sigma2, alt_optimal_theta_dict = adam_optimize_ou_parameters(alt_tree, alpha_init, sigma2_init, theta_dict_init, root_expression)
+        print(f"Gene {gene}: Alt NLL = {alt_optimal_negll.item()}")
+        print(f"\tAlt optimal alpha: {alt_optimal_alpha.item()}")
+        print(f"\tAlt optimal sigma^2: {alt_optima_sigma2.item()}")
+        print(f"\tAlt optimal theta dict: { {k: v.item() for k, v in alt_optimal_theta_dict.items()} }")
         
-        # Check results for testing
-        print(f"Gene {gene}: Null NLL = {null_neg_log_lik}, Alt NLL = {alt_neg_log_lik}")
+        # Compute LRT statistic
+        lrt_statistic = 2 * (null_optimal_negll - alt_optimal_negll).item()
+        p_value = scipy.stats.chi2.sf(lrt_statistic, df=1)
+        print(f"\tLRT statistic = {lrt_statistic}")
+        print(f"\tp-value = {p_value}")
     
     
     

@@ -115,10 +115,10 @@ def compute_ou_mean_with_regimes(
 
 def ou_neg_log_likelihood(
     tree: Phylo.BaseTree.Tree,
-    alpha: float,
-    sigma2: float,
-    theta_dict: Dict[str, float],
-    root_expression: float
+    alpha: torch.Tensor,
+    sigma2: torch,
+    theta_dict: Dict[str, torch.Tensor],
+    root_expression: torch.Tensor,
 ) -> float:
     """
     Compute the log-likelihood of an OU process on a phylogenetic tree
