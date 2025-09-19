@@ -1,242 +1,52 @@
-import numpy as np
-import torch
-import pickle
-import os
 
-from .optimize import ou_optimize_scipy, ou_optimize_torch, Lq_optimize_torch
-from .em import run_em
+import argparse
 
-# likelihood ratio test
-def likelihood_ratio_test(
-    x_original,
-    n_regimes,
-    diverge_list,
-    share_list,
-    epochs_list,
-    beta_list,
-    diverge_list_torch,
-    share_list_torch,
-    epochs_list_torch,
-    beta_list_torch,
-    gene_names,
-    device,
-    max_iter,
-    learning_rate,
-    wandb_flag,
-    window,
-    tol,
-    approx, 
-    em_iter
-):
-    """
-    Hypothesis testing for lineage-specific gene expression change.
+from .tree_utils import read_tree, assign_nodes_to_regimes_from_file, assign_nodes_to_null_regimes, add_read_counts_to_tips
+from .input_output import load_read_count_tsv
+from .ornstein_uhlenbeck import ou_neg_log_likelihood
 
-    x_original: (batch_size, N_sim, n_cells) numpy array
-    diverge_list, share_list, epochs_list, beta_list: list of numpy arrays
-    diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: list of tensors
-    gene_names: list of gene names
-    cache_dir: directory to save the cached init OU parameters
-    window: number of iterations to check convergence
-    tol: convergence tolerance
-    approx: approximation method
-    em_iter: number of EM iterations
-    Returns: (batch_size, N_sim) numpy array of params and losses
-    """
-    x_pseudo = [
-        np.maximum(x, 1e-6) for x in x_original
-    ]  # add small value to avoid log(0)
-    m_init = [
-        np.log(np.expm1(x)) if approx != "exp" 
-        else np.log(x) 
-        for x in x_pseudo
-    ] # reverse read counts as Gaussian mean z
 
-    # use the first gene as the example gene
-    m_first = [
-        m[0:1, 0:1, :] for m in m_init
-    ] # (n_cells,)
-
-    # init OU parameters with one example gene
-    ou_params_init = np.ones((n_regimes + 2))  # shape: (n_regimes+2)
-    ou_params_init_h0 = ou_optimize_scipy(
-        ou_params_init,
-        1,
-        m_first,
-        diverge_list,
-        share_list,
-        epochs_list,
-        beta_list,
-        device=device,
-    )  # (1, 1, n_regimes+2)
+def run_lrt():
     
-    # root square of alpha and sigma2
-    ou_params_init_h0_sqrt = torch.cat([
-        ou_params_init_h0[:, :, :2].sqrt(), 
-        ou_params_init_h0[:, :, 2:]
-    ], dim=-1)
-
-    # optimize OU for null model
-    m_init_tensor = [
-        torch.tensor(m, dtype=torch.float32, device=device) for m in m_init
-    ]  # list of (batch_size, N_sim, n_cells)
+    parser = argparse.ArgumentParser("Stochastic simulation of gene expression evolution along lineage")
+    parser.add_argument("--tree", type=str, required=True, help="File path of input tree")
+    parser.add_argument("--regime", type=str, required=True, help="File path of input regime")
+    parser.add_argument("--expression_data", type=str, required=True, help="File path of input TSV expression data in cells x genes format")
+    parser.add_argument("--root_expression", type=int, default=2, help="Starting expression at the root")
+    parser.add_argument("--null_regime", type=str, default="0", help="Regime label for all nodes under the null hypothesis")
+    parser.add_argument("--out", type=str, default="examples/input_data", help="Output directory")
+    args = parser.parse_args()
     
-    # Expand params_init to match batch size
-    batch_size, N_sim, _ = m_init_tensor[0].shape
-    ou_params_init_h0_sqrt = ou_params_init_h0_sqrt.expand(batch_size, N_sim, -1)
+    # Read in the null hypothesis tree without regimes
+    null_tree = read_tree(args.tree)
+    assign_nodes_to_null_regimes(null_tree, null_regime=args.null_regime)
 
-    ou_params_h0, ou_loss_h0 = ou_optimize_torch(
-        ou_params_init_h0_sqrt,
-        1,
-        m_init_tensor,
-        diverge_list_torch,
-        share_list_torch,
-        epochs_list_torch,
-        beta_list_torch,
-        device=device,
-        max_iter=max_iter,
-        learning_rate=learning_rate,
-        wandb_flag=wandb_flag,
-        gene_names=gene_names,
-        window=window,
-        tol=tol
-    )
-
-    # init Lq with expression data
-    pois_params_init = [
-        torch.cat((m, torch.ones_like(m, device=device)), dim=2) for m in m_init_tensor
-    ]  # list of (batch_size, N_sim, 2*n_cells)
-
-    init_params = pois_params_init + [ou_params_h0]  # list of (batch_size, N_sim, param_dim)
-
-    x_original_tensor = [
-        torch.tensor(x, dtype=torch.float32, device=device) for x in x_original
-    ]  # list of (batch_size, N_sim, n_cells)
-
-    # optimize Lq for null model
-    if em_iter == 0: # optimize all params
-        h0_params, h0_loss = Lq_optimize_torch(
-            init_params,
-            1,
-            x_original_tensor,
-            gene_names,
-            diverge_list_torch,
-            share_list_torch,
-            epochs_list_torch,
-            beta_list_torch,
-            max_iter=max_iter,
-            learning_rate=learning_rate,
-            device=device,
-            wandb_flag=wandb_flag,
-            window=window,
-            tol=tol,
-            approx=approx,
-            em=None
-        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
-    else: # EM
-        h0_params, h0_loss = run_em(
-            init_params,
-            1,
-            x_original_tensor,
-            gene_names,
-            diverge_list_torch,
-            share_list_torch,
-            epochs_list_torch,
-            beta_list_torch,
-            max_iter=max_iter,
-            learning_rate=learning_rate,
-            device=device,
-            wandb_flag=wandb_flag,
-            window=window,
-            tol=tol,
-            approx=approx,
-            em_iter=em_iter
-        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
-
-    # init OU parameters with one example gene
-    ou_params_init_h1 = ou_optimize_scipy(
-        ou_params_init,
-        2,
-        m_first,
-        diverge_list,
-        share_list,
-        epochs_list,
-        beta_list,
-        device=device,
-    )  # (1, 1, n_regimes+2)
+    # Read in the alternative hypothesis tree with regimes
+    alt_tree = read_tree(args.tree)
+    assign_nodes_to_regimes_from_file(alt_tree, args.regime)
     
-    # root square of alpha and sigma2
-    ou_params_init_h1_sqrt = torch.cat([
-        ou_params_init_h1[:, :, :2].sqrt(), 
-        ou_params_init_h1[:, :, 2:]
-    ], dim=-1)
+    read_count_data = load_read_count_tsv(args.expression_data)
+    print(read_count_data)
     
-    # Expand params_init to match batch size
-    ou_params_init_h1_sqrt = ou_params_init_h1_sqrt.expand(batch_size, N_sim, -1)
-
-    # optimize OU for alternative model
-    ou_params_h1, ou_loss_h1 = ou_optimize_torch(
-        ou_params_init_h1_sqrt,
-        2,
-        m_init_tensor,
-        diverge_list_torch,
-        share_list_torch,
-        epochs_list_torch,
-        beta_list_torch,
-        device=device,
-        max_iter=max_iter,
-        learning_rate=learning_rate,
-        wandb_flag=wandb_flag,
-        gene_names=gene_names,
-        window=window,
-        tol=tol
-    )
-
-    # optimize Lq for alternative model
-    init_params = pois_params_init + [ou_params_h1]  # list of (batch_size, N_sim, param_dim)
-
-    if em_iter == 0: # optimize all params
-        h1_params, h1_loss = Lq_optimize_torch(
-            init_params,
-            2,
-            x_original_tensor,
-            gene_names,
-            diverge_list_torch,
-            share_list_torch,
-            epochs_list_torch,
-            beta_list_torch,
-            max_iter=max_iter,
-            learning_rate=learning_rate,
-            device=device,
-            wandb_flag=wandb_flag,
-            window=window,
-            tol=tol,
-            approx=approx,
-            em=None
-        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
-    else: # EM
-        h1_params, h1_loss = run_em(
-            init_params,
-            2,
-            x_original_tensor,
-            gene_names,
-            diverge_list_torch,
-            share_list_torch,
-            epochs_list_torch,
-            beta_list_torch,
-            max_iter=max_iter,
-            learning_rate=learning_rate,
-            device=device,
-            wandb_flag=wandb_flag,
-            window=window,
-            tol=tol,
-            approx=approx,
-            em_iter=em_iter
-        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
-
-    return h0_params, h0_loss, h1_params, h1_loss, \
-        ou_params_h0.clone().detach().cpu().numpy(), \
-        ou_loss_h0.clone().detach().cpu().numpy(), \
-        ou_params_h1.clone().detach().cpu().numpy(), \
-        ou_loss_h1.clone().detach().cpu().numpy()
-
+    for gene in read_count_data.keys():
+        add_read_counts_to_tips(null_tree, read_count_data[gene])
+        add_read_counts_to_tips(alt_tree, read_count_data[gene])
+        
+        # Decide how to initialize parameters
+        alpha_init = 1.0
+        sigma2_init = 1.0
+        theta_dict_init = {"0": 2.0, "1": 5.0}  # Test example initialization, should be based on regimes in the data
+        
+        # Fit null model
+        null_neg_log_lik = ou_neg_log_likelihood(null_tree, alpha_init, sigma2_init, theta_dict_init, args.root_expression)
+        
+        # Fit alt model
+        alt_neg_log_lik = ou_neg_log_likelihood(alt_tree, alpha_init, sigma2_init, theta_dict_init, args.root_expression)
+        
+        # Check results for testing
+        print(f"Gene {gene}: Null NLL = {null_neg_log_lik}, Alt NLL = {alt_neg_log_lik}")
+    
+    
+    
+    
     

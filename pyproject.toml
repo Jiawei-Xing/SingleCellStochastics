@@ -33,7 +33,7 @@ license = {text = "MIT"}
 "Homepage" = "https://github.com/Jiawei-Xing/SingleCellStochastics"
 
 [project.scripts]
-run-ou-poisson = "singlecellstochastics.oup:run_ou_poisson"
+run-oup-lrt = "singlecellstochastics.lrt:run_lrt"
 run-stochas-sim = "singlecellstochastics.stochas_sim:run_stochas_sim"
 run-dea = "singlecellstochastics.dea:run_dea"
 compare-results = "singlecellstochastics.results:compare_results"
