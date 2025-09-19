@@ -165,19 +165,25 @@ def oup_neg_log_likelihood(
         std_q = torch.exp(variational_log_stds)
         q = Normal(variational_means, std_q)
 
-        # Calculate E_q[log p(y|X)] by either monte carlo or taylor expansion
-        expected_log_p_y, X_samples = expected_log_poisson_mc(q, y_t)
+        # Calculate E_q[log p(y|z)] for the transformation/poisson contribution using z samples from q(z)
+        log_p_y = expected_log_poisson_mc(q, y_t, transformation=transformation)
+        
+        # Calculate E_q[log p(X)] for the OU contribution in closed form
+        n_tips = len(y_t)
+        log_2pi = torch.log(torch.tensor(2.0 * torch.pi, dtype=cov.dtype, device=cov.device))
+        log_det_cov = torch.logdet(cov)
+        diff = variational_means - mean
+        Sigma_ou_inv = torch.linalg.inv(cov)
+        trace_term = torch.sum(std_q**2 * torch.diagonal(Sigma_ou_inv))
+        quad_term = diff @ Sigma_ou_inv @ diff
+        log_p_z = -0.5 * (n_tips * log_2pi + log_det_cov + trace_term + quad_term)
 
-        # E_q[log p(X)] where p(X) is OU prior
-        log_p_x = mvn.log_prob(X_samples).mean()
+        # Compute E_q[log q(z)] for entropy of variational distribution in closed form
+        log_q_z = q.entropy().sum()
 
-        # Compute KL ≈ E_q[log q(X) - log p(X)]
-        log_q_x = q.log_prob(X_samples).sum(dim=-1).mean()
-        kl = log_q_x - log_p_x
-
-        elbo = expected_log_p_y - kl   # same as expected_log_p_y - KL
+        elbo = log_p_y + log_p_z - log_q_z  
         neg_log_lik = -elbo
-    else:   
+    else:
         ou_log_lik = mvn.log_prob(y_t)
         neg_log_lik = -ou_log_lik
         
