@@ -4,13 +4,13 @@ from typing import Dict
 import torch
 from Bio import Phylo
 
-from .ornstein_uhlenbeck import ou_neg_log_likelihood
+from .ornstein_uhlenbeck import oup_neg_log_likelihood
 
 
 def adam_optimize_ou_parameters(
     tree: Phylo.BaseTree.Tree,
     alpha_init: torch.Tensor,
-    sigma2_init: torch.Tensor,
+    sigma_init: torch.Tensor,
     theta_dict_init:  Dict[str, torch.Tensor],
     root_expression: torch.Tensor,
 ) -> float:
@@ -29,11 +29,11 @@ def adam_optimize_ou_parameters(
     """
     # Set requires_grad=True for optimization
     alpha = alpha_init.detach().clone().requires_grad_(True)
-    sigma2 = sigma2_init.detach().clone().requires_grad_(True)
+    sigma = sigma_init.detach().clone().requires_grad_(True)
     theta_dict = {regime: theta.detach().clone().requires_grad_(True) for regime, theta in theta_dict_init.items()}
     
     # Use Adam optimizer
-    optimizer = torch.optim.Adam([alpha, sigma2] + list(theta_dict.values()), lr=0.01)
+    optimizer = torch.optim.Adam([alpha, sigma] + list(theta_dict.values()), lr=0.01)
     
     # Convergence criteria
     max_not_improved_steps = 100  # Number of steps without improvement to allow
@@ -49,7 +49,7 @@ def adam_optimize_ou_parameters(
     step = 1
     while True:
         optimizer.zero_grad()
-        neg_log_lik = ou_neg_log_likelihood(tree, alpha, sigma2, theta_dict, root_expression)
+        neg_log_lik = oup_neg_log_likelihood(tree, alpha, sigma, theta_dict, root_expression)
         neg_log_lik.backward()
         optimizer.step()
 
@@ -57,7 +57,7 @@ def adam_optimize_ou_parameters(
 
         # Print progress
         if step == 1 or step % print_freq == 0:
-            print(f"Step {step}, Negative Log-Likelihood: {cur_negll}, alpha: {alpha.item()}, sigma2: {sigma2.item()}, thetas: {[theta.item() for theta in theta_dict.values()]}")
+            print(f"Step {step}, Negative Log-Likelihood: {cur_negll}, alpha: {alpha.item()}, sigma: {sigma.item()}, thetas: {[theta.item() for theta in theta_dict.values()]}")
 
         # Check for improvement
         if prev_negll and abs(cur_negll) - abs(prev_negll) < convergence:
@@ -75,7 +75,7 @@ def adam_optimize_ou_parameters(
     end_time = time.time()
     print(f"Optimization completed in {end_time - start_time:.2f} seconds over {step} steps.")
     
-    optimal_neg_log_lik = ou_neg_log_likelihood(tree, alpha, sigma2, theta_dict, root_expression)
+    optimal_neg_log_lik = ou_neg_log_likelihood(tree, alpha, sigma, theta_dict, root_expression)
     
-    return optimal_neg_log_lik, alpha.detach(), sigma2.detach(), {regime: theta.detach() for regime, theta in theta_dict.items()}
+    return optimal_neg_log_lik, alpha.detach(), sigma.detach(), {regime: theta.detach() for regime, theta in theta_dict.items()}
     

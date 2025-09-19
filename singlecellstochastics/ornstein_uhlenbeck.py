@@ -5,7 +5,8 @@ from scipy.stats import multivariate_normal
 from Bio import Phylo
 from typing import Dict, List, Tuple
 import torch
-from torch.distributions import MultivariateNormal
+from torch.distributions import MultivariateNormal, Poisson
+import torch.nn.functional as F
 
 from .tree_utils import collect_tip_data
 
@@ -107,12 +108,14 @@ def compute_ou_mean_with_regimes(
     return tip_values
 
 
-def ou_neg_log_likelihood(
+def oup_neg_log_likelihood(
     tree: Phylo.BaseTree.Tree,
     alpha: torch.Tensor,
-    sigma2: torch,
+    sigma: torch,
     theta_dict: Dict[str, torch.Tensor],
     root_expression: torch.Tensor,
+    transformation: str = "softplus",
+    poisson_logl_mode: str = "deterministic",
 ) -> float:
     """
     Compute the log-likelihood of an OU process on a phylogenetic tree
@@ -121,9 +124,11 @@ def ou_neg_log_likelihood(
     Args:
         tree (Tree): A Biopython `Tree` object with assigned regimes and tip read_counts.
         alpha (float): Selective strength parameter for the OU process.
-        sigma2 (float): Variance parameter for the OU process.
+        sigma (float): Sigma standard deviation parameter for the OU process.
         theta_dict (dict): A dictionary mapping regime labels to optimal expression values (theta).
         root_expression (float): Expression value at the root node.
+        transformation (str): Transformation to apply to mean before Poisson, either "softplus" or "exp".
+        poisson_sampling_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
 
     Returns:
         log_lik: Log-likelihood of observed tip read_counts.
@@ -131,6 +136,9 @@ def ou_neg_log_likelihood(
     # Extract tip data
     tip_names, y, dist_to_root = collect_tip_data(tree)
     y_t = torch.tensor(y, dtype=torch.float32)
+    
+    # Square sigma to get sigma^2 (this prevents negative values when optimizing over sigma^2 directly)
+    sigma2 = sigma ** 2
 
     # Compute covariance matrix
     cov = compute_ou_covariance(tree, dist_to_root, alpha, sigma2)
@@ -140,8 +148,33 @@ def ou_neg_log_likelihood(
 
     # Multivariate normal log-likelihood
     mvn = MultivariateNormal(loc=mean, covariance_matrix=cov)
-    log_lik = mvn.log_prob(y_t)
-    neg_log_lik = -log_lik
+    ou_log_lik = mvn.log_prob(y_t)
+    neg_log_lik = -ou_log_lik
+    
+    # Add softplus and poisson to log-likelihood
+    def transform(mean, transformation):
+        if transformation == "exp":
+            return torch.exp(mean)
+        elif transformation == "softplus":
+            return F.softplus(mean)
+        else:
+            raise ValueError("transformation must be either 'exp' or 'softplus'")
+    
+    # Directly use OU expected means as latent expression values
+    if poisson_logl_mode == "deterministic":
+        lambda_tip = transform(mean, transformation)    
+        poisson_log_lik = Poisson(rate=lambda_tip).log_prob(y_t).sum()
+        neg_log_lik = neg_log_lik - poisson_log_lik
+    # Stochastically sample latent expression values from OU distribution at tips and average trasformation/poisson over samples
+    elif poisson_logl_mode == "stochastic":
+        n_samples = 1000
+        X_samples = mvn.rsample((n_samples,))
+        lambda_s = transform(X_samples, transformation)
+        poisson_log_lik_per_sample = Poisson(rate=lambda_s).log_prob(y_t).sum(dim=-1)
+        mean_poisson_log_lik = poisson_log_lik_per_sample.mean()
+        neg_log_lik = -mean_poisson_log_lik
+    elif poisson_logl_mode == "variational":
+        ValueError("Variational mode not implemented yet")
     
     return neg_log_lik
 
