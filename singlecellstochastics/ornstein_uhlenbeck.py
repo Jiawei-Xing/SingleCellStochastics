@@ -3,6 +3,8 @@ import numpy as np
 from scipy.stats import multivariate_normal
 from Bio import Phylo
 from typing import Dict, List, Tuple
+import torch
+from torch.distributions import MultivariateNormal
 
 from .tree_utils import collect_tip_data
 
@@ -36,75 +38,79 @@ def get_ou_expr_one_branch(
 def compute_ou_covariance(
     tree: Phylo.BaseTree.Tree,
     dist_to_root: Dict[str, float],
-    alpha: float,
-    sigma2: float
-) -> np.ndarray:
+    alpha: torch.Tensor,
+    sigma2: torch.Tensor,
+) -> torch.Tensor:
     """
-    Compute the OU covariance matrix among tips.
-    
-    Args:
-        tree (Tree): A Biopython `Tree` object.
-        dist_to_root (dict): A dictionary mapping tip names to their distances from the root.
-        alpha (float): Selective strength parameter for the OU process.
-        sigma2 (float): Variance parameter for the OU process.
+    Compute the OU covariance matrix among tips in a tree.
 
+    Args:
+        tree: Biopython Tree object.
+        dist_to_root: dict mapping tip names to their distances from the root.
+        alpha: torch scalar (requires_grad=True)
+        sigma2: torch scalar (requires_grad=True)
+    
     Returns:
-        cov: n x n covariance matrix
+        cov: torch.Tensor of shape (n_tips, n_tips)
     """
     tips = tree.get_terminals()
     tip_names = [tip.name for tip in tips]
     n = len(tips)
-    cov = np.zeros((n, n))
+    
+    cov_matrix = torch.zeros((n, n), dtype=alpha.dtype, device=alpha.device)
+
     for i in range(n):
         for j in range(n):
+            t_i = torch.tensor(dist_to_root[tip_names[i]], dtype=torch.float32)
+            t_j = torch.tensor(dist_to_root[tip_names[j]], dtype=torch.float32)
+
             if i == j:
-                cov[i, j] = (sigma2/(2*alpha)) * (1 - np.exp(-2*alpha*dist_to_root[tip_names[i]]))
+                cov_matrix[i, j] = (sigma2 / (2.0 * alpha)) * (1.0 - torch.exp(-2.0 * alpha * t_i))
             else:
                 mrca = tree.common_ancestor(tips[i], tips[j])
-                t_mrca = tree.distance(tree.root, mrca)
-                cov[i, j] = (sigma2/(2*alpha)) * np.exp(
-                    -alpha * (
-                        dist_to_root[tip_names[i]]
-                        + dist_to_root[tip_names[j]]
-                        - (2 * t_mrca)
-                    )
-                ) * (1 - np.exp(-2*alpha*t_mrca))
-    return cov
+                t_mrca = torch.tensor(tree.distance(tree.root, mrca), dtype=alpha.dtype, device=alpha.device)
+                cov_matrix[i, j] = (sigma2 / (2.0 * alpha)) * torch.exp(
+                    -alpha * (t_i + t_j - 2.0 * t_mrca)
+                ) * (1.0 - torch.exp(-2.0 * alpha * t_mrca))
+    
+    return cov_matrix
 
 
 def compute_ou_mean_with_regimes(
     tree: Phylo.BaseTree.Tree, 
-    alpha: float, 
-    root_expression: float, 
-    theta_dict: Dict[str, float],
-) -> np.ndarray:
+    alpha: torch.Tensor, 
+    root_expression: torch.Tensor, 
+    theta_dict: Dict[str, torch.Tensor],
+) -> torch.Tensor:
     """
     Compute mean tip values accounting for regime changes along each path
     from the root to that tip.
-    
+
     Args:
-        tree (Tree): A Biopython `Tree` object with assigned regimes.
-        alpha (float): Selective strength parameter for the OU process.
-        root_expression (float): Expression value at the root node.
-        theta_dict (dict): A dictionary mapping regime labels to optimal expression values (theta).
+        tree: Biopython Tree with .regime assigned to clades
+        alpha: torch scalar (requires_grad=True)
+        root_expression: torch scalar (requires_grad=True)
+        theta_dict: dict mapping regime names to torch scalars (requires_grad=True)
         
     Returns:
-        mean: Array of mean expression values at the tips.
+        mean: torch tensor of mean expressions at tips (shape: n_tips,)
     """
     tips = tree.get_terminals()
-    mean = {}
+    mean_values = []
+
     for tip in tips:
         path = tree.get_path(tip)  # list of clades from root (excluding root)
         mu = root_expression
         prev = tree.root
         for node in path:
-            t = prev.branch_length if prev.branch_length else 0.0
+            t = torch.tensor(prev.branch_length if prev.branch_length else 0.0, dtype=torch.float32)
             regime = getattr(node, "regime")
             theta = theta_dict[regime]
-            mu = theta + (mu - theta) * np.exp(-alpha * t)
+            mu = theta + (mu - theta) * torch.exp(-alpha * t)
             prev = node
-        mean[tip.name] = mu
-    return np.array([mean[tip.name] for tip in tips])
+        mean_values.append(mu)
+    
+    return torch.stack(mean_values)  # shape (n_tips,)
 
 
 def ou_neg_log_likelihood(
@@ -130,6 +136,7 @@ def ou_neg_log_likelihood(
     """
     # Extract tip data
     tip_names, y, dist_to_root = collect_tip_data(tree)
+    y_t = torch.tensor(y, dtype=torch.float32)
 
     # Compute covariance matrix
     cov = compute_ou_covariance(tree, dist_to_root, alpha, sigma2)
@@ -138,7 +145,12 @@ def ou_neg_log_likelihood(
     mean = compute_ou_mean_with_regimes(tree, alpha, root_expression, theta_dict)
 
     # Multivariate normal log-likelihood
-    log_lik = float(multivariate_normal.logpdf(y, mean=mean, cov=cov, allow_singular=False))
+    mvn = MultivariateNormal(loc=mean, covariance_matrix=cov)
+    log_lik = mvn.log_prob(y_t)
     neg_log_lik = -log_lik
     
     return neg_log_lik
+
+
+
+
