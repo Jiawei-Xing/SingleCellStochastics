@@ -56,7 +56,7 @@ def adam_optimize_ou_parameters(
         params = [alpha, sigma] + list(theta_dict.values())
     
     # Use Adam optimizer
-    optimizer = torch.optim.Adam(params, lr=0.01)
+    optimizer = torch.optim.Adam(params, lr=0.001)
     
     # Print initial state
     initial_neg_log_lik = oup_neg_log_likelihood(tree, 
