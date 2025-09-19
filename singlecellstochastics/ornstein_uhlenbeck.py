@@ -9,6 +9,7 @@ from torch.distributions import MultivariateNormal, Poisson
 import torch.nn.functional as F
 
 from .tree_utils import collect_tip_data
+from .transform import transform_latent_expression_values
 
 def get_ou_expr_one_branch(
     parent_expr: float,
@@ -152,24 +153,18 @@ def oup_neg_log_likelihood(
     neg_log_lik = -ou_log_lik
     
     # Add softplus and poisson to log-likelihood
-    def transform(mean, transformation):
-        if transformation == "exp":
-            return torch.exp(mean)
-        elif transformation == "softplus":
-            return F.softplus(mean)
-        else:
-            raise ValueError("transformation must be either 'exp' or 'softplus'")
-    
     # Directly use OU expected means as latent expression values
-    if poisson_logl_mode == "deterministic":
-        lambda_tip = transform(mean, transformation)    
+    if poisson_logl_mode == "none":
+        pass
+    elif poisson_logl_mode == "deterministic":
+        lambda_tip = transform_latent_expression_values(mean, transformation)    
         poisson_log_lik = Poisson(rate=lambda_tip).log_prob(y_t).sum()
         neg_log_lik = neg_log_lik - poisson_log_lik
     # Stochastically sample latent expression values from OU distribution at tips and average trasformation/poisson over samples
     elif poisson_logl_mode == "stochastic":
         n_samples = 1000
         X_samples = mvn.rsample((n_samples,))
-        lambda_s = transform(X_samples, transformation)
+        lambda_s = transform_latent_expression_values(X_samples, transformation)
         poisson_log_lik_per_sample = Poisson(rate=lambda_s).log_prob(y_t).sum(dim=-1)
         mean_poisson_log_lik = poisson_log_lik_per_sample.mean()
         neg_log_lik = -mean_poisson_log_lik

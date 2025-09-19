@@ -9,7 +9,7 @@ from .ornstein_uhlenbeck import get_ou_expr_one_branch
 from .brownian_motion import get_bm_expr_one_branch
 from .tree_utils import read_tree, assign_nodes_to_regimes_from_file, reset_all_nodes_expr, reset_all_nodes_read_counts
 from .poisson import get_poisson_sampled_read_counts
-from .clamp import clamp_latent_gene_expression_at_tips
+from .transform import clamp_latent_gene_expression_at_tips
 from .input_output import write_read_counts
         
 

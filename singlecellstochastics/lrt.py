@@ -1,11 +1,11 @@
 
 import argparse
 import torch
-import scipy.stats
 
 from .tree_utils import read_tree, assign_nodes_to_regimes_from_file, assign_nodes_to_null_regimes, add_read_counts_to_tips
 from .input_output import load_read_count_tsv
 from .optimization import adam_optimize_ou_parameters
+from .stat_utils import calculate_lrt_and_pvalue
 
 
 def run_lrt():
@@ -47,22 +47,15 @@ def run_lrt():
         # Fit null model
         print("\nFitting null model...")
         null_optimal_negll, null_optimal_alpha, null_optima_sigma2, null_optimal_theta_dict = adam_optimize_ou_parameters(null_tree, alpha_init, sigma2_init, theta_dict_init_null, root_expression)
-        print(f"Gene {gene}: Null NLL = {null_optimal_negll.item()}")
-        print(f"\tNull optimal alpha: {null_optimal_alpha.item()}")
-        print(f"\tNull optimal sigma^2: {null_optima_sigma2.item()}")
-        print(f"\tNull optimal theta dict: { {k: v.item() for k, v in null_optimal_theta_dict.items()} }")
         
         # Fit alt model
         print("\nFitting alternative model...")
         alt_optimal_negll, alt_optimal_alpha, alt_optima_sigma2, alt_optimal_theta_dict = adam_optimize_ou_parameters(alt_tree, alpha_init, sigma2_init, theta_dict_init, root_expression)
-        print(f"Gene {gene}: Alt NLL = {alt_optimal_negll.item()}")
-        print(f"\tAlt optimal alpha: {alt_optimal_alpha.item()}")
-        print(f"\tAlt optimal sigma^2: {alt_optima_sigma2.item()}")
-        print(f"\tAlt optimal theta dict: { {k: v.item() for k, v in alt_optimal_theta_dict.items()} }")
         
         # Compute LRT statistic
-        lrt_statistic = 2 * (null_optimal_negll - alt_optimal_negll).item()
-        p_value = scipy.stats.chi2.sf(lrt_statistic, df=1)
+        null_log_lik = -null_optimal_negll.item()
+        alt_log_lik = -alt_optimal_negll.item()
+        lrt_statistic, p_value = calculate_lrt_and_pvalue(null_log_lik, alt_log_lik)
         print(f"\tLRT statistic = {lrt_statistic}")
         print(f"\tp-value = {p_value}")
     

@@ -6,6 +6,14 @@ from Bio import Phylo
 
 from .ornstein_uhlenbeck import oup_neg_log_likelihood
 
+def print_state(neg_log_lik, alpha, sigma, theta_dict):
+    """
+    Utility function to print the current state of the optimization.
+    """
+    print(f"\nFinal neg log likelihood = {neg_log_lik.item()}")
+    print(f"\tOptimal alpha: {alpha.item()}")
+    print(f"\tOptimal sigma: {sigma.item()}")
+    print(f"\tOptimal theta dict: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}\n")
 
 def adam_optimize_ou_parameters(
     tree: Phylo.BaseTree.Tree,
@@ -34,6 +42,12 @@ def adam_optimize_ou_parameters(
     
     # Use Adam optimizer
     optimizer = torch.optim.Adam([alpha, sigma] + list(theta_dict.values()), lr=0.01)
+    
+    # Print initial state
+    initial_neg_log_lik = oup_neg_log_likelihood(tree, alpha, sigma, theta_dict, root_expression)
+    print()
+    print("Initial state:")
+    print_state(initial_neg_log_lik, alpha, sigma, theta_dict)
     
     # Convergence criteria
     max_not_improved_steps = 100  # Number of steps without improvement to allow
@@ -75,7 +89,11 @@ def adam_optimize_ou_parameters(
     end_time = time.time()
     print(f"Optimization completed in {end_time - start_time:.2f} seconds over {step} steps.")
     
-    optimal_neg_log_lik = ou_neg_log_likelihood(tree, alpha, sigma, theta_dict, root_expression)
+    optimal_neg_log_lik = oup_neg_log_likelihood(tree, alpha, sigma, theta_dict, root_expression)
+    print()
+    print("Final state:")
+    print_state(optimal_neg_log_lik, alpha, sigma, theta_dict)
+    
     
     return optimal_neg_log_lik, alpha.detach(), sigma.detach(), {regime: theta.detach() for regime, theta in theta_dict.items()}
     
