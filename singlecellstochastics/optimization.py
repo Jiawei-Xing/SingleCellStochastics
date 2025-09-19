@@ -6,14 +6,16 @@ from Bio import Phylo
 
 from .ornstein_uhlenbeck import oup_neg_log_likelihood
 
+
 def print_state(neg_log_lik, alpha, sigma, theta_dict):
     """
     Utility function to print the current state of the optimization.
     """
-    print(f"\nFinal neg log likelihood = {neg_log_lik.item()}")
-    print(f"\tOptimal alpha: {alpha.item()}")
-    print(f"\tOptimal sigma: {sigma.item()}")
-    print(f"\tOptimal theta dict: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}\n")
+    print(f"\nNeg log likelihood = {neg_log_lik.item()}")
+    print(f"\talpha: {alpha.item()}")
+    print(f"\tsigma: {sigma.item()}")
+    print(f"\tthetas: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}")
+
 
 def adam_optimize_ou_parameters(
     tree: Phylo.BaseTree.Tree,
@@ -21,6 +23,7 @@ def adam_optimize_ou_parameters(
     sigma_init: torch.Tensor,
     theta_dict_init:  Dict[str, torch.Tensor],
     root_expression: torch.Tensor,
+    poisson_logl_mode: str = "deterministic"
 ) -> float:
     """
     Optimize OU parameters using the Adam optimizer to minimize negative log-likelihood.
@@ -31,6 +34,7 @@ def adam_optimize_ou_parameters(
         sigma2_init: Initial value for variance parameter.
         theta_dict_init: A dictionary mapping regime labels to initial optimal expression values (theta).
         root_expression: Expression value at the root node.
+        poisson_logl_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
     
     Returns:
         optimal_neg_log_lik: The optimal negative log-likelihood after optimization (float).
@@ -40,11 +44,29 @@ def adam_optimize_ou_parameters(
     sigma = sigma_init.detach().clone().requires_grad_(True)
     theta_dict = {regime: theta.detach().clone().requires_grad_(True) for regime, theta in theta_dict_init.items()}
     
+    # Setup variational parameters as needed
+    if poisson_logl_mode == "variational":
+        num_tips = len(tree.get_terminals())
+        variational_means = torch.ones(num_tips, requires_grad=True)
+        variational_std_devs = torch.ones(num_tips, requires_grad=True)
+        params = [alpha, sigma] + list(theta_dict.values()) + [variational_means, variational_std_devs]
+    else:
+        variational_means = None
+        variational_std_devs = None
+        params = [alpha, sigma] + list(theta_dict.values())
+    
     # Use Adam optimizer
-    optimizer = torch.optim.Adam([alpha, sigma] + list(theta_dict.values()), lr=0.01)
+    optimizer = torch.optim.Adam(params, lr=0.01)
     
     # Print initial state
-    initial_neg_log_lik = oup_neg_log_likelihood(tree, alpha, sigma, theta_dict, root_expression)
+    initial_neg_log_lik = oup_neg_log_likelihood(tree, 
+                                                 alpha, 
+                                                 sigma, 
+                                                 theta_dict, 
+                                                 root_expression, 
+                                                 poisson_logl_mode=poisson_logl_mode, 
+                                                 variational_means=variational_means, 
+                                                 variational_log_stds=variational_std_devs)
     print()
     print("Initial state:")
     print_state(initial_neg_log_lik, alpha, sigma, theta_dict)
@@ -55,22 +77,31 @@ def adam_optimize_ou_parameters(
     
     # Track time
     start_time = time.time()
-    print_freq = 100  # How many steps between progress updates
+    log_freq = 100  # How many steps between progress updates
 
     # Optimization loop
     prev_negll = None
     not_improved_steps = 0
     step = 1
+    print()
+    print("Running optimization:")
     while True:
         optimizer.zero_grad()
-        neg_log_lik = oup_neg_log_likelihood(tree, alpha, sigma, theta_dict, root_expression)
+        neg_log_lik = oup_neg_log_likelihood(tree, 
+                                             alpha, 
+                                             sigma, 
+                                             theta_dict, 
+                                             root_expression, 
+                                             poisson_logl_mode=poisson_logl_mode, 
+                                             variational_means=variational_means, 
+                                             variational_log_stds=variational_std_devs)
         neg_log_lik.backward()
         optimizer.step()
 
         cur_negll = neg_log_lik.item()
 
         # Print progress
-        if step == 1 or step % print_freq == 0:
+        if step % log_freq == 0:
             print(f"Step {step}, Negative Log-Likelihood: {cur_negll}, alpha: {alpha.item()}, sigma: {sigma.item()}, thetas: {[theta.item() for theta in theta_dict.values()]}")
 
         # Check for improvement
@@ -89,7 +120,14 @@ def adam_optimize_ou_parameters(
     end_time = time.time()
     print(f"Optimization completed in {end_time - start_time:.2f} seconds over {step} steps.")
     
-    optimal_neg_log_lik = oup_neg_log_likelihood(tree, alpha, sigma, theta_dict, root_expression)
+    optimal_neg_log_lik = oup_neg_log_likelihood(tree, 
+                                                 alpha, 
+                                                 sigma, 
+                                                 theta_dict, 
+                                                 root_expression, 
+                                                 poisson_logl_mode=poisson_logl_mode, 
+                                                 variational_means=variational_means, 
+                                                 variational_log_stds=variational_std_devs)
     print()
     print("Final state:")
     print_state(optimal_neg_log_lik, alpha, sigma, theta_dict)

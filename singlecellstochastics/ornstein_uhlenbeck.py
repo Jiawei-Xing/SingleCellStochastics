@@ -3,13 +3,14 @@ from collections import deque
 import numpy as np
 from scipy.stats import multivariate_normal
 from Bio import Phylo
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import torch
-from torch.distributions import MultivariateNormal, Poisson
+from torch.distributions import MultivariateNormal, Poisson, Normal
 import torch.nn.functional as F
 
 from .tree_utils import collect_tip_data
 from .transform import transform_latent_expression_values
+from .poisson import expected_log_poisson_mc
 
 def get_ou_expr_one_branch(
     parent_expr: float,
@@ -117,6 +118,8 @@ def oup_neg_log_likelihood(
     root_expression: torch.Tensor,
     transformation: str = "softplus",
     poisson_logl_mode: str = "deterministic",
+    variational_means: torch.Tensor = None,
+    variational_log_stds: torch.Tensor = None,
 ) -> float:
     """
     Compute the log-likelihood of an OU process on a phylogenetic tree
@@ -129,7 +132,9 @@ def oup_neg_log_likelihood(
         theta_dict (dict): A dictionary mapping regime labels to optimal expression values (theta).
         root_expression (float): Expression value at the root node.
         transformation (str): Transformation to apply to mean before Poisson, either "softplus" or "exp".
-        poisson_sampling_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
+        poisson_logl_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
+        variational_means (torch.Tensor): Mean parameters for variational distribution (required if poisson_logl_mode="variational").
+        variational_log_stds (torch.Tensor): Log standard deviation parameters for variational distribution (required if poisson_logl_mode="variational").
 
     Returns:
         log_lik: Log-likelihood of observed tip read_counts.
@@ -149,27 +154,52 @@ def oup_neg_log_likelihood(
 
     # Multivariate normal log-likelihood
     mvn = MultivariateNormal(loc=mean, covariance_matrix=cov)
-    ou_log_lik = mvn.log_prob(y_t)
-    neg_log_lik = -ou_log_lik
     
-    # Add softplus and poisson to log-likelihood
-    # Directly use OU expected means as latent expression values
-    if poisson_logl_mode == "none":
-        pass
-    elif poisson_logl_mode == "deterministic":
-        lambda_tip = transform_latent_expression_values(mean, transformation)    
-        poisson_log_lik = Poisson(rate=lambda_tip).log_prob(y_t).sum()
-        neg_log_lik = neg_log_lik - poisson_log_lik
-    # Stochastically sample latent expression values from OU distribution at tips and average trasformation/poisson over samples
-    elif poisson_logl_mode == "stochastic":
-        n_samples = 1000
-        X_samples = mvn.rsample((n_samples,))
-        lambda_s = transform_latent_expression_values(X_samples, transformation)
-        poisson_log_lik_per_sample = Poisson(rate=lambda_s).log_prob(y_t).sum(dim=-1)
-        mean_poisson_log_lik = poisson_log_lik_per_sample.mean()
-        neg_log_lik = -mean_poisson_log_lik
-    elif poisson_logl_mode == "variational":
-        ValueError("Variational mode not implemented yet")
+    # Decide whether we use the variational elbo through mean-field gaussian assumption or attempt direct log-likelihood computation
+    if poisson_logl_mode == "variational":
+        if variational_means is None or variational_log_stds is None:
+            raise ValueError("variational_means and variational_log_stds must be provided when poisson_logl_mode='variational'.")
+        if variational_means.shape[0] != len(y_t) or variational_log_stds.shape[0] != len(y_t):
+            raise ValueError("variational_means and variational_log_stds must match number of tips.")
+
+        std_q = torch.exp(variational_log_stds)
+        q = Normal(variational_means, std_q)
+
+        # Calculate E_q[log p(y|X)] by either monte carlo or taylor expansion
+        expected_log_p_y, X_samples = expected_log_poisson_mc(q, y_t)
+
+        # E_q[log p(X)] where p(X) is OU prior
+        log_p_x = mvn.log_prob(X_samples).mean()
+
+        # Compute KL ≈ E_q[log q(X) - log p(X)]
+        log_q_x = q.log_prob(X_samples).sum(dim=-1).mean()
+        kl = log_q_x - log_p_x
+
+        elbo = expected_log_p_y - kl   # same as expected_log_p_y - KL
+        neg_log_lik = -elbo
+    else:   
+        ou_log_lik = mvn.log_prob(y_t)
+        neg_log_lik = -ou_log_lik
+        
+        # Add softplus and poisson to log-likelihood
+        if poisson_logl_mode == "none":
+            # Do not add any transformation/poisson, just return the OU negative log-likelihood
+            pass
+        elif poisson_logl_mode == "deterministic":
+            # Directly use OU expected means as latent expression values
+            lambda_tip = transform_latent_expression_values(mean, transformation)    
+            poisson_log_lik = Poisson(rate=lambda_tip).log_prob(y_t).sum()
+            neg_log_lik = neg_log_lik - poisson_log_lik
+        elif poisson_logl_mode == "stochastic":
+            # Stochastically sample latent expression values from OU distribution at tips and average trasformation/poisson over samples
+            n_samples = 1000
+            X_samples = mvn.rsample((n_samples,))
+            lambda_s = transform_latent_expression_values(X_samples, transformation)
+            poisson_log_lik_per_sample = Poisson(rate=lambda_s).log_prob(y_t).sum(dim=-1)
+            mean_poisson_log_lik = poisson_log_lik_per_sample.mean()
+            neg_log_lik = neg_log_lik - mean_poisson_log_lik
+        else:
+            raise ValueError("poisson_logl_mode must be one of 'none', 'deterministic', 'stochastic', or 'variational'.")
     
     return neg_log_lik
 

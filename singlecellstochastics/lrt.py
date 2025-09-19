@@ -12,11 +12,12 @@ def run_lrt():
     
     parser = argparse.ArgumentParser("Stochastic simulation of gene expression evolution along lineage")
     parser.add_argument("--tree", type=str, required=True, help="File path of input tree")
-    parser.add_argument("--regime", type=str, required=True, help="File path of input regime")
+    parser.add_argument("--regime", type=str, required=True, help="File path of input regime that defined which theta each node belongs to in the OU model")
     parser.add_argument("--expression_data", type=str, required=True, help="File path of input TSV expression data in cells x genes format")
     parser.add_argument("--root_expression", type=int, default=2, help="Starting expression at the root")
     parser.add_argument("--null_regime", type=str, default="0", help="Regime label for all nodes under the null hypothesis")
-    parser.add_argument("--out", type=str, default="examples/input_data", help="Output directory")
+    parser.add_argument("--poisson_logl_mode", type=str, choices=["none", "deterministic", "stochastic", "variational"], default="variational", 
+                        help="Mode for logl calculation if transformation/poisson is added after the OU model, either 'none' (logl for only the OU model), 'deterministic', 'stochastic', or 'variational'.")
     args = parser.parse_args()
     
     # Setup tensors
@@ -46,11 +47,11 @@ def run_lrt():
         
         # Fit null model
         print("\nFitting null model...")
-        null_optimal_negll, null_optimal_alpha, null_optima_sigma2, null_optimal_theta_dict = adam_optimize_ou_parameters(null_tree, alpha_init, sigma2_init, theta_dict_init_null, root_expression)
+        null_optimal_negll, null_optimal_alpha, null_optima_sigma2, null_optimal_theta_dict = adam_optimize_ou_parameters(null_tree, alpha_init, sigma2_init, theta_dict_init_null, root_expression, args.poisson_logl_mode)
         
         # Fit alt model
         print("\nFitting alternative model...")
-        alt_optimal_negll, alt_optimal_alpha, alt_optima_sigma2, alt_optimal_theta_dict = adam_optimize_ou_parameters(alt_tree, alpha_init, sigma2_init, theta_dict_init, root_expression)
+        alt_optimal_negll, alt_optimal_alpha, alt_optima_sigma2, alt_optimal_theta_dict = adam_optimize_ou_parameters(alt_tree, alpha_init, sigma2_init, theta_dict_init, root_expression, args.poisson_logl_mode)
         
         # Compute LRT statistic
         null_log_lik = -null_optimal_negll.item()
