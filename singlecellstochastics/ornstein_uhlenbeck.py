@@ -1,4 +1,5 @@
 
+from collections import deque
 import numpy as np
 from scipy.stats import multivariate_normal
 from Bio import Phylo
@@ -77,40 +78,33 @@ def compute_ou_covariance(
 
 
 def compute_ou_mean_with_regimes(
-    tree: Phylo.BaseTree.Tree, 
-    alpha: torch.Tensor, 
-    root_expression: torch.Tensor, 
+    tree: Phylo.BaseTree.Tree,
+    alpha: torch.Tensor,
+    root_expression: torch.Tensor,
     theta_dict: Dict[str, torch.Tensor],
 ) -> torch.Tensor:
     """
-    Compute mean tip values accounting for regime changes along each path
-    from the root to that tip.
-
-    Args:
-        tree: Biopython Tree with .regime assigned to clades
-        alpha: torch scalar (requires_grad=True)
-        root_expression: torch scalar (requires_grad=True)
-        theta_dict: dict mapping regime names to torch scalars (requires_grad=True)
-        
-    Returns:
-        mean: torch tensor of mean expressions at tips (shape: n_tips,)
+    Compute mean tip values under OU process using BFS from root to tips.
+    Avoids recalculating internal node values multiple times.
     """
-    tips = tree.get_terminals()
-    mean_values = []
-
-    for tip in tips:
-        path = tree.get_path(tip)  # list of clades from root (excluding root)
-        mu = root_expression
-        prev = tree.root
-        for node in path:
-            t = torch.tensor(prev.branch_length if prev.branch_length else 0.0, dtype=torch.float32)
-            regime = getattr(node, "regime")
-            theta = theta_dict[regime]
-            mu = theta + (mu - theta) * torch.exp(-alpha * t)
-            prev = node
-        mean_values.append(mu)
+    node_mu = {tree.root: root_expression}
+    queue = deque([tree.root])
     
-    return torch.stack(mean_values)  # shape (n_tips,)
+    while queue:
+        parent = queue.popleft()
+        parent_mu = node_mu[parent]
+        
+        for child in parent.clades:
+            t = torch.tensor(child.branch_length if child.branch_length else 0.0, dtype=torch.float32)
+            regime = getattr(child, "regime")
+            theta = theta_dict[regime]
+            node_mu[child] = theta + (parent_mu - theta) * torch.exp(-alpha * t)
+            queue.append(child)
+    
+    # Collect tip values
+    tips = tree.get_terminals()
+    tip_values = torch.stack([node_mu[tip] for tip in tips])
+    return tip_values
 
 
 def ou_neg_log_likelihood(
