@@ -23,7 +23,7 @@ def adam_optimize_ou_parameters(
     alpha_init: torch.Tensor,
     sigma_init: torch.Tensor,
     theta_dict_init: Dict[str, torch.Tensor],
-    root_expression: torch.Tensor,
+    origin_expression: torch.Tensor,
     poisson_logl_mode: str = "deterministic",
 ) -> float:
     """
@@ -34,7 +34,7 @@ def adam_optimize_ou_parameters(
         alpha_init: Initial value for selective strength parameter.
         sigma2_init: Initial value for variance parameter.
         theta_dict_init: A dictionary mapping regime labels to initial optimal expression values (theta).
-        root_expression: Expression value at the root node.
+        origin_expression: Expression value assumed at the origin of the experiment.
         poisson_logl_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
 
     Returns:
@@ -64,7 +64,7 @@ def adam_optimize_ou_parameters(
         params = [alpha, sigma] + list(theta_dict.values())
 
     # Use Adam optimizer
-    optimizer = torch.optim.Adam(params, lr=0.001)
+    optimizer = torch.optim.Adam(params, lr=0.01)
 
     # Print initial state
     initial_neg_log_lik = oup_neg_log_likelihood(
@@ -72,7 +72,7 @@ def adam_optimize_ou_parameters(
         alpha,
         sigma,
         theta_dict,
-        root_expression,
+        origin_expression,
         poisson_logl_mode=poisson_logl_mode,
         variational_means=variational_means,
         variational_log_stds=variational_std_devs,
@@ -102,7 +102,7 @@ def adam_optimize_ou_parameters(
             alpha,
             sigma,
             theta_dict,
-            root_expression,
+            origin_expression,
             poisson_logl_mode=poisson_logl_mode,
             variational_means=variational_means,
             variational_log_stds=variational_std_devs,
@@ -115,7 +115,7 @@ def adam_optimize_ou_parameters(
         # Print progress
         if step % log_freq == 0:
             print(
-                f"Step {step}, Negative Log-Likelihood: {cur_negll}, alpha: {alpha.item()}, sigma: {sigma.item()}, thetas: {[theta.item() for theta in theta_dict.values()]}"
+                f"Step {step}, Negative log-likelihood (or -elbo): {cur_negll}, alpha: {alpha.item()}, sigma: {sigma.item()}, thetas: {[theta.item() for theta in theta_dict.values()]}"
             )
 
         # Check for improvement
@@ -141,7 +141,7 @@ def adam_optimize_ou_parameters(
         alpha,
         sigma,
         theta_dict,
-        root_expression,
+        origin_expression,
         poisson_logl_mode=poisson_logl_mode,
         variational_means=variational_means,
         variational_log_stds=variational_std_devs,

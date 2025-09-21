@@ -22,7 +22,8 @@ def read_tree(
 
     """
     tree = Phylo.read(newick_file, "newick")
-    total_length = max(tree.depths().values())
+    root_branch_length = tree.root.branch_length if tree.root.branch_length else 0.0
+    total_length = max(tree.distance(tree.root, tip) for tip in tree.get_terminals()) + root_branch_length
 
     # Normalize and name nodes
     i = 0

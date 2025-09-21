@@ -55,8 +55,9 @@ def compute_ou_covariance(
     tip_names = [tip.name for tip in tips]
     n = len(tips)
 
-    # Precompute distances from root to each tip
-    dist_to_root = {tip.name: tree.distance(tree.root, tip) for tip in tips}
+    # Precompute distances from root to each tip, considering the root branch length if it exists since the bipython tree distance function does not include it
+    root_branch_length = tree.root.branch_length if tree.root.branch_length else 0.0
+    dist_to_origin = {tip.name: tree.distance(tree.root, tip) + root_branch_length for tip in tips}
 
     # Initialize covariance matrix
     cov_matrix = torch.zeros((n, n), dtype=torch.float32)
@@ -70,7 +71,7 @@ def compute_ou_covariance(
 
     for i in range(n):
         # Distances from root to tip i
-        t_i = torch.tensor(dist_to_root[tip_names[i]], dtype=torch.float32)
+        t_i = torch.tensor(dist_to_origin[tip_names[i]], dtype=torch.float32)
 
         for j in range(i, n):
             if i == j:
@@ -81,16 +82,17 @@ def compute_ou_covariance(
             else:
                 # If different tips for i and j, find their most recent common ancestor (mrca) to compute covariance
                 mrca = tree.common_ancestor(tips[i], tips[j])
-                # Distance from root to mrca
+                # Distance from origin to mrca
                 t_mrca = torch.tensor(
-                    tree.distance(tree.root, mrca), dtype=torch.float32
+                    tree.distance(tree.root, mrca) + root_branch_length, dtype=torch.float32
                 )
                 # Distance from root to tip j
-                t_j = torch.tensor(dist_to_root[tip_names[j]], dtype=torch.float32)
+                t_j = torch.tensor(dist_to_origin[tip_names[j]], dtype=torch.float32)
+                
                 # Covariance formula
                 cov = (
                     sigma2_over_2alpha
-                    * torch.exp(-alpha * (t_i + t_j - 2.0 * t_mrca))
+                    * torch.exp(-alpha * (t_i + t_j - (2.0 * t_mrca)))
                     * (1.0 - torch.exp(-two_alpha * t_mrca))
                 )
                 cov_matrix[i, j] = cov
@@ -102,13 +104,24 @@ def compute_ou_covariance(
 def compute_ou_mean_with_regimes(
     tree: Phylo.BaseTree.Tree,
     alpha: torch.Tensor,
-    root_expression: torch.Tensor,
+    origin_expression: torch.Tensor,
     theta_dict: Dict[str, torch.Tensor],
 ) -> torch.Tensor:
     """
-    Compute mean tip values under OU process using BFS from root to tips.
+    Compute mean tip values under OU process using BFS from origin to root to tips.
     Avoids recalculating internal node values multiple times.
     """
+    # Evolve from origin to root node, if any branch length exists
+    root_branch_length = tree.root.branch_length if tree.root.branch_length else 0.0
+    if root_branch_length > 0.0:
+        t = torch.tensor(root_branch_length, dtype=torch.float32)
+        regime = getattr(tree.root, "regime")
+        theta = theta_dict[regime]
+        root_expression = theta + (origin_expression - theta) * torch.exp(-alpha * t)
+    else:
+        root_expression = origin_expression
+    
+    # Standard BFS from root down
     node_mu = {tree.root: root_expression}
     queue = deque([tree.root])
 
@@ -136,7 +149,7 @@ def oup_neg_log_likelihood(
     alpha: torch.Tensor,
     sigma: torch,
     theta_dict: Dict[str, torch.Tensor],
-    root_expression: torch.Tensor,
+    origin_expression: torch.Tensor,
     transformation: str = "softplus",
     poisson_logl_mode: str = "deterministic",
     variational_means: torch.Tensor = None,
@@ -151,7 +164,7 @@ def oup_neg_log_likelihood(
         alpha (float): Selective strength parameter for the OU process.
         sigma (float): Sigma standard deviation parameter for the OU process.
         theta_dict (dict): A dictionary mapping regime labels to optimal expression values (theta).
-        root_expression (float): Expression value at the root node.
+        origin_expression (float): Expression value assumed at the origin of the experiment.
         transformation (str): Transformation to apply to mean before Poisson, either "softplus" or "exp".
         poisson_logl_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
         variational_means (torch.Tensor): Mean parameters for variational distribution (required if poisson_logl_mode="variational").
@@ -168,7 +181,7 @@ def oup_neg_log_likelihood(
     cov = compute_ou_covariance(tree, alpha, sigma)
 
     # Compute mean vector
-    mean = compute_ou_mean_with_regimes(tree, alpha, root_expression, theta_dict)
+    mean = compute_ou_mean_with_regimes(tree, alpha, origin_expression, theta_dict)
 
     # Multivariate normal log-likelihood
     mvn = MultivariateNormal(loc=mean, covariance_matrix=cov)
@@ -204,10 +217,10 @@ def oup_neg_log_likelihood(
         quad_term = diff @ Sigma_ou_inv @ diff
         log_p_z = -0.5 * (n_tips * log_2pi + log_det_cov + trace_term + quad_term)
 
-        # Compute E_q[log q(z)] for entropy of variational distribution in closed form
+        # Compute -E_q[log q(z)] for entropy of variational distribution in closed form
         log_q_z = q.entropy().sum()
 
-        elbo = log_p_y + log_p_z - log_q_z
+        elbo = log_p_y + log_p_z + log_q_z
         neg_log_lik = -elbo
     else:
         ou_log_lik = mvn.log_prob(y_t)
