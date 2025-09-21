@@ -14,11 +14,11 @@ from .stat_utils import calculate_lrt_and_pvalue
 
 
 def process_gene(
-    gene: str, 
-    read_count_data: dict, 
-    null_tree: Phylo.BaseTree.Tree, 
-    alt_tree: Phylo.BaseTree.Tree, 
-    root_expression: torch.Tensor,
+    gene: str,
+    read_count_data: dict,
+    null_tree: Phylo.BaseTree.Tree,
+    alt_tree: Phylo.BaseTree.Tree,
+    root_expression: torch.Tensor
     null_regime: str,
     poisson_logl_mode: str,
     output_dir: str

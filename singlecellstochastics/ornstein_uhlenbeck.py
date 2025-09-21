@@ -8,7 +8,7 @@ import torch
 from torch.distributions import MultivariateNormal, Poisson, Normal
 import torch.nn.functional as F
 
-from .tree_utils import collect_tip_data
+from .tree_utils import collect_tip_read_count_data
 from .transform import transform_latent_expression_values
 from .poisson import expected_log_poisson_mc
 
@@ -41,18 +41,16 @@ def get_ou_expr_one_branch(
 
 def compute_ou_covariance(
     tree: Phylo.BaseTree.Tree,
-    dist_to_root: Dict[str, float],
     alpha: torch.Tensor,
-    sigma2: torch.Tensor,
+    sigma: torch.Tensor,
 ) -> torch.Tensor:
     """
     Compute the OU covariance matrix among tips in a tree.
 
     Args:
         tree: Biopython Tree object.
-        dist_to_root: dict mapping tip names to their distances from the root.
-        alpha: torch scalar (requires_grad=True)
-        sigma2: torch scalar (requires_grad=True)
+        alpha: Alpha for the OU process as a torch.tensor with (requires_grad=True)
+        sigma: Sigma for the OU process as a torch.tendor with (requires_grad=True)
     
     Returns:
         cov: torch.Tensor of shape (n_tips, n_tips)
@@ -61,21 +59,38 @@ def compute_ou_covariance(
     tip_names = [tip.name for tip in tips]
     n = len(tips)
     
-    cov_matrix = torch.zeros((n, n), dtype=alpha.dtype, device=alpha.device)
+    # Precompute distances from root to each tip
+    dist_to_root = {tip.name: tree.distance(tree.root, tip) for tip in tips}
+    
+    # Initialize covariance matrix
+    cov_matrix = torch.zeros((n, n), dtype=torch.float32)
+    
+    # Square sigma to get sigma^2 (this prevents negative values when optimizing over sigma^2 directly)
+    sigma2 = sigma ** 2
+    
+    # Precompute other reused calculations
+    two_alpha = 2.0 * alpha
+    sigma2_over_2alpha = sigma2 / two_alpha
 
     for i in range(n):
-        for j in range(n):
-            t_i = torch.tensor(dist_to_root[tip_names[i]], dtype=torch.float32)
-            t_j = torch.tensor(dist_to_root[tip_names[j]], dtype=torch.float32)
-
+        # Distances from root to tip i
+        t_i = torch.tensor(dist_to_root[tip_names[i]], dtype=torch.float32)
+            
+        for j in range(i, n):
             if i == j:
-                cov_matrix[i, j] = (sigma2 / (2.0 * alpha)) * (1.0 - torch.exp(-2.0 * alpha * t_i))
+                # If same tip for both i and j, use variance formula
+                cov_matrix[i, j] = sigma2_over_2alpha * (1.0 - torch.exp(-two_alpha * t_i))
             else:
+                # If different tips for i and j, find their most recent common ancestor (mrca) to compute covariance
                 mrca = tree.common_ancestor(tips[i], tips[j])
-                t_mrca = torch.tensor(tree.distance(tree.root, mrca), dtype=alpha.dtype, device=alpha.device)
-                cov_matrix[i, j] = (sigma2 / (2.0 * alpha)) * torch.exp(
-                    -alpha * (t_i + t_j - 2.0 * t_mrca)
-                ) * (1.0 - torch.exp(-2.0 * alpha * t_mrca))
+                # Distance from root to mrca
+                t_mrca = torch.tensor(tree.distance(tree.root, mrca), dtype=torch.float32)
+                # Distance from root to tip j
+                t_j = torch.tensor(dist_to_root[tip_names[j]], dtype=torch.float32)
+                # Covariance formula
+                cov = sigma2_over_2alpha * torch.exp(-alpha * (t_i + t_j - 2.0 * t_mrca)) * (1.0 - torch.exp(-two_alpha * t_mrca))
+                cov_matrix[i, j] = cov
+                cov_matrix[j, i] = cov  # Symmetric matrix
     
     return cov_matrix
 
@@ -140,14 +155,11 @@ def oup_neg_log_likelihood(
         log_lik: Log-likelihood of observed tip read_counts.
     """
     # Extract tip data
-    tip_names, y, dist_to_root = collect_tip_data(tree)
+    y = collect_tip_read_count_data(tree)
     y_t = torch.tensor(y, dtype=torch.float32)
-    
-    # Square sigma to get sigma^2 (this prevents negative values when optimizing over sigma^2 directly)
-    sigma2 = sigma ** 2
 
     # Compute covariance matrix
-    cov = compute_ou_covariance(tree, dist_to_root, alpha, sigma2)
+    cov = compute_ou_covariance(tree, alpha, sigma)
 
     # Compute mean vector
     mean = compute_ou_mean_with_regimes(tree, alpha, root_expression, theta_dict)

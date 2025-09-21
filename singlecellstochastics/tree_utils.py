@@ -139,19 +139,14 @@ def add_read_counts_to_tips(
             node.read_count = read_count_dict.get(node.name, None)
             
 
-def collect_tip_data(
+def collect_tip_read_count_data(
     tree: Phylo.BaseTree.Tree
-) -> Tuple[List[str], np.ndarray, Dict[str, float]]:
+) -> np.ndarray:
     """
-    Extract tip names, observed read counts, and distances from root.
+    Extract read counts for all tips.
 
     Returns:
-        tip_names: list of tip names
         y: array of observed read counts
-        dist_to_root: {tip_name: distance from root}
     """
-    tips = tree.get_terminals()
-    tip_names = [tip.name for tip in tips]
-    y = np.array([tip.read_count for tip in tips], dtype=float)
-    dist_to_root = {tip.name: tree.distance(tree.root, tip) for tip in tips}
-    return tip_names, y, dist_to_root
+    y = np.array([tip.read_count for tip in tree.get_terminals()], dtype=float)
+    return y

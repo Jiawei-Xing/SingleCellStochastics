@@ -11,7 +11,7 @@ def print_state(neg_log_lik, alpha, sigma, theta_dict):
     """
     Utility function to print the current state of the optimization.
     """
-    print(f"\nNeg log likelihood = {neg_log_lik.item()}")
+    print(f"\nNeg log likelihood (or neg elbo) = {neg_log_lik.item()}")
     print(f"\talpha: {alpha.item()}")
     print(f"\tsigma: {sigma.item()}")
     print(f"\tthetas: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}")
