@@ -55,10 +55,6 @@ def adam_optimize_ou_parameters(
         num_tips = len(tree.get_terminals())
         variational_means = torch.ones(num_tips, requires_grad=True)
         variational_log_std_devs = torch.ones(num_tips, requires_grad=True)
-        
-        # # Jiawei test run
-        # variational_means = torch.tensor([2.9489307403564453, 6.999087810516357, 1.8545866012573242, 0.54132479429245, 2.9489307403564453, 4.993239402770996, 0.54132479429245, -13.862943649291992, -13.862943649291992, 1.8545866012573242, 1.8545866012573242, 1.8545866012573242, 3.9815144538879395, 2.9489307403564453, 2.9489307403564453, 0.54132479429245, -13.862943649291992, 2.9489307403564453, 1.8545866012573242, 3.9815144538879395], requires_grad=True)
-        # variational_log_std_devs = torch.zeros(num_tips, requires_grad=True)
 
         params = (
             [alpha, sigma]
