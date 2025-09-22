@@ -90,8 +90,8 @@ def adam_optimize_ou_parameters(
         print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
 
     # Convergence criteria
-    max_not_improved_steps = 100  # Number of steps without improvement to allow
-    convergence = 1e-6  # Convergence threshold
+    max_not_improved_steps = 50  # Number of steps without improvement to allow
+    convergence = 0.1  # Convergence threshold
 
     # Track time
     start_time = time.time()
@@ -130,7 +130,7 @@ def adam_optimize_ou_parameters(
                 print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
 
         # Check for improvement
-        if prev_negll and abs(cur_negll) - abs(prev_negll) < convergence:
+        if prev_negll and cur_negll - prev_negll < convergence:
             not_improved_steps += 1
         else:
             not_improved_steps = 0
