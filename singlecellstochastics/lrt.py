@@ -112,8 +112,8 @@ def process_gene(
     lrt_statistic, p_value = calculate_lrt_and_pvalue(null_log_lik, alt_log_lik)
 
     with open(log_path, "a") as f:
-        f.write(f"\n\tLRT statistic = {lrt_statistic}\n")
-        f.write(f"\t p-value = {p_value}\n")
+        f.write(f"\n\nLRT statistic = {lrt_statistic}\n")
+        f.write(f"p-value = {p_value}\n")
 
 
 def run_lrt():
