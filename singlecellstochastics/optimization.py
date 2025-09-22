@@ -64,7 +64,7 @@ def adam_optimize_ou_parameters(
         params = [alpha, sigma] + list(theta_dict.values())
 
     # Use Adam optimizer
-    optimizer = torch.optim.Adam(params, lr=0.01)
+    optimizer = torch.optim.Adam(params, lr=0.1)
 
     # Print initial state
     initial_neg_log_lik = oup_neg_log_likelihood(
@@ -80,6 +80,9 @@ def adam_optimize_ou_parameters(
     print()
     print("Initial state:")
     print_state(initial_neg_log_lik, alpha, sigma, theta_dict)
+    if poisson_logl_mode == "variational":
+        print(f"\tvariational_means: {[v.item() for v in variational_means]}")
+        print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_std_devs)]}")
 
     # Convergence criteria
     max_not_improved_steps = 100  # Number of steps without improvement to allow
@@ -117,6 +120,9 @@ def adam_optimize_ou_parameters(
             print(
                 f"Step {step}, Negative log-likelihood (or -elbo): {cur_negll}, alpha: {alpha.item()}, sigma: {sigma.item()}, thetas: {[theta.item() for theta in theta_dict.values()]}"
             )
+            if poisson_logl_mode == "variational":
+                print(f"\tvariational_means: {[v.item() for v in variational_means]}")
+                print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_std_devs)]}")
 
         # Check for improvement
         if prev_negll and abs(cur_negll) - abs(prev_negll) < convergence:
@@ -149,6 +155,9 @@ def adam_optimize_ou_parameters(
     print()
     print("Final state:")
     print_state(optimal_neg_log_lik, alpha, sigma, theta_dict)
+    if poisson_logl_mode == "variational":
+        print(f"\tvariational_means: {[v.item() for v in variational_means]}")
+        print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_std_devs)]}")
 
     return (
         optimal_neg_log_lik,

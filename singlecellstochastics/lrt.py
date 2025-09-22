@@ -53,11 +53,12 @@ def process_gene(
     add_read_counts_to_tips(alt_tree_copy, read_count_data[gene])
 
     alpha_init = torch.tensor(1.0, dtype=torch.float32)
-    sigma2_init = torch.tensor(1.0, dtype=torch.float32)
+    sigma_init = torch.tensor(1.0, dtype=torch.float32)
     theta_dict_init = {
         "0": torch.tensor(2.0, dtype=torch.float32),
         "1": torch.tensor(5.0, dtype=torch.float32),
     }
+      
     theta_dict_init_null = {
         k: v.clone() for k, v in theta_dict_init.items() if k == null_regime
     }
@@ -72,7 +73,7 @@ def process_gene(
     ) = adam_optimize_ou_parameters(
         null_tree_copy,
         alpha_init,
-        sigma2_init,
+        sigma_init,
         theta_dict_init_null,
         origin_expression,
         poisson_logl_mode,
@@ -88,7 +89,7 @@ def process_gene(
     ) = adam_optimize_ou_parameters(
         alt_tree_copy,
         alpha_init,
-        sigma2_init,
+        sigma_init,
         theta_dict_init,
         origin_expression,
         poisson_logl_mode,
