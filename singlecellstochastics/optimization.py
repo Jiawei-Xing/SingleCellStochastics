@@ -1,12 +1,13 @@
 import time
 from typing import Dict
+from collections import deque
 import torch
 from Bio import Phylo
 
 from .ornstein_uhlenbeck import oup_neg_log_likelihood
 
 
-def print_state(neg_log_lik, alpha, sigma, theta_dict, log_path: str = None):
+def print_state(neg_log_lik, alpha, sigma, theta_dict, log_path):
     """
     Utility function to print the current state of the optimization.
     """
@@ -15,11 +16,6 @@ def print_state(neg_log_lik, alpha, sigma, theta_dict, log_path: str = None):
         f.write(f"\talpha: {alpha.item()}\n")
         f.write(f"\tsigma: {sigma.item()}\n")
         f.write(f"\tthetas: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}")
-    if not log_path:
-        print(f"\nNeg log likelihood (or neg elbo) = {neg_log_lik.item()}")
-        print(f"\talpha: {alpha.item()}")
-        print(f"\tsigma: {sigma.item()}")
-        print(f"\tthetas: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}")
 
 
 def adam_optimize_ou_parameters(
@@ -75,7 +71,8 @@ def adam_optimize_ou_parameters(
         params = [alpha, sigma] + list(theta_dict.values())
 
     # Use Adam optimizer
-    optimizer = torch.optim.Adam(params, lr=0.01)
+    lr = 0.01
+    optimizer = torch.optim.Adam(params, lr=lr)
 
     # Print initial state
     initial_neg_log_lik = oup_neg_log_likelihood(
@@ -98,8 +95,17 @@ def adam_optimize_ou_parameters(
             f.write(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}\n")
 
     # Convergence criteria
-    max_not_improved_steps = 100  # Number of steps without improvement to allow
-    convergence = 0.1  # Convergence threshold
+    window_size = 10  # Number of past steps to consider for convergence
+    convergence = 0.01  # Convergence threshold
+    convergence_check_freq = 10  # How often to update the window and check for convergence
+    
+    # Log adam setup
+    with open(log_path, "a") as f:
+        f.write(f"\nSetting up Adam optimizer with:\n")
+        f.write(f"\tlearning rate: {lr}\n")
+        f.write(f"\tconvergence threshold: {convergence}\n")
+        f.write(f"\tconvergence_window_size: {window_size}\n")
+        f.write(f"\tconvergence_check_frequency: {convergence_check_freq}\n")
 
     # Track time
     start_time = time.time()
@@ -107,8 +113,8 @@ def adam_optimize_ou_parameters(
 
     # Optimization loop
     log = []
-    prev_negll = None
-    not_improved_steps = 0
+    window = deque()
+    window_sum = 0.0
     step = 1
     with open(log_path, "a") as f:
         f.write("\nRunning optimization:\n")
@@ -136,14 +142,22 @@ def adam_optimize_ou_parameters(
                 log.append(f"\tvariational_means: {[v.item() for v in variational_means]}")
                 log.append(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
 
-        # Check for improvement
-        if prev_negll and cur_negll - prev_negll < convergence:
-            not_improved_steps += 1
-        else:
-            not_improved_steps = 0
+            # Write to file periodically
+            if step % (10 * log_freq) == 0:
+                with open(log_path, "a") as f:
+                    for message in log:
+                        f.write(message + "\n")
+                log = []
 
-        if not_improved_steps >= max_not_improved_steps:
-            break
+        # Check for improvement
+        if step % convergence_check_freq == 0:
+            window.append(cur_negll)
+            window_sum += cur_negll
+            if len(window) > window_size:
+                window_sum -= window.popleft()
+            window_avg = window_sum / len(window)
+            if len(window) == window_size and abs(window_avg - cur_negll) < convergence:
+                break
 
         prev_negll = cur_negll
         step += 1

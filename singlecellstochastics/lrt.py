@@ -55,9 +55,17 @@ def process_gene(
     sigma_init = torch.tensor(1.0, dtype=torch.float32)
     theta_dict_init = {
         "0": torch.tensor(2.0, dtype=torch.float32),
-        "1": torch.tensor(5.0, dtype=torch.float32)
+        "1": torch.tensor(5.0, dtype=torch.float32),
     }
-
+    
+    # # Jiawei test run
+    # alpha_init = torch.tensor(5.943188, dtype=torch.float32)
+    # sigma_init = torch.tensor(20.95007494, dtype=torch.float32)
+    # theta_dict_init = {
+    #     "0": torch.tensor(0.9873305559158325, dtype=torch.float32),
+    #     "1": torch.tensor(0.5626604557037354, dtype=torch.float32),
+    # }
+      
     theta_dict_init_null = {
         k: v.clone() for k, v in theta_dict_init.items() if k == null_regime
     }
@@ -190,7 +198,7 @@ def run_lrt():
                 gene,
                 read_count_data[gene],
                 copy.deepcopy(null_tree),
-                copy.deepcopy(null_tree),
+                copy.deepcopy(alt_tree),
                 origin_expression,
                 null_regime,
                 poisson_logl_mode,
