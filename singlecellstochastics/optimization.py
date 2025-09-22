@@ -52,15 +52,20 @@ def adam_optimize_ou_parameters(
     if poisson_logl_mode == "variational":
         num_tips = len(tree.get_terminals())
         variational_means = torch.ones(num_tips, requires_grad=True)
-        variational_std_devs = torch.ones(num_tips, requires_grad=True)
+        variational_log_std_devs = torch.ones(num_tips, requires_grad=True)
+        
+        # # Jiawei test run
+        # variational_means = torch.tensor([2.9489307403564453, 6.999087810516357, 1.8545866012573242, 0.54132479429245, 2.9489307403564453, 4.993239402770996, 0.54132479429245, -13.862943649291992, -13.862943649291992, 1.8545866012573242, 1.8545866012573242, 1.8545866012573242, 3.9815144538879395, 2.9489307403564453, 2.9489307403564453, 0.54132479429245, -13.862943649291992, 2.9489307403564453, 1.8545866012573242, 3.9815144538879395], requires_grad=True)
+        # variational_log_std_devs = torch.zeros(num_tips, requires_grad=True)
+
         params = (
             [alpha, sigma]
             + list(theta_dict.values())
-            + [variational_means, variational_std_devs]
+            + [variational_means, variational_log_std_devs]
         )
     else:
         variational_means = None
-        variational_std_devs = None
+        variational_log_std_devs = None
         params = [alpha, sigma] + list(theta_dict.values())
 
     # Use Adam optimizer
@@ -75,14 +80,14 @@ def adam_optimize_ou_parameters(
         origin_expression,
         poisson_logl_mode=poisson_logl_mode,
         variational_means=variational_means,
-        variational_log_stds=variational_std_devs,
+        variational_log_stds=variational_log_std_devs,
     )
     print()
     print("Initial state:")
     print_state(initial_neg_log_lik, alpha, sigma, theta_dict)
     if poisson_logl_mode == "variational":
         print(f"\tvariational_means: {[v.item() for v in variational_means]}")
-        print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_std_devs)]}")
+        print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
 
     # Convergence criteria
     max_not_improved_steps = 100  # Number of steps without improvement to allow
@@ -90,7 +95,7 @@ def adam_optimize_ou_parameters(
 
     # Track time
     start_time = time.time()
-    log_freq = 100  # How many steps between progress updates
+    log_freq = 10  # How many steps between progress updates
 
     # Optimization loop
     prev_negll = None
@@ -108,7 +113,7 @@ def adam_optimize_ou_parameters(
             origin_expression,
             poisson_logl_mode=poisson_logl_mode,
             variational_means=variational_means,
-            variational_log_stds=variational_std_devs,
+            variational_log_stds=variational_log_std_devs,
         )
         neg_log_lik.backward()
         optimizer.step()
@@ -122,7 +127,7 @@ def adam_optimize_ou_parameters(
             )
             if poisson_logl_mode == "variational":
                 print(f"\tvariational_means: {[v.item() for v in variational_means]}")
-                print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_std_devs)]}")
+                print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
 
         # Check for improvement
         if prev_negll and abs(cur_negll) - abs(prev_negll) < convergence:
@@ -150,14 +155,14 @@ def adam_optimize_ou_parameters(
         origin_expression,
         poisson_logl_mode=poisson_logl_mode,
         variational_means=variational_means,
-        variational_log_stds=variational_std_devs,
+        variational_log_stds=variational_log_std_devs,
     )
     print()
     print("Final state:")
     print_state(optimal_neg_log_lik, alpha, sigma, theta_dict)
     if poisson_logl_mode == "variational":
         print(f"\tvariational_means: {[v.item() for v in variational_means]}")
-        print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_std_devs)]}")
+        print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
 
     return (
         optimal_neg_log_lik,
