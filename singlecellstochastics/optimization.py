@@ -116,8 +116,6 @@ def adam_optimize_ou_parameters(
     window = deque()
     window_sum = 0.0
     step = 1
-    best_state = None
-    curr_negll = None
     with open(log_path, "a") as f:
         f.write("\nRunning optimization:\n")
     while True:
@@ -150,17 +148,6 @@ def adam_optimize_ou_parameters(
                     for message in log:
                         f.write(message + "\n")
                 log = []
-            
-            # Save best state
-            if best_state is None or cur_negll < best_state[0]:
-                best_state = (
-                    cur_negll,
-                    alpha.detach().clone(),
-                    sigma.detach().clone(),
-                    {regime: theta.detach().clone() for regime, theta in theta_dict.items()},
-                    variational_means.detach().clone() if variational_means is not None else None,
-                    variational_log_std_devs.detach().clone() if variational_log_std_devs is not None else None,
-                )
 
         # Check for improvement
         if step % convergence_check_freq == 0:
@@ -183,17 +170,6 @@ def adam_optimize_ou_parameters(
         f.write(
             f"Optimization completed in {end_time - start_time:.2f} seconds over {step} steps."
         )
-        
-    # Restore best state of those that were logged, if better than the final state
-    if curr_negll > best_state[0]:
-        (
-            best_negll,
-            alpha,
-            sigma,
-            theta_dict,
-            variational_means,
-            variational_log_std_devs,
-        ) = best_state
 
     optimal_neg_log_lik = oup_neg_log_likelihood(
         tree,
@@ -206,7 +182,7 @@ def adam_optimize_ou_parameters(
         variational_log_stds=variational_log_std_devs,
     )
     with open(log_path, "a") as f:
-        f.write("\nBest state:")
+        f.write("\nFinal state:")
     print_state(optimal_neg_log_lik, alpha, sigma, theta_dict, log_path)
     if poisson_logl_mode == "variational":
         with open(log_path, "a") as f:
