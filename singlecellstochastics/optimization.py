@@ -15,7 +15,7 @@ def print_state(neg_log_lik, alpha, sigma, theta_dict, log_path):
         f.write(f"\nNegative log-likelihood (or -elbo) = {neg_log_lik.item()}\n")
         f.write(f"\talpha: {alpha.item()}\n")
         f.write(f"\tsigma: {sigma.item()}\n")
-        f.write(f"\tthetas: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}")
+        f.write(f"\tthetas: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}\n")
 
 
 def adam_optimize_ou_parameters(
@@ -186,7 +186,7 @@ def adam_optimize_ou_parameters(
     print_state(optimal_neg_log_lik, alpha, sigma, theta_dict, log_path)
     if poisson_logl_mode == "variational":
         with open(log_path, "a") as f:
-            f.write(f"\tvariational_means: {[v.item() for v in variational_means]}")
+            f.write(f"\tvariational_means: {[v.item() for v in variational_means]}\n")
             f.write(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
 
     return (
