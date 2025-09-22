@@ -6,16 +6,20 @@ from Bio import Phylo
 from .ornstein_uhlenbeck import oup_neg_log_likelihood
 
 
-def print_state(neg_log_lik, alpha, sigma, theta_dict):
+def print_state(neg_log_lik, alpha, sigma, theta_dict, log_path: str = None):
     """
     Utility function to print the current state of the optimization.
     """
-    print(f"\nNeg log likelihood (or neg elbo) = {neg_log_lik.item()}")
-    print(f"\talpha: {alpha.item()}")
-    print(f"\tsigma: {sigma.item()}")
-    print(
-        f"\tthetas: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}"
-    )
+    with open(log_path, "a") as f:
+        f.write(f"\nNeg log likelihood (or neg elbo) = {neg_log_lik.item()}\n")
+        f.write(f"\talpha: {alpha.item()}\n")
+        f.write(f"\tsigma: {sigma.item()}\n")
+        f.write(f"\tthetas: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}")
+    if not log_path:
+        print(f"\nNeg log likelihood (or neg elbo) = {neg_log_lik.item()}")
+        print(f"\talpha: {alpha.item()}")
+        print(f"\tsigma: {sigma.item()}")
+        print(f"\tthetas: {{ {', '.join(f'{k}: {v.item()}' for k, v in theta_dict.items())} }}")
 
 
 def adam_optimize_ou_parameters(
@@ -24,6 +28,7 @@ def adam_optimize_ou_parameters(
     sigma_init: torch.Tensor,
     theta_dict_init: Dict[str, torch.Tensor],
     origin_expression: torch.Tensor,
+    log_path: str,
     poisson_logl_mode: str = "deterministic",
 ) -> float:
     """
@@ -35,6 +40,7 @@ def adam_optimize_ou_parameters(
         sigma2_init: Initial value for variance parameter.
         theta_dict_init: A dictionary mapping regime labels to initial optimal expression values (theta).
         origin_expression: Expression value assumed at the origin of the experiment.
+        log_path: Path to a log file to record optimization progress (str).
         poisson_logl_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
 
     Returns:
@@ -69,7 +75,7 @@ def adam_optimize_ou_parameters(
         params = [alpha, sigma] + list(theta_dict.values())
 
     # Use Adam optimizer
-    optimizer = torch.optim.Adam(params, lr=0.1)
+    optimizer = torch.optim.Adam(params, lr=0.01)
 
     # Print initial state
     initial_neg_log_lik = oup_neg_log_likelihood(
@@ -82,15 +88,17 @@ def adam_optimize_ou_parameters(
         variational_means=variational_means,
         variational_log_stds=variational_log_std_devs,
     )
-    print()
-    print("Initial state:")
-    print_state(initial_neg_log_lik, alpha, sigma, theta_dict)
+    if log_path:
+        with open(log_path, "a") as f:
+            f.write("\nInitial state:\n")
+    print_state(initial_neg_log_lik, alpha, sigma, theta_dict, log_path)
     if poisson_logl_mode == "variational":
-        print(f"\tvariational_means: {[v.item() for v in variational_means]}")
-        print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
+        with open(log_path, "a") as f:
+            f.write(f"\tvariational_means: {[v.item() for v in variational_means]}\n")
+            f.write(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}\n")
 
     # Convergence criteria
-    max_not_improved_steps = 50  # Number of steps without improvement to allow
+    max_not_improved_steps = 100  # Number of steps without improvement to allow
     convergence = 0.1  # Convergence threshold
 
     # Track time
@@ -98,11 +106,12 @@ def adam_optimize_ou_parameters(
     log_freq = 10  # How many steps between progress updates
 
     # Optimization loop
+    log = []
     prev_negll = None
     not_improved_steps = 0
     step = 1
-    print()
-    print("Running optimization:")
+    with open(log_path, "a") as f:
+        f.write("\nRunning optimization:\n")
     while True:
         optimizer.zero_grad()
         neg_log_lik = oup_neg_log_likelihood(
@@ -122,12 +131,10 @@ def adam_optimize_ou_parameters(
 
         # Print progress
         if step % log_freq == 0:
-            print(
-                f"Step {step}, Negative log-likelihood (or -elbo): {cur_negll}, alpha: {alpha.item()}, sigma: {sigma.item()}, thetas: {[theta.item() for theta in theta_dict.values()]}"
-            )
+            log.append(f"Step {step}, Negative log-likelihood (or -elbo): {cur_negll}, alpha: {alpha.item()}, sigma: {sigma.item()}, thetas: {[theta.item() for theta in theta_dict.values()]}")
             if poisson_logl_mode == "variational":
-                print(f"\tvariational_means: {[v.item() for v in variational_means]}")
-                print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
+                log.append(f"\tvariational_means: {[v.item() for v in variational_means]}")
+                log.append(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
 
         # Check for improvement
         if prev_negll and cur_negll - prev_negll < convergence:
@@ -143,9 +150,12 @@ def adam_optimize_ou_parameters(
 
     # Print total time
     end_time = time.time()
-    print(
-        f"Optimization completed in {end_time - start_time:.2f} seconds over {step} steps."
-    )
+    with open(log_path, "a") as f:
+        for message in log:
+            f.write(message + "\n")
+        f.write(
+            f"Optimization completed in {end_time - start_time:.2f} seconds over {step} steps."
+        )
 
     optimal_neg_log_lik = oup_neg_log_likelihood(
         tree,
@@ -157,12 +167,13 @@ def adam_optimize_ou_parameters(
         variational_means=variational_means,
         variational_log_stds=variational_log_std_devs,
     )
-    print()
-    print("Final state:")
-    print_state(optimal_neg_log_lik, alpha, sigma, theta_dict)
+    with open(log_path, "a") as f:
+        f.write("\nFinal state:")
+    print_state(optimal_neg_log_lik, alpha, sigma, theta_dict, log_path)
     if poisson_logl_mode == "variational":
-        print(f"\tvariational_means: {[v.item() for v in variational_means]}")
-        print(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
+        with open(log_path, "a") as f:
+            f.write(f"\tvariational_means: {[v.item() for v in variational_means]}")
+            f.write(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}")
 
     return (
         optimal_neg_log_lik,

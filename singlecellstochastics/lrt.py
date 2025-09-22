@@ -15,6 +15,7 @@ from .tree_utils import (
 from .input_output import load_read_count_tsv
 from .optimization import adam_optimize_ou_parameters
 from .stat_utils import calculate_lrt_and_pvalue
+import contextlib
 
 
 def process_gene(
@@ -32,75 +33,69 @@ def process_gene(
 
     Args:
         gene: Gene name (str).
-        read_count_data: Dictionary mapping gene names to tip read counts (dict).
+        read_count_data: Dictionary tips to read counts (dict).
         null_tree: Biopython `Tree` object for the null hypothesis (all nodes in one regime).
         alt_tree: Biopython `Tree` object for the alternative hypothesis (nodes in multiple regimes).
         origin_expression: Expression value assumed at the origin of the experiment (torch.Tensor).
         null_regime: Regime label for all nodes under the null hypothesis (str).
         poisson_logl_mode: Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
-        #TODO: output_dir: Directory to save log files (str).
+        output_dir: Directory to save log files (str).
 
     Returns:
         None
     """
-    print(f"\nProcessing gene {gene}")
+    log_path = f"{output_dir}/{gene}.txt"
+    with open(log_path, "w") as f:
+        f.write(f"\nProcessing gene {gene}")
 
-    # Make copies of trees to avoid interference between threads
-    null_tree_copy = copy.deepcopy(null_tree)
-    alt_tree_copy = copy.deepcopy(alt_tree)
-
-    add_read_counts_to_tips(null_tree_copy, read_count_data[gene])
-    add_read_counts_to_tips(alt_tree_copy, read_count_data[gene])
+    add_read_counts_to_tips(null_tree, read_count_data)
+    add_read_counts_to_tips(alt_tree, read_count_data)
 
     alpha_init = torch.tensor(1.0, dtype=torch.float32)
     sigma_init = torch.tensor(1.0, dtype=torch.float32)
     theta_dict_init = {
         "0": torch.tensor(2.0, dtype=torch.float32),
-        "1": torch.tensor(5.0, dtype=torch.float32),
+        "1": torch.tensor(5.0, dtype=torch.float32)
     }
-    
-    # # Jiawei test run
-    # alpha_init = torch.tensor(5.943188, dtype=torch.float32)
-    # sigma_init = torch.tensor(20.95007494, dtype=torch.float32)
-    # theta_dict_init = {
-    #     "0": torch.tensor(0.9873305559158325, dtype=torch.float32),
-    #     "1": torch.tensor(0.5626604557037354, dtype=torch.float32),
-    # }
-      
+
     theta_dict_init_null = {
         k: v.clone() for k, v in theta_dict_init.items() if k == null_regime
     }
 
     # Fit null model
-    print("\nFitting null model...")
+    with open(log_path, "a") as f:
+        f.write("\n\nFitting null model...\n")
     (
         null_optimal_negll,
         null_optimal_alpha,
         null_optima_sigma2,
         null_optimal_theta_dict,
     ) = adam_optimize_ou_parameters(
-        null_tree_copy,
+        null_tree,
         alpha_init,
         sigma_init,
         theta_dict_init_null,
         origin_expression,
-        poisson_logl_mode,
+        log_path,
+        poisson_logl_mode
     )
 
     # Fit alt model
-    print("\nFitting alternative model...")
+    with open(log_path, "a") as f:
+        f.write("\n\nFitting alternative model...\n")
     (
         alt_optimal_negll,
         alt_optimal_alpha,
         alt_optima_sigma2,
         alt_optimal_theta_dict,
     ) = adam_optimize_ou_parameters(
-        alt_tree_copy,
+        alt_tree,
         alpha_init,
         sigma_init,
         theta_dict_init,
         origin_expression,
-        poisson_logl_mode,
+        log_path,
+        poisson_logl_mode
     )
 
     # Compute LRT statistic
@@ -108,9 +103,9 @@ def process_gene(
     alt_log_lik = -alt_optimal_negll.item()
     lrt_statistic, p_value = calculate_lrt_and_pvalue(null_log_lik, alt_log_lik)
 
-    print()
-    print(f"\tLRT statistic = {lrt_statistic}")
-    print(f"\tp-value = {p_value}")
+    with open(log_path, "a") as f:
+        f.write(f"\n\tLRT statistic = {lrt_statistic}\n")
+        f.write(f"\t p-value = {p_value}\n")
 
 
 def run_lrt():
@@ -186,16 +181,22 @@ def run_lrt():
     read_count_data = load_read_count_tsv(args.expression_data)
     num_genes = len(read_count_data.keys())
 
-    for i, gene in enumerate(read_count_data.keys(), 1):
-        process_gene(
-            gene,
-            read_count_data,
-            null_tree,
-            alt_tree,
-            origin_expression,
-            null_regime,
-            poisson_logl_mode,
-            output_dir,
-        )
-        print(f"Completed {i}/{num_genes}: {gene} genes")
-
+    genes = read_count_data.keys()
+    
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = [
+            executor.submit(
+                process_gene,
+                gene,
+                read_count_data[gene],
+                copy.deepcopy(null_tree),
+                copy.deepcopy(null_tree),
+                origin_expression,
+                null_regime,
+                poisson_logl_mode,
+                output_dir,
+            )
+            for gene in genes
+        ]
+        for future in as_completed(futures):
+            future.result()
