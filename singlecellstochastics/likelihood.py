@@ -46,7 +46,7 @@ def ou_neg_log_lik_numpy(
         )
         
         # Add regularization to prevent singular matrix
-        regularization = 1e-6
+        regularization = 0#1e-6
         V_reg = V + regularization * np.eye(n_cells)
 
         # diff = observed expression - expected values (n_cells, 1)
@@ -85,8 +85,8 @@ def ou_neg_log_lik_torch(
     batch_size, N_sim, n_cells = expr_batch.shape
 
     # Extract parameters
-    alpha = params_batch[:, :, 0]**2 + 1e-6  # (batch_size, N_sim)
-    sigma2 = params_batch[:, :, 1]**2 + 1e-6  # (batch_size, N_sim)
+    alpha = params_batch[:, :, 0]  # (batch_size, N_sim)
+    sigma2 = params_batch[:, :, 1]  # (batch_size, N_sim)
     thetas = params_batch[:, :, 2:]  # (batch_size, N_sim, n_regimes)
 
     # Compute V for all batches (broadcast alpha)
@@ -100,10 +100,6 @@ def ou_neg_log_lik_torch(
         * (1 - torch.exp(-2 * alpha * share))
     )  # (batch_size, N_sim, n_cells, n_cells)
     
-    # Add regularization to prevent singular matrix
-    regularization = 1e-6
-    V_reg = V + regularization * torch.eye(n_cells, device=device, dtype=torch.float32)
-
     # Compute W and diff
     if mode == 1:
         W = torch.ones((batch_size, N_sim, n_cells), dtype=torch.float32, device=device)
@@ -112,33 +108,46 @@ def ou_neg_log_lik_torch(
         W = theta_weight_W_torch(
             alpha.squeeze(-1).squeeze(-1), epochs, beta
         )  # (batch_size, N_sim, n_cells, n_regimes)
-        diff = expr_batch - torch.matmul(W, thetas.unsqueeze(-1)).squeeze(
-            -1
-        )  # (batch_size, N_sim, n_cells)
+        diff = expr_batch - torch.matmul(
+            W, thetas.unsqueeze(-1)
+        ).squeeze(-1)  # (batch_size, N_sim, n_cells)
 
-    L = torch.linalg.cholesky(V_reg)  # (batch_size, N_sim, n_cells, n_cells)
-    # log|V| = 2 * sum(log diag(L))
+    # cholesky decomposition for det and inv of matrix
+    try:
+        L = torch.linalg.cholesky(V)  # (batch_size, N_sim, n_cells, n_cells)
+    except RuntimeError:
+        # Add regularization to prevent singular matrix
+        L = torch.linalg.cholesky(
+            V + 1e-6 * torch.eye(n_cells, device=device, dtype=torch.float32)
+        )
+
+    # log_det = torch.linalg.slogdet(V_reg)[1]
+    # cholesky: log|V| = 2 * sum(log diag(L))
     log_det = 2 * torch.sum(
         torch.log(torch.diagonal(L, dim1=2, dim2=3)), dim=2
     )  # (batch_size, N_sim)
-
-    # d^T V^{-1} d = ||L^{-1} d||^2
+    
     d = diff.unsqueeze(-1)  # (batch, N_sim, n_cells, 1)
+
+    # exp = (d.transpose(-2, -1) @ torch.linalg.solve(V, d)).squeeze(-1).squeeze(-1)  # (batch, N_sim)
+    # cholesky: d^T V^{-1} d = ||L^{-1} d||^2
     y = torch.linalg.solve_triangular(
         L, d, upper=False
     )  # y = L^{-1} d (batch, N_sim, n_cells, 1)
     exp = (y.squeeze(-1) ** 2).sum(dim=-1)  # sum(y^2) = y^T y = ||y||^2 (batch, N_sim)
 
-    # trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
+    # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V_reg), dim1=-2, dim2=-1), dim=-1)
+    # cholesky: trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
     S_half = torch.diag_embed(
         torch.sqrt(sigma2_q)
     )  # Σ^{1/2} = diag(σ_i), shape (..., n, n)
     Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Σ^{1/2}
-    tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(C^{-1} Σ)
+    tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch, N_sim)
 
     loss = (
         log_det
         + n_cells * torch.log(sigma2).squeeze(-1).squeeze(-1)
         + (exp + tr_term) / sigma2.squeeze(-1).squeeze(-1)
     )
+
     return loss/2  # (batch_size, N_sim)

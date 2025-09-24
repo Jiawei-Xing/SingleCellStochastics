@@ -66,8 +66,8 @@ def run_ou_poisson():
     parser.add_argument(
         "--iter",
         type=int,
-        default=1000,
-        help="Max number of iterations for optimization (default: 1000)"
+        default=5000,
+        help="Max number of iterations for optimization (default: 5000)"
     )
     parser.add_argument(
         "--window", type=int, default=100, help="Number of iterations to check convergence (default: 100)"

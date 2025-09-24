@@ -12,19 +12,22 @@ def save_result(batch_start, batch_size, batch_genes, \
     """
     n_regimes = h0_params.shape[2] - 2
     lr = h0_loss - h1_loss
-    p_value = 1 - chi2.cdf(lr.flatten(), n_regimes - 1)
+    p_value = 1 - chi2.cdf(2 * lr.flatten(), n_regimes - 1)
 
     for i in range(batch_size):
-        if approx != "exp": # softplus
-            h0_theta = np.log1p(np.exp(h0_params[i, 0, -n_regimes]))
-            h1_theta = np.log1p(np.exp(h1_params[i, 0, -n_regimes:]))
-        else: # exp
-            h0_theta = np.exp(h0_params[i, 0, -n_regimes])
-            h1_theta = np.exp(h1_params[i, 0, -n_regimes:])
+        h0_alpha, h0_sigma2, h0_theta = h0_params[i, 0, 0:3]
+        h1_alpha, h1_sigma2 = h1_params[i, 0, 0:2]
+        h1_theta = h1_params[i, 0, 2:]
 
-        h0_alpha, h0_sigma2 = h0_params[i, 0, 0:2] ** 2
-        h1_alpha, h1_sigma2 = h1_params[i, 0, 0:2] ** 2
-            
+        '''
+        if approx != "exp": # softplus
+            h0_theta_tf = np.log1p(np.exp(h0_theta))
+            h1_theta_tf = np.log1p(np.exp(h1_theta))
+        else: # exp
+            h0_theta_tf = np.exp(h0_theta)
+            h1_theta_tf = np.exp(h1_theta)
+        '''
+
         result = (
             [batch_start + i, batch_genes[i], h0_alpha, h0_sigma2, h0_theta]
             + [h1_alpha, h1_sigma2] + h1_theta.tolist()

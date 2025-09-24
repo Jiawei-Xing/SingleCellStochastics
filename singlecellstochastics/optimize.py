@@ -38,7 +38,7 @@ def ou_optimize_scipy(
             ou_neg_log_lik_numpy,
             params_init,
             args=(mode, expr, diverge_list, share_list, epochs_list, beta_list),
-            bounds=[(1e-6, None)] * 2 + [(None, None)] * (len(params_init)-2),
+            bounds=[(1e-6, None)] * len(params_init), # all ou parameters should be positive
             method="L-BFGS-B",
         )
         return i, j, res.x
@@ -143,6 +143,10 @@ def ou_optimize_torch(
 
         # update best params for not yet converged genes
         with torch.no_grad():
+            # all ou parameters should be positive
+            if (ou_params[:, :, :] < 1e-6).any():
+                ou_params[:, :, :].clamp_(min=1e-6)
+
             mask = (average_loss < best_loss) & ~converged_mask
             best_loss[mask] = average_loss[mask].clone().detach()
             best_params[mask] = ou_params[mask].clone().detach()
@@ -307,13 +311,14 @@ def Lq_optimize_torch(
 
         # update best params for not yet converged genes
         with torch.no_grad():
-            # s2, alpha, sigma2 should be positive (instead of clamping, optimize square)
-            #for i in range(n_trees - 1):
-            #    n_cells = x_tensor_list[i].shape[-1]
-            #    if (params_tensor[i][:, :, n_cells:] < 1e-6).any():
-            #        params_tensor[i][:, :, n_cells:].clamp_(min=1e-6)
-            #if (params_tensor[-1][:, :, :2] < 1e-6).any():
-            #    params_tensor[-1][:, :, :2].clamp_(min=1e-6)
+            # q s2, ou alpha, and ou sigma2 should be positive
+            # q m and ou thetas could be negative given softplus transform
+            for i in range(n_trees - 1):
+                n_cells = x_tensor_list[i].shape[-1]
+                if (params_tensor[i][:, :, n_cells:] < 1e-6).any():
+                    params_tensor[i][:, :, n_cells:].clamp_(min=1e-6)
+            if (params_tensor[-1][:, :, :2] < 1e-6).any():
+                params_tensor[-1][:, :, :2].clamp_(min=1e-6)
 
             # update best params
             mask = (average_loss < best_loss) & ~converged_mask
