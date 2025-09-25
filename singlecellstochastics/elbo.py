@@ -21,7 +21,8 @@ def Lq_neg_log_lik_torch(
     """
     n_cells = x_tensor.shape[-1]
     m = Lq_params[:, :, :n_cells]  # (batch_size, N_sim, n_cells)
-    s2 = Lq_params[:, :, n_cells:]  # (batch_size, N_sim, n_cells)
+    s = torch.nn.functional.softplus(Lq_params[:, :, n_cells:])  # (batch_size, N_sim, n_cells)
+    s2 = s**2
 
     # OU -log lik
     term1 = ou_neg_log_lik_torch(

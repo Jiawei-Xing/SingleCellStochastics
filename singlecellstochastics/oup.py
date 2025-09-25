@@ -105,6 +105,12 @@ def run_ou_poisson():
         default=0,
         help="Number of EM iterations (default: 0, optimize all params together)"
     )
+    parser.add_argument(
+        "--pseudo",
+        type=float,
+        default=0,
+        help="Pseudo count for reverse softplus read counts as inital mean (default: 0, not reverse)"
+    )
     args = parser.parse_args()
 
     tree_files = args.tree.split(",")
@@ -124,6 +130,7 @@ def run_ou_poisson():
     wandb_flag = args.wandb
     approx = args.approx
     em_iter = args.em_iter
+    pseudo = args.pseudo
 
     if wandb_flag:
         wandb.login()
@@ -207,7 +214,8 @@ def run_ou_poisson():
             window=window,
             tol=tol,
             approx=approx,
-            em_iter=em_iter
+            em_iter=em_iter,
+            pseudo=pseudo
         )  # (batch_size, 1, ...)
 
         # save result
@@ -245,7 +253,8 @@ def run_ou_poisson():
                 window=window,
                 tol=tol,
                 approx=approx,
-                em_iter=em_iter
+                em_iter=em_iter,
+                pseudo=pseudo
             )  # (batch_size, N_sim, ...)
             null_LRs = h0_loss_sim - h1_loss_sim  # (batch_size, N_sim)
 
@@ -314,7 +323,8 @@ def run_ou_poisson():
                 window=window,
                 tol=tol,
                 approx=approx,
-                em_iter=em_iter
+                em_iter=em_iter,
+                pseudo=pseudo
             )  # (N_sim_all, 1, ...)
             null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
 

@@ -24,7 +24,9 @@ def ou_neg_log_lik_numpy(
     V: covariance matrix from trees (n_cells, n_cells)
     W: theta weight (n_cells, n_regimes)
     """
-    alpha, sigma2, theta0 = params[:3]
+    alpha, sigma = np.logaddexp(0, params[:2]) # softplus to keep positive
+    sigma2 = sigma**2
+    theta0 = params[2]
     n_trees = len(diverge_list)
 
     # share the same OU parameters for all trees
@@ -45,10 +47,6 @@ def ou_neg_log_lik_numpy(
             * (1 - np.exp(-2 * alpha * share))
         )
         
-        # Add regularization to prevent singular matrix
-        regularization = 0#1e-6
-        V_reg = V + regularization * np.eye(n_cells)
-
         # diff = observed expression - expected values (n_cells, 1)
         if mode == 1:
             W = np.ones(n_cells)  # expected values at leaves are same as theta0 at root
@@ -57,9 +55,16 @@ def ou_neg_log_lik_numpy(
             W = theta_weight_W_numpy(alpha, epochs, beta)
             diff = expr - W @ params[-n_regimes:]
 
-        # log(det V) + (diff @ V^-1 @ diff) / sigma2 + n_cells * log(sigma2)
-        log_det = np.linalg.slogdet(V_reg)[1]  # log det V
-        exp = (diff @ np.linalg.solve(V_reg, diff)).item()  # diff @ V^-1 @ diff
+        try:
+            log_det = np.linalg.slogdet(V)[1]  # log det V
+            exp = (diff @ np.linalg.solve(V, diff)).item()  # diff @ V^-1 @ diff
+        except np.linalg.LinAlgError:
+            # Add regularization to prevent singular matrix
+            print("warning: singular matrix")
+            V_reg = V + 1e-6 * np.eye(n_cells)
+            log_det = np.linalg.slogdet(V_reg)[1]  # log det V
+            exp = (diff @ np.linalg.solve(V_reg, diff)).item()  # diff @ V^-1 @ diff
+
         loss = log_det + exp / sigma2 + n_cells * np.log(sigma2)  # -2 * log likelihood
         loss_list.append(loss/2)
 
@@ -84,9 +89,10 @@ def ou_neg_log_lik_torch(
     """
     batch_size, N_sim, n_cells = expr_batch.shape
 
-    # Extract parameters
-    alpha = params_batch[:, :, 0]  # (batch_size, N_sim)
-    sigma2 = params_batch[:, :, 1]  # (batch_size, N_sim)
+    # Extract parameters (softplus to keep positive)
+    alpha = torch.nn.functional.softplus(params_batch[:, :, 0])  # (batch_size, N_sim)
+    sigma = torch.nn.functional.softplus(params_batch[:, :, 1])  # (batch_size, N_sim)
+    sigma2 = sigma**2
     thetas = params_batch[:, :, 2:]  # (batch_size, N_sim, n_regimes)
 
     # Compute V for all batches (broadcast alpha)
@@ -117,6 +123,7 @@ def ou_neg_log_lik_torch(
         L = torch.linalg.cholesky(V)  # (batch_size, N_sim, n_cells, n_cells)
     except RuntimeError:
         # Add regularization to prevent singular matrix
+        print("warning: singular matrix")
         L = torch.linalg.cholesky(
             V + 1e-6 * torch.eye(n_cells, device=device, dtype=torch.float32)
         )

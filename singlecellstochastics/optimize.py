@@ -38,9 +38,10 @@ def ou_optimize_scipy(
             ou_neg_log_lik_numpy,
             params_init,
             args=(mode, expr, diverge_list, share_list, epochs_list, beta_list),
-            bounds=[(1e-6, None)] * len(params_init), # all ou parameters should be positive
+            #bounds=[(1e-6, None)] + [(None, None)] * (len(params_init)-1),
             method="L-BFGS-B",
         )
+        print("\nh{mode-1} OU scipy init params:", res.x)
         return i, j, res.x
 
     # parallel execution
@@ -143,9 +144,10 @@ def ou_optimize_torch(
 
         # update best params for not yet converged genes
         with torch.no_grad():
-            # all ou parameters should be positive
-            if (ou_params[:, :, :] < 1e-6).any():
-                ou_params[:, :, :].clamp_(min=1e-6)
+            # ou alpha should be positive
+            #if (ou_params[:, :, 0] < 1e-6).any():
+            #    print("warning: negative OU init params")
+            #    ou_params[:, :, 0].clamp_(min=1e-6)
 
             mask = (average_loss < best_loss) & ~converged_mask
             best_loss[mask] = average_loss[mask].clone().detach()
@@ -313,12 +315,14 @@ def Lq_optimize_torch(
         with torch.no_grad():
             # q s2, ou alpha, and ou sigma2 should be positive
             # q m and ou thetas could be negative given softplus transform
-            for i in range(n_trees - 1):
-                n_cells = x_tensor_list[i].shape[-1]
-                if (params_tensor[i][:, :, n_cells:] < 1e-6).any():
-                    params_tensor[i][:, :, n_cells:].clamp_(min=1e-6)
-            if (params_tensor[-1][:, :, :2] < 1e-6).any():
-                params_tensor[-1][:, :, :2].clamp_(min=1e-6)
+            #for i in range(n_trees - 1):
+            #    n_cells = x_tensor_list[i].shape[-1]
+            #    if (params_tensor[i][:, :, n_cells:] < 1e-6).any():
+            #        print("warning: negative Lq params")
+            #        params_tensor[i][:, :, n_cells:].clamp_(min=1e-6)
+            #if (params_tensor[-1][:, :, 0] < 1e-6).any():
+            #    print("warning: negative OU params")
+            #    params_tensor[-1][:, :, 0].clamp_(min=1e-6)
 
             # update best params
             mask = (average_loss < best_loss) & ~converged_mask

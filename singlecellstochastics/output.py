@@ -15,8 +15,9 @@ def save_result(batch_start, batch_size, batch_genes, \
     p_value = 1 - chi2.cdf(2 * lr.flatten(), n_regimes - 1)
 
     for i in range(batch_size):
-        h0_alpha, h0_sigma2, h0_theta = h0_params[i, 0, 0:3]
-        h1_alpha, h1_sigma2 = h1_params[i, 0, 0:2]
+        h0_alpha, h0_sigma = np.logaddexp(0, h0_params[i, 0, 0:2])
+        h0_theta = h0_params[i, 0, 2]
+        h1_alpha, h1_sigma = np.logaddexp(0, h1_params[i, 0, 0:2])
         h1_theta = h1_params[i, 0, 2:]
 
         '''
@@ -29,8 +30,8 @@ def save_result(batch_start, batch_size, batch_genes, \
         '''
 
         result = (
-            [batch_start + i, batch_genes[i], h0_alpha, h0_sigma2, h0_theta]
-            + [h1_alpha, h1_sigma2] + h1_theta.tolist()
+            [batch_start + i, batch_genes[i], h0_alpha, h0_sigma, h0_theta]
+            + [h1_alpha, h1_sigma] + h1_theta.tolist()
             + [h0_loss[i, 0], h1_loss[i, 0], lr[i, 0], p_value[i]]
         )
         results[batch_start + i] = result
@@ -50,7 +51,7 @@ def output_results(results, output_file, regimes):
     # output results
     with open(output_file, "w") as f:
         f.write(
-            f"ID\tgene\th0_alpha\th0_sigma2\th0_theta\th1_alpha\th1_sigma2\t"
+            f"ID\tgene\th0_alpha\th0_sigma\th0_theta\th1_alpha\th1_sigma\t"
             + "\t".join(["h1_theta" + r for r in regimes])
             + f"\th0\th1\tLR\tp\tq\tsignif\n"
         )
