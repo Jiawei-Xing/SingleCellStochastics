@@ -1,7 +1,7 @@
 import sys
 import io
 import copy
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
 import argparse
 import torch
 from Bio import Phylo
@@ -183,7 +183,7 @@ def run_lrt():
 
     genes = read_count_data.keys()
     
-    with ThreadPoolExecutor(max_workers=threads) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
         futures = [
             executor.submit(
                 process_gene,
@@ -198,5 +198,5 @@ def run_lrt():
             )
             for gene in genes
         ]
-        for future in as_completed(futures):
+        for future in concurrent.futures.as_completed(futures):
             future.result()
