@@ -17,6 +17,8 @@ from .optimization import adam_optimize_ou_parameters
 from .stat_utils import calculate_lrt_and_pvalue
 import contextlib
 
+# Limit PyTorch to a single thread per process to avoid oversubscription in parallel below
+torch.set_num_threads(1) 
 
 def process_gene(
     gene: str,
