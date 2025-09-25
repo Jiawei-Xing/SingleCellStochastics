@@ -23,7 +23,6 @@ def adam_optimize_ou_parameters(
     alpha_init: torch.Tensor,
     sigma_init: torch.Tensor,
     theta_dict_init: Dict[str, torch.Tensor],
-    origin_expression: torch.Tensor,
     log_path: str,
     poisson_logl_mode: str = "deterministic",
 ) -> float:
@@ -35,7 +34,6 @@ def adam_optimize_ou_parameters(
         alpha_init: Initial value for selective strength parameter.
         sigma2_init: Initial value for variance parameter.
         theta_dict_init: A dictionary mapping regime labels to initial optimal expression values (theta).
-        origin_expression: Expression value assumed at the origin of the experiment.
         log_path: Path to a log file to record optimization progress (str).
         poisson_logl_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
 
@@ -76,7 +74,6 @@ def adam_optimize_ou_parameters(
         alpha,
         sigma,
         theta_dict,
-        origin_expression,
         poisson_logl_mode=poisson_logl_mode,
         variational_means=variational_means,
         variational_log_stds=variational_log_std_devs,
@@ -121,7 +118,6 @@ def adam_optimize_ou_parameters(
             alpha,
             sigma,
             theta_dict,
-            origin_expression,
             poisson_logl_mode=poisson_logl_mode,
             variational_means=variational_means,
             variational_log_stds=variational_log_std_devs,
@@ -172,7 +168,6 @@ def adam_optimize_ou_parameters(
         alpha,
         sigma,
         theta_dict,
-        origin_expression,
         poisson_logl_mode=poisson_logl_mode,
         variational_means=variational_means,
         variational_log_stds=variational_log_std_devs,

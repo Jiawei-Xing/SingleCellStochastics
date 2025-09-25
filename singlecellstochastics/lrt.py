@@ -23,7 +23,6 @@ def process_gene(
     read_count_data: dict,
     null_tree: Phylo.BaseTree.Tree,
     alt_tree: Phylo.BaseTree.Tree,
-    origin_expression: torch.Tensor,
     null_regime: str,
     poisson_logl_mode: str,
     output_dir: str = None,
@@ -75,7 +74,6 @@ def process_gene(
         alpha_init,
         sigma_init,
         theta_dict_init_null,
-        origin_expression,
         log_path,
         poisson_logl_mode
     )
@@ -93,7 +91,6 @@ def process_gene(
         alpha_init,
         sigma_init,
         theta_dict_init,
-        origin_expression,
         log_path,
         poisson_logl_mode
     )
@@ -129,9 +126,6 @@ def run_lrt():
         help="File path of input TSV expression data in cells x genes format",
     )
     parser.add_argument(
-        "--origin_expression", type=int, default=2, help="Starting expression assumed at the origin of the experiment"
-    )
-    parser.add_argument(
         "--null_regime",
         type=str,
         default="0",
@@ -164,9 +158,6 @@ def run_lrt():
     output_dir = args.output_dir
     threads = args.threads
 
-    # Setup tensors
-    origin_expression = torch.tensor(float(args.origin_expression), dtype=torch.float32)
-
     # Read in the null hypothesis tree without regimes
     null_tree = read_tree(args.tree)
     assign_nodes_to_null_regimes(null_tree, null_regime=args.null_regime)
@@ -191,7 +182,6 @@ def run_lrt():
                 read_count_data[gene],
                 copy.deepcopy(null_tree),
                 copy.deepcopy(alt_tree),
-                origin_expression,
                 null_regime,
                 poisson_logl_mode,
                 output_dir,

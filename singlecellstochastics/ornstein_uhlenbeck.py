@@ -149,11 +149,11 @@ def oup_neg_log_likelihood(
     alpha: torch.Tensor,
     sigma: torch,
     theta_dict: Dict[str, torch.Tensor],
-    origin_expression: torch.Tensor,
     transformation: str = "softplus",
     poisson_logl_mode: str = "deterministic",
     variational_means: torch.Tensor = None,
     variational_log_stds: torch.Tensor = None,
+    null_regime: str = "0"
 ) -> float:
     """
     Compute the log-likelihood of an OU process on a phylogenetic tree
@@ -164,11 +164,11 @@ def oup_neg_log_likelihood(
         alpha (float): Selective strength parameter for the OU process.
         sigma (float): Sigma standard deviation parameter for the OU process.
         theta_dict (dict): A dictionary mapping regime labels to optimal expression values (theta).
-        origin_expression (float): Expression value assumed at the origin of the experiment.
         transformation (str): Transformation to apply to mean before Poisson, either "softplus" or "exp".
         poisson_logl_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
         variational_means (torch.Tensor): Mean parameters for variational distribution (required if poisson_logl_mode="variational").
         variational_log_stds (torch.Tensor): Log standard deviation parameters for variational distribution (required if poisson_logl_mode="variational").
+        null_regime (str): Regime label for the null hypothesis (used to initialize origin expression from input thetas). Default is "0".
 
     Returns:
         log_lik: Log-likelihood of observed tip read_counts.
@@ -181,6 +181,7 @@ def oup_neg_log_likelihood(
     cov = compute_ou_covariance(tree, alpha, sigma)
 
     # Compute mean vector
+    origin_expression = theta_dict[null_regime]
     mean = compute_ou_mean_with_regimes(tree, alpha, origin_expression, theta_dict)
 
     # Multivariate normal log-likelihood
