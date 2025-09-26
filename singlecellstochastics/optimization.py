@@ -114,7 +114,7 @@ def adam_optimize_ou_parameters(
 
     # Track time
     start_time = time.time()
-    log_freq = 10  # How many steps between progress updates
+    log_freq = 100  # How many steps between progress updates
 
     # Optimization loop
     best_state = (
@@ -163,17 +163,6 @@ def adam_optimize_ou_parameters(
                     for message in log:
                         f.write(message + "\n")
                 log = []
-                
-            # Save best state
-            if best_state is None or cur_negll < best_state[0]:
-                best_state = (
-                    cur_negll,
-                    alpha.detach().clone(),
-                    sigma.detach().clone(),
-                    {regime: theta.detach().clone() for regime, theta in theta_dict.items()},
-                    variational_means.detach().clone() if variational_means is not None else None,
-                    variational_log_std_devs.detach().clone() if variational_log_std_devs is not None else None,
-                )
 
         # Check for improvement
         if step % convergence_check_freq == 0:
@@ -184,6 +173,17 @@ def adam_optimize_ou_parameters(
             window_avg = window_sum / len(window)
             if len(window) == window_size and abs(window_avg - cur_negll) < convergence:
                 break
+            
+            # Save best state during convergence checks
+            if best_state is None or cur_negll < best_state[0]:
+                best_state = (
+                    cur_negll,
+                    alpha.detach().clone(),
+                    sigma.detach().clone(),
+                    {regime: theta.detach().clone() for regime, theta in theta_dict.items()},
+                    variational_means.detach().clone() if variational_means is not None else None,
+                    variational_log_std_devs.detach().clone() if variational_log_std_devs is not None else None,
+                )
 
         # Backprop and step
         neg_log_lik.backward()
@@ -201,32 +201,22 @@ def adam_optimize_ou_parameters(
             f"Optimization completed in {end_time - start_time:.2f} seconds over {step} steps."
         )
     
-    # Restore best state
+    # Restore best state if better than the final state
     if curr_negll > best_state[0]:
         (
-            _,
+            optimal_neg_log_lik,
             alpha,
             sigma,
             theta_dict,
             variational_means,
             variational_log_std_devs,
         ) = best_state
+    else:
+        optimal_neg_log_lik = curr_negll
 
-    optimal_neg_log_lik = oup_neg_log_likelihood(
-        tree,
-        y_t,
-        tip_names,
-        tip_dist,
-        mrca_dist,
-        alpha,
-        sigma,
-        theta_dict,
-        poisson_logl_mode=poisson_logl_mode,
-        variational_means=variational_means,
-        variational_log_stds=variational_log_std_devs,
-    )
+
     with open(log_path, "a") as f:
-        f.write("\nFinal state:")
+        f.write("\nOptimal state:")
     print_state(optimal_neg_log_lik, alpha, sigma, theta_dict, log_path)
     if poisson_logl_mode == "variational":
         with open(log_path, "a") as f:
