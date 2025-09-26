@@ -105,7 +105,7 @@ def adam_optimize_ou_parameters(
 
     # Convergence criteria
     window_size = 10  # Number of past steps to consider for convergence
-    convergence = 0.01  # Convergence threshold
+    convergence = 0.0001  # Convergence threshold
     convergence_check_freq = 10  # How often to update the window and check for convergence
     
     # Log adam setup
