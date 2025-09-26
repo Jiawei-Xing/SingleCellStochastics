@@ -78,56 +78,6 @@ def preprocess_tree(tree: Tree) -> Tuple[List[str], torch.Tensor, torch.Tensor]:
     return tip_names, tip_dist, mrca_dist
 
 
-def compute_ou_covariance_slow(
-    tip_dist: torch.Tensor,
-    mrca_dist: torch.Tensor,
-    alpha: torch.Tensor,
-    sigma: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Compute the OU covariance matrix among tips in a tree.
-
-    Args:
-        tip_dist: 1-D torch.Tensor of shape (n_tips,) containing root-to-tip distances.
-        mrca_dist: 2-D torch.Tensor of shape (n_tips, n_tips) containing root-to-MRCA distances for each pair of tips.
-        alpha: Alpha for the OU process as a torch.tensor with (requires_grad=True)
-        sigma: Sigma for the OU process as a torch.tendor with (requires_grad=True)
-
-    Returns:
-        cov: torch.Tensor of shape (n_tips, n_tips)
-    """
-    n = len(tip_dist)
-
-    # Initialize covariance matrix
-    cov_matrix = torch.zeros((n, n), dtype=torch.float32)
-
-    # Square sigma to get sigma^2 (this prevents negative values when optimizing over sigma^2 directly)
-    sigma2 = sigma**2
-
-    # Precompute other reused calculations
-    two_alpha = 2.0 * alpha
-    sigma2_over_2alpha = sigma2 / two_alpha
-
-    for i in range(n):
-        for j in range(i, n):
-            if i == j:
-                # If same tip for both i and j, use variance formula
-                cov_matrix[i, j] = sigma2_over_2alpha * (
-                    1.0 - torch.exp(-two_alpha * tip_dist[i])
-                )
-            else:
-                # If different tips for i and j, use covariance formula
-                cov = (
-                    sigma2_over_2alpha
-                    * torch.exp(-alpha * (tip_dist[i] + tip_dist[j] - (2.0 * mrca_dist[i, j])))
-                    * (1.0 - torch.exp(-two_alpha * mrca_dist[i, j]))
-                )
-                cov_matrix[i, j] = cov
-                cov_matrix[j, i] = cov  # Symmetric matrix
-
-    return cov_matrix
-
-
 def compute_ou_covariance(
     tip_dist: torch.Tensor,
     mrca_dist: torch.Tensor,

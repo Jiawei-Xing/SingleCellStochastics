@@ -177,9 +177,6 @@ def run_lrt():
 
     genes = read_count_data.keys()
     
-    # For testing
-    genes = list(genes)[0:1]
-    
     with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
         futures = [
             executor.submit(
