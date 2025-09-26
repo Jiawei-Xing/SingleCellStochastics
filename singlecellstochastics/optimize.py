@@ -4,7 +4,7 @@ import torch
 from scipy.optimize import minimize
 import wandb
 
-from .likelihood import ou_neg_log_lik_numpy
+from .likelihood import ou_neg_log_lik_numpy, ou_neg_log_lik_numpy_kkt
 from .likelihood import ou_neg_log_lik_torch
 from .elbo import Lq_neg_log_lik_torch
 
@@ -41,7 +41,7 @@ def ou_optimize_scipy(
             #bounds=[(1e-6, None)] + [(None, None)] * (len(params_init)-1),
             method="L-BFGS-B",
         )
-        print("\nh{mode-1} OU scipy init params:", res.x)
+        print(f"\nh{mode-1} OU scipy init params: {res.x}")
         return i, j, res.x
 
     # parallel execution

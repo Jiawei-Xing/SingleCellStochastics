@@ -57,15 +57,94 @@ def ou_neg_log_lik_numpy(
 
         try:
             log_det = np.linalg.slogdet(V)[1]  # log det V
-            exp = (diff @ np.linalg.solve(V, diff)).item()  # diff @ V^-1 @ diff
+            exp = (diff.T @ np.linalg.solve(V, diff)).item()  # diff @ V^-1 @ diff
         except np.linalg.LinAlgError:
             # Add regularization to prevent singular matrix
             print("warning: singular matrix")
             V_reg = V + 1e-6 * np.eye(n_cells)
             log_det = np.linalg.slogdet(V_reg)[1]  # log det V
-            exp = (diff @ np.linalg.solve(V_reg, diff)).item()  # diff @ V^-1 @ diff
+            exp = (diff.T @ np.linalg.solve(V_reg, diff)).item()  # diff @ V^-1 @ diff
 
         loss = log_det + exp / sigma2 + n_cells * np.log(sigma2)  # -2 * log likelihood
+        loss_list.append(loss/2)
+
+    loss_list = np.array(loss_list)
+    average_L = logsumexp(loss_list) - np.log(n_trees)
+    return average_L
+
+
+# calculate negative log likelihood of OU
+def ou_neg_log_lik_numpy_kkt(
+    param, mode, expr_list, diverge_list, share_list, epochs_list, beta_list
+):
+    """
+    Compute negative log likelihood of OU along tree with KKT conditionadapted from EvoGeneX.
+    Use expression data directly as the OU output.
+    Assume the same OU parameters for all trees and average likelihoods with log-sum-exp trick.
+
+    params: alpha
+    mode: 1 for H0, 2 for H1
+    expr: expression data (n_cells, 1)
+    diverge_list: list of divergence matrices (n_cells, n_cells)
+    share_list: list of share matrices (n_cells, n_cells)
+    epochs_list: list of time intervals (n_cells, 1)
+    beta_list: list of regime activation matrices (n_cells, n_regimes)
+    V: covariance matrix from trees (n_cells, n_cells)
+    W: theta weight (n_cells, n_regimes)
+    """
+    alpha = np.logaddexp(0, param) # softplus to keep positive
+    n_trees = len(diverge_list)
+
+    # share the same OU parameters for all trees
+    loss_list = []
+    for i in range(n_trees):
+        expr = expr_list[i]
+        n_cells = len(expr)
+        diverge = diverge_list[i]
+        share = share_list[i]
+        epochs = epochs_list[i]
+        beta = beta_list[i]
+
+        # V: covariance matrix from trees (excluding variance sigma2)
+        V = (
+            (1 / (2 * alpha))
+            * np.exp(-alpha * diverge)
+            * (1 - np.exp(-2 * alpha * share))
+        )
+        
+        # diff = observed expression - expected values (n_cells, 1)
+        if mode == 1:
+            W = np.ones((n_cells, 1))  # expected values at leaves are same as theta0 at root
+        elif mode == 2:
+            W = theta_weight_W_numpy(alpha, epochs, beta)
+        
+        # cholesky decomposition
+        try:
+            L = np.linalg.cholesky(V)
+        except np.linalg.LinAlgError:
+            # Add regularization to prevent singular matrix
+            print("warning: singular matrix")
+            V_reg = V + 1e-6 * np.eye(n_cells)
+            L = np.linalg.cholesky(V_reg)
+
+        # log_det = np.linalg.slogdet(V)[1]
+        # cholesky: log|V| = 2 * sum(log diag(L))
+        log_det = 2 * np.sum(np.log(np.diagonal(L)))
+
+        # theta = (W.T @ V^-1 @ W)^-1 @ W.T @ V^-1 @ expr
+        # theta = np.linalg.solve(W.T @ np.linalg.solve(V, W), W.T @ np.linalg.solve(V, expr))
+        # cholesky: theta = (S.T @ S)^-1 @ S.T @ y
+        S = np.linalg.solve(L, W)      # L^{-1} W
+        y = np.linalg.solve(L, expr)   # L^{-1} expr
+        theta = np.linalg.solve(S.T @ S, S.T @ y)
+        
+        # sigma2 = (expr - W @ theta)^T @ V^-1 @ (expr - W @ theta) / n_cells
+        # sigma2 = (diff @ np.linalg.solve(V, diff)).item() / n_cells
+        # cholesky: sigma2 = (y - S @ theta)^T @ (y - S @ theta) / n_cells
+        r = y - S @ theta
+        sigma2 = (r.T @ r).item() / n_cells
+
+        loss = log_det + n_cells * np.log(sigma2)  # -2 * log likelihood
         loss_list.append(loss/2)
 
     loss_list = np.array(loss_list)
@@ -151,6 +230,7 @@ def ou_neg_log_lik_torch(
     Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Σ^{1/2}
     tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch, N_sim)
 
+    #const = n_cells * torch.log(torch.tensor(2 * torch.pi, device=device))
     loss = (
         log_det
         + n_cells * torch.log(sigma2).squeeze(-1).squeeze(-1)

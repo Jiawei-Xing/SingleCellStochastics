@@ -42,10 +42,12 @@ def Lq_neg_log_lik_torch(
     else:
         raise ValueError(f"Invalid approximation method: {approx}")
 
-    term2 = -torch.sum(x_tensor * E_log_approx - E_approx, dim=2)  # (batch_size, N_sim)
+    #const= - torch.lgamma(x_tensor + 1)
+    term2 = -torch.sum(x_tensor * E_log_approx - E_approx, dim=-1) # (batch_size, N_sim)
 
     # -entropy
-    term3 = -torch.sum(0.5 * torch.log(s2), dim=2)  # (batch_size, N_sim)
+    #const = torch.log(torch.tensor(2 * torch.pi * torch.e, device=device))
+    term3 = -0.5 * torch.sum(torch.log(s2), dim=-1)  # (batch_size, N_sim)
 
     loss = term1 + term2 + term3  # (batch_size, N_sim)
     return loss  # (batch_size, N_sim)
