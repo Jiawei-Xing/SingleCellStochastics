@@ -70,7 +70,7 @@ def adam_optimize_ou_parameters(
     y_t = torch.tensor(y, dtype=torch.float32)
     
     # Preprocess tree to get tip distances and MRCA distances once here
-    tip_names, tip_dist, mrca_dist = preprocess_tree(tree)
+    tip_names, tip_dist, mrca_dist = preprocess_tree(tree)  # We make the assumption that tree.get_terminals() is a deterministic order later for maintaining order between mean and cov calculations, otherwise would need to pass tip_names around to ensure order
 
     # Use Adam optimizer
     lr = 0.01

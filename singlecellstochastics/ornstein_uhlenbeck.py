@@ -78,8 +78,7 @@ def preprocess_tree(tree: Tree) -> Tuple[List[str], torch.Tensor, torch.Tensor]:
     return tip_names, tip_dist, mrca_dist
 
 
-def compute_ou_covariance(
-    tip_names: List[str],
+def compute_ou_covariance_slow(
     tip_dist: torch.Tensor,
     mrca_dist: torch.Tensor,
     alpha: torch.Tensor,
@@ -89,7 +88,6 @@ def compute_ou_covariance(
     Compute the OU covariance matrix among tips in a tree.
 
     Args:
-        tip_names: Ordered list of terminal (tip) names corresponding to tip_dist and mrca_dist order.
         tip_dist: 1-D torch.Tensor of shape (n_tips,) containing root-to-tip distances.
         mrca_dist: 2-D torch.Tensor of shape (n_tips, n_tips) containing root-to-MRCA distances for each pair of tips.
         alpha: Alpha for the OU process as a torch.tensor with (requires_grad=True)
@@ -98,7 +96,7 @@ def compute_ou_covariance(
     Returns:
         cov: torch.Tensor of shape (n_tips, n_tips)
     """
-    n = len(tip_names)
+    n = len(tip_dist)
 
     # Initialize covariance matrix
     cov_matrix = torch.zeros((n, n), dtype=torch.float32)
@@ -130,7 +128,7 @@ def compute_ou_covariance(
     return cov_matrix
 
 
-def compute_ou_covariance_fast(
+def compute_ou_covariance(
     tip_dist: torch.Tensor,
     mrca_dist: torch.Tensor,
     alpha: torch.Tensor,
@@ -251,7 +249,7 @@ def oup_neg_log_likelihood(
         log_lik: Log-likelihood of observed tip read_counts.
     """
     # Compute covariance matrix
-    cov = compute_ou_covariance(tip_names, tip_dist, mrca_dist, alpha, sigma)
+    cov = compute_ou_covariance(tip_dist, mrca_dist, alpha, sigma)
 
     # Compute mean vector
     origin_expression = theta_dict[null_regime]
