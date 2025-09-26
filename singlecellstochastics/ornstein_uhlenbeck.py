@@ -2,12 +2,12 @@ from collections import deque
 import numpy as np
 from scipy.stats import multivariate_normal
 from Bio import Phylo
+from Bio.Phylo.BaseTree import Tree, Clade
 from typing import Dict, List, Tuple, Optional
 import torch
 from torch.distributions import MultivariateNormal, Poisson, Normal
 import torch.nn.functional as F
 
-from .tree_utils import collect_tip_read_count_data
 from .transform import transform_latent_expression_values
 from .poisson import expected_log_poisson_mc
 
@@ -35,8 +35,53 @@ def get_ou_expr_one_branch(
     return new_expr
 
 
+def preprocess_tree(tree: Tree) -> Tuple[List[str], torch.Tensor, torch.Tensor]:
+    """
+    Precompute tip distances and MRCA (most recent common ancestor) distances
+    for a given phylogenetic tree.
+
+    Args:
+        tree (Tree): A Biopython Phylo tree object.
+
+    Returns:
+        tip_names (List[str]): Ordered list of terminal (tip) names.
+        tip_dist (torch.Tensor): 1-D tensor of shape (n_tips,) containing
+            the root-to-tip distances for each tip.
+        mrca_dist (torch.Tensor): 2-D tensor of shape (n_tips, n_tips)
+            where mrca_dist[i, j] is the root-to-MRCA distance
+            between tips i and j.
+    """
+    # Precompute distances from root to every node
+    root_dist = {}
+
+    def dfs(node: Clade, dist: float) -> None:
+        root_dist[node] = dist + (node.branch_length or 0.0)
+        for clade in node.clades:
+            dfs(clade, root_dist[node])
+
+    dfs(tree.root, 0.0)
+
+    tips = tree.get_terminals() # Should match order in mean calculation
+    n = len(tips)
+    tip_names = [tip.name for tip in tips]
+
+    # Precompute MRCA distance matrix
+    mrca_dist = torch.zeros((n, n), dtype=torch.float32)
+    for i in range(n):
+        for j in range(i, n):
+            mrca = tree.common_ancestor(tips[i], tips[j])
+            dist = root_dist[mrca]
+            mrca_dist[i, j] = dist
+            mrca_dist[j, i] = dist
+
+    tip_dist = torch.tensor([root_dist[t] for t in tips], dtype=torch.float32)
+    return tip_names, tip_dist, mrca_dist
+
+
 def compute_ou_covariance(
-    tree: Phylo.BaseTree.Tree,
+    tip_names: List[str],
+    tip_dist: torch.Tensor,
+    mrca_dist: torch.Tensor,
     alpha: torch.Tensor,
     sigma: torch.Tensor,
 ) -> torch.Tensor:
@@ -44,20 +89,16 @@ def compute_ou_covariance(
     Compute the OU covariance matrix among tips in a tree.
 
     Args:
-        tree: Biopython Tree object.
+        tip_names: Ordered list of terminal (tip) names corresponding to tip_dist and mrca_dist order.
+        tip_dist: 1-D torch.Tensor of shape (n_tips,) containing root-to-tip distances.
+        mrca_dist: 2-D torch.Tensor of shape (n_tips, n_tips) containing root-to-MRCA distances for each pair of tips.
         alpha: Alpha for the OU process as a torch.tensor with (requires_grad=True)
         sigma: Sigma for the OU process as a torch.tendor with (requires_grad=True)
 
     Returns:
         cov: torch.Tensor of shape (n_tips, n_tips)
     """
-    tips = tree.get_terminals()
-    tip_names = [tip.name for tip in tips]
-    n = len(tips)
-
-    # Precompute distances from root to each tip, considering the root branch length if it exists since the bipython tree distance function does not include it
-    root_branch_length = tree.root.branch_length if tree.root.branch_length else 0.0
-    dist_to_origin = {tip.name: tree.distance(tree.root, tip) + root_branch_length for tip in tips}
+    n = len(tip_names)
 
     # Initialize covariance matrix
     cov_matrix = torch.zeros((n, n), dtype=torch.float32)
@@ -70,35 +111,63 @@ def compute_ou_covariance(
     sigma2_over_2alpha = sigma2 / two_alpha
 
     for i in range(n):
-        # Distances from root to tip i
-        t_i = torch.tensor(dist_to_origin[tip_names[i]], dtype=torch.float32)
-
         for j in range(i, n):
             if i == j:
                 # If same tip for both i and j, use variance formula
                 cov_matrix[i, j] = sigma2_over_2alpha * (
-                    1.0 - torch.exp(-two_alpha * t_i)
+                    1.0 - torch.exp(-two_alpha * tip_dist[i])
                 )
             else:
-                # If different tips for i and j, find their most recent common ancestor (mrca) to compute covariance
-                mrca = tree.common_ancestor(tips[i], tips[j])
-                # Distance from origin to mrca
-                t_mrca = torch.tensor(
-                    tree.distance(tree.root, mrca) + root_branch_length, dtype=torch.float32
-                )
-                # Distance from root to tip j
-                t_j = torch.tensor(dist_to_origin[tip_names[j]], dtype=torch.float32)
-                
-                # Covariance formula
+                # If different tips for i and j, use covariance formula
                 cov = (
                     sigma2_over_2alpha
-                    * torch.exp(-alpha * (t_i + t_j - (2.0 * t_mrca)))
-                    * (1.0 - torch.exp(-two_alpha * t_mrca))
+                    * torch.exp(-alpha * (tip_dist[i] + tip_dist[j] - (2.0 * mrca_dist[i, j])))
+                    * (1.0 - torch.exp(-two_alpha * mrca_dist[i, j]))
                 )
                 cov_matrix[i, j] = cov
                 cov_matrix[j, i] = cov  # Symmetric matrix
 
     return cov_matrix
+
+
+def compute_ou_covariance_fast(
+    tip_dist: torch.Tensor,
+    mrca_dist: torch.Tensor,
+    alpha: torch.Tensor,
+    sigma: torch.Tensor
+) -> torch.Tensor:
+    """
+    Compute the Ornstein–Uhlenbeck (OU) covariance matrix among tree tips
+    using precomputed root-to-tip and root-to-MRCA distances.
+
+    Args:
+        tip_dist (torch.Tensor): 1-D tensor of shape (n_tips,) containing
+            root-to-tip distances.
+        mrca_dist (torch.Tensor): 2-D tensor of shape (n_tips, n_tips) containing
+            root-to-MRCA distances for each pair of tips.
+        alpha (torch.Tensor): Scalar OU strength parameter (requires_grad=True
+            if used in optimization).
+        sigma (torch.Tensor): Scalar OU diffusion parameter (requires_grad=True
+            if used in optimization).
+
+    Returns:
+        torch.Tensor: OU covariance matrix of shape (n_tips, n_tips).
+    """
+    two_alpha = 2.0 * alpha
+    sigma2_over_2alpha = (sigma ** 2) / two_alpha
+
+    d_i = tip_dist.view(-1, 1)   # column vector
+    d_j = tip_dist.view(1, -1)   # row vector
+    m = mrca_dist
+
+    # Pairwise covariance
+    cov = sigma2_over_2alpha * torch.exp(-alpha * (d_i + d_j - 2 * m)) \
+          * (1.0 - torch.exp(-two_alpha * m))
+
+    # Replace diagonal with variance formula
+    diag = sigma2_over_2alpha * (1.0 - torch.exp(-two_alpha * tip_dist))
+    cov[torch.arange(cov.size(0)), torch.arange(cov.size(0))] = diag
+    return cov
 
 
 def compute_ou_mean_with_regimes(
@@ -139,13 +208,17 @@ def compute_ou_mean_with_regimes(
             queue.append(child)
 
     # Collect tip values
-    tips = tree.get_terminals()
+    tips = tree.get_terminals() # Should match order in cov calculation
     tip_values = torch.stack([node_mu[tip] for tip in tips])
     return tip_values
 
 
 def oup_neg_log_likelihood(
     tree: Phylo.BaseTree.Tree,
+    y_t: torch.Tensor,
+    tip_names: List[str],
+    tip_dist: torch.Tensor,
+    mrca_dist: torch.Tensor,
     alpha: torch.Tensor,
     sigma: torch,
     theta_dict: Dict[str, torch.Tensor],
@@ -160,7 +233,11 @@ def oup_neg_log_likelihood(
     with regime-specific theta values.
 
     Args:
-        tree (Tree): A Biopython `Tree` object with assigned regimes and tip read_counts.
+        tree: Biopython `Tree` object with assigned regimes and tip read_counts.
+        y_t (torch.Tensor): Observed tip read counts as a 1-D tensor of shape (n_tips,).
+        tip_names (List[str]): Ordered list of terminal (tip) names corresponding to tip_dist and mrca_dist order.
+        tip_dist (torch.Tensor): 1-D tensor of shape (n_tips,) containing root-to-tip distances.
+        mrca_dist (torch.Tensor): 2-D tensor of shape (n_tips, n_tips) containing root-to-MRCA distances for each pair of tips.
         alpha (float): Selective strength parameter for the OU process.
         sigma (float): Sigma standard deviation parameter for the OU process.
         theta_dict (dict): A dictionary mapping regime labels to optimal expression values (theta).
@@ -173,12 +250,8 @@ def oup_neg_log_likelihood(
     Returns:
         log_lik: Log-likelihood of observed tip read_counts.
     """
-    # Extract tip data
-    y = collect_tip_read_count_data(tree)
-    y_t = torch.tensor(y, dtype=torch.float32)
-
     # Compute covariance matrix
-    cov = compute_ou_covariance(tree, alpha, sigma)
+    cov = compute_ou_covariance(tip_names, tip_dist, mrca_dist, alpha, sigma)
 
     # Compute mean vector
     origin_expression = theta_dict[null_regime]

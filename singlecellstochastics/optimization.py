@@ -4,7 +4,8 @@ from collections import deque
 import torch
 from Bio import Phylo
 
-from .ornstein_uhlenbeck import oup_neg_log_likelihood
+from .tree_utils import collect_tip_read_count_data
+from .ornstein_uhlenbeck import oup_neg_log_likelihood, preprocess_tree
 
 
 def print_state(neg_log_lik, alpha, sigma, theta_dict, log_path):
@@ -63,6 +64,13 @@ def adam_optimize_ou_parameters(
         variational_means = None
         variational_log_std_devs = None
         params = [alpha, sigma] + list(theta_dict.values())
+    
+    # Get tip read count data only once here
+    y = collect_tip_read_count_data(tree)
+    y_t = torch.tensor(y, dtype=torch.float32)
+    
+    # Preprocess tree to get tip distances and MRCA distances once here
+    tip_names, tip_dist, mrca_dist = preprocess_tree(tree)
 
     # Use Adam optimizer
     lr = 0.01
@@ -71,6 +79,10 @@ def adam_optimize_ou_parameters(
     # Print initial state
     initial_neg_log_lik = oup_neg_log_likelihood(
         tree,
+        y_t,
+        tip_names,
+        tip_dist,
+        mrca_dist,
         alpha,
         sigma,
         theta_dict,
@@ -115,6 +127,10 @@ def adam_optimize_ou_parameters(
         optimizer.zero_grad()
         neg_log_lik = oup_neg_log_likelihood(
             tree,
+            y_t,
+            tip_names,
+            tip_dist,
+            mrca_dist,
             alpha,
             sigma,
             theta_dict,
@@ -165,6 +181,10 @@ def adam_optimize_ou_parameters(
 
     optimal_neg_log_lik = oup_neg_log_likelihood(
         tree,
+        y_t,
+        tip_names,
+        tip_dist,
+        mrca_dist,
         alpha,
         sigma,
         theta_dict,

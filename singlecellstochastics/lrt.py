@@ -2,6 +2,7 @@ import sys
 import io
 import copy
 import concurrent.futures
+import traceback
 import argparse
 import torch
 from Bio import Phylo
@@ -176,6 +177,9 @@ def run_lrt():
 
     genes = read_count_data.keys()
     
+    # For testing
+    genes = list(genes)[0:1]
+    
     with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
         futures = [
             executor.submit(
@@ -191,4 +195,8 @@ def run_lrt():
             for gene in genes
         ]
         for future in concurrent.futures.as_completed(futures):
-            future.result()
+            try:
+                result = future.result()
+            except Exception as e:
+                print(f"Error processing gene: {e}")
+                traceback.print_exc()
