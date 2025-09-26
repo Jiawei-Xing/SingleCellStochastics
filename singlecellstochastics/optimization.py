@@ -26,7 +26,7 @@ def adam_optimize_ou_parameters(
     theta_dict_init: Dict[str, torch.Tensor],
     log_path: str,
     poisson_logl_mode: str = "deterministic",
-) -> float:
+) -> (torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]):
     """
     Optimize OU parameters using the Adam optimizer to minimize negative log-likelihood.
 
@@ -39,7 +39,11 @@ def adam_optimize_ou_parameters(
         poisson_logl_mode (str): Mode for Poisson sampling, either "deterministic", "stochastic", or "variational".
 
     Returns:
-        optimal_neg_log_lik: The optimal negative log-likelihood after optimization (float).
+        A tuple containing:
+            - optimal_neg_log_lik: The optimal negative log-likelihood value found.
+            - alpha: The optimized selective strength parameter.
+            - sigma: The optimized variance parameter.
+            - theta_dict: A dictionary mapping regime labels to optimized optimal expression values (theta).
     """
     # Set requires_grad=True for optimization
     alpha = alpha_init.detach().clone().requires_grad_(True)
@@ -101,7 +105,7 @@ def adam_optimize_ou_parameters(
 
     # Convergence criteria
     window_size = 10  # Number of past steps to consider for convergence
-    convergence = 0.0001  # Convergence threshold
+    convergence = 0.01  # Convergence threshold
     convergence_check_freq = 10  # How often to update the window and check for convergence
     
     # Log adam setup
@@ -118,7 +122,7 @@ def adam_optimize_ou_parameters(
 
     # Optimization loop
     best_state = (
-        initial_neg_log_lik.item(),
+        initial_neg_log_lik.detach().clone(),
         alpha.detach().clone(),
         sigma.detach().clone(),
         {regime: theta.detach().clone() for regime, theta in theta_dict.items()},
@@ -175,9 +179,9 @@ def adam_optimize_ou_parameters(
                 break
             
             # Save best state during convergence checks
-            if best_state is None or cur_negll < best_state[0]:
+            if best_state is None or cur_negll < best_state[0].item():
                 best_state = (
-                    cur_negll,
+                    neg_log_lik.detach().clone(),
                     alpha.detach().clone(),
                     sigma.detach().clone(),
                     {regime: theta.detach().clone() for regime, theta in theta_dict.items()},
@@ -202,7 +206,7 @@ def adam_optimize_ou_parameters(
         )
     
     # Restore best state if better than the final state
-    if curr_negll > best_state[0]:
+    if curr_negll > best_state[0].item():
         (
             optimal_neg_log_lik,
             alpha,
@@ -212,7 +216,7 @@ def adam_optimize_ou_parameters(
             variational_log_std_devs,
         ) = best_state
     else:
-        optimal_neg_log_lik = curr_negll
+        optimal_neg_log_lik = torch.tensor(curr_negll, dtype=torch.float32)
 
 
     with open(log_path, "a") as f:
