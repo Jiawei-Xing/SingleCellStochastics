@@ -73,7 +73,7 @@ def adam_optimize_ou_parameters(
     tip_names, tip_dist, mrca_dist = preprocess_tree(tree)  # We make the assumption that tree.get_terminals() is a deterministic order later for maintaining order between mean and cov calculations, otherwise would need to pass tip_names around to ensure order
 
     # Use Adam optimizer
-    lr = 0.01
+    lr = 0.1
     optimizer = torch.optim.Adam(params, lr=lr)
 
     # Print initial state
@@ -101,7 +101,7 @@ def adam_optimize_ou_parameters(
 
     # Convergence criteria
     window_size = 10  # Number of past steps to consider for convergence
-    convergence = 0.001  # Convergence threshold
+    convergence = 0.0001  # Convergence threshold
     convergence_check_freq = 10  # How often to update the window and check for convergence
     
     # Log adam setup
@@ -117,6 +117,15 @@ def adam_optimize_ou_parameters(
     log_freq = 10  # How many steps between progress updates
 
     # Optimization loop
+    best_state = (
+        initial_neg_log_lik.item(),
+        alpha.detach().clone(),
+        sigma.detach().clone(),
+        {regime: theta.detach().clone() for regime, theta in theta_dict.items()},
+        variational_means.detach().clone() if variational_means is not None else None,
+        variational_log_std_devs.detach().clone() if variational_log_std_devs is not None else None,
+    )
+    curr_negll = initial_neg_log_lik.item()
     log = []
     window = deque()
     window_sum = 0.0
@@ -138,8 +147,6 @@ def adam_optimize_ou_parameters(
             variational_means=variational_means,
             variational_log_stds=variational_log_std_devs,
         )
-        neg_log_lik.backward()
-        optimizer.step()
 
         cur_negll = neg_log_lik.item()
 
@@ -156,6 +163,17 @@ def adam_optimize_ou_parameters(
                     for message in log:
                         f.write(message + "\n")
                 log = []
+                
+            # Save best state
+            if best_state is None or cur_negll < best_state[0]:
+                best_state = (
+                    cur_negll,
+                    alpha.detach().clone(),
+                    sigma.detach().clone(),
+                    {regime: theta.detach().clone() for regime, theta in theta_dict.items()},
+                    variational_means.detach().clone() if variational_means is not None else None,
+                    variational_log_std_devs.detach().clone() if variational_log_std_devs is not None else None,
+                )
 
         # Check for improvement
         if step % convergence_check_freq == 0:
@@ -167,6 +185,10 @@ def adam_optimize_ou_parameters(
             if len(window) == window_size and abs(window_avg - cur_negll) < convergence:
                 break
 
+        # Backprop and step
+        neg_log_lik.backward()
+        optimizer.step()
+        
         prev_negll = cur_negll
         step += 1
 
@@ -178,6 +200,17 @@ def adam_optimize_ou_parameters(
         f.write(
             f"Optimization completed in {end_time - start_time:.2f} seconds over {step} steps."
         )
+    
+    # Restore best state
+    if curr_negll > best_state[0]:
+        (
+            _,
+            alpha,
+            sigma,
+            theta_dict,
+            variational_means,
+            variational_log_std_devs,
+        ) = best_state
 
     optimal_neg_log_lik = oup_neg_log_likelihood(
         tree,
