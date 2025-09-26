@@ -104,7 +104,7 @@ def adam_optimize_ou_parameters(
             f.write(f"\tvariational_std_devs: {[v.item() for v in torch.exp(variational_log_std_devs)]}\n")
 
     # Convergence criteria
-    window_size = 10  # Number of past steps to consider for convergence
+    window_size = 50  # Number of past steps to consider for convergence
     convergence = 0.0001  # Convergence threshold
     convergence_check_freq = 10  # How often to update the window and check for convergence
     
