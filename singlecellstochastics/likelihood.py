@@ -24,8 +24,7 @@ def ou_neg_log_lik_numpy(
     V: covariance matrix from trees (n_cells, n_cells)
     W: theta weight (n_cells, n_regimes)
     """
-    alpha, sigma = np.logaddexp(0, params[:2]) # softplus to keep positive
-    sigma2 = sigma**2
+    alpha, sigma2 = params[:2]
     theta0 = params[2]
     n_trees = len(diverge_list)
 
@@ -168,10 +167,9 @@ def ou_neg_log_lik_torch(
     """
     batch_size, N_sim, n_cells = expr_batch.shape
 
-    # Extract parameters (softplus to keep positive)
-    alpha = torch.nn.functional.softplus(params_batch[:, :, 0])  # (batch_size, N_sim)
-    sigma = torch.nn.functional.softplus(params_batch[:, :, 1])  # (batch_size, N_sim)
-    sigma2 = sigma**2
+    # Extract parameters (keep positive)
+    alpha = params_batch[:, :, 0]**2  # (batch_size, N_sim)
+    sigma2 = params_batch[:, :, 1]**2  # (batch_size, N_sim)
     thetas = params_batch[:, :, 2:]  # (batch_size, N_sim, n_regimes)
 
     # Compute V for all batches (broadcast alpha)

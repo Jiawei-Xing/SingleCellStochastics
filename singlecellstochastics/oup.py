@@ -57,8 +57,8 @@ def run_ou_poisson():
     parser.add_argument(
         "--batch",
         type=int,
-        default=100,
-        help="Number of genes for batch processing. Must not be larger than the total number of genes. (default: 100)"
+        default=1000,
+        help="Number of genes for batch processing. Must not be larger than the total number of genes. (default: 1000)"
     )
     parser.add_argument(
         "--lr", type=float, default=1e-1, help="Learning rate for Adam optimizer (default: 1e-1)"
@@ -66,14 +66,14 @@ def run_ou_poisson():
     parser.add_argument(
         "--iter",
         type=int,
-        default=5000,
-        help="Max number of iterations for optimization (default: 5000)"
+        default=10000,
+        help="Max number of iterations for optimization (default: 10,000)"
     )
     parser.add_argument(
-        "--window", type=int, default=100, help="Number of iterations to check convergence (default: 100)"
+        "--window", type=int, default=500, help="Number of iterations to check convergence (default: 500)"
     )
     parser.add_argument(
-        "--tol", type=float, default=1e-4, help="Convergence tolerance (default: 1e-3)"
+        "--tol", type=float, default=1e-4, help="Convergence tolerance (default: 1e-4)"
     )
     parser.add_argument(
         "--sim_all",
@@ -184,7 +184,7 @@ def run_ou_poisson():
             flush=True
         )
 
-        # pseudocount and init params
+        # expression data
         x_original = [
             df[batch_genes].values.T for df in df_list
         ]  # list of (batch_size, n_cells)

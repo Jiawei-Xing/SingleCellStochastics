@@ -38,7 +38,7 @@ def ou_optimize_scipy(
             ou_neg_log_lik_numpy,
             params_init,
             args=(mode, expr, diverge_list, share_list, epochs_list, beta_list),
-            #bounds=[(1e-6, None)] + [(None, None)] * (len(params_init)-1),
+            bounds=[(1e-6, None)]*2 + [(None, None)]*(len(params_init)-2),
             method="L-BFGS-B",
         )
         print(f"\nh{mode-1} OU scipy init params: {res.x}")
@@ -260,13 +260,7 @@ def Lq_optimize_torch(
     n_trees = len(x_tensor_list)
     
     # Track best parameters for all parameter types
-    if em is None:
-        # For full optimization, only track OU parameters (original behavior)
-        best_params = params[-1].clone().detach()  # (batch_size, N_sim, ou_param_dim)
-    else:
-        # For EM steps, track all parameters
-        best_params = [p.clone().detach() for p in params]
-    
+    best_params = [p.clone().detach() for p in params]
     best_loss = torch.full((batch_size, N_sim), float("inf"), device=device)
     optimizer = torch.optim.Adam(params_tensor, lr=learning_rate)
 
@@ -327,14 +321,8 @@ def Lq_optimize_torch(
             # update best params
             mask = (average_loss < best_loss) & ~converged_mask
             best_loss[mask] = average_loss[mask].clone().detach()
-            
-            if em is None:
-                # For full optimization, only update OU parameters
-                best_params[mask] = params_tensor[-1][mask].clone().detach()
-            else:
-                # For EM steps, update all parameters
-                for i, param in enumerate(params_tensor):
-                    best_params[i][mask] = param[mask].clone().detach()
+            for i, param in enumerate(params_tensor):
+                best_params[i][mask] = param[mask].clone().detach()
 
             if wandb_flag:
                 # plot loss of first gene in batch
@@ -391,15 +379,8 @@ def Lq_optimize_torch(
         print(f"   - Decrease window (current: {window})")
         print(f"   - Check data quality for these genes")
 
-    if em is None:
-        return (
-            best_params.clone().detach().cpu().numpy(),
-            best_loss.clone().detach().cpu().numpy(),
-        )
-    else:
-        # For EM steps, return all best parameters as a list
-        best_params_list = [p.clone().detach() for p in best_params]
-        return (
-            best_params_list,
-            best_loss.clone().detach(),
-        )
+    best_params_list = [p.clone().detach() for p in best_params]
+    return (
+        best_params_list,
+        best_loss.clone().detach(),
+    )

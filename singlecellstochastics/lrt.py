@@ -30,12 +30,10 @@ def likelihood_ratio_test(
     """
     Hypothesis testing for lineage-specific gene expression change.
 
-    x_original: (batch_size, N_sim, n_cells) numpy array
+    expr: (batch_size, N_sim, n_cells) numpy array
     diverge_list, share_list, epochs_list, beta_list: list of numpy arrays
     diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: list of tensors
-    expr: (batch_size, N_sim, n_cells) numpy array
     gene_names: list of gene names
-    cache_dir: directory to save the cached init OU parameters
     window: number of iterations to check convergence
     tol: convergence tolerance
     approx: approximation method
@@ -54,7 +52,17 @@ def likelihood_ratio_test(
             for x in x_pseudo
         ] # reverse read counts as Gaussian mean z
     else:
-        m_init = expr
+        m_init = [
+            np.log1p(x) for x in expr # log1p of expression data
+        ]
+
+    # standard deviation of expression data
+    s_init = [
+        np.tile(
+            np.maximum(1e-6, np.std(x, axis=-1, keepdims=True)), 
+            (1, 1, x.shape[-1])
+        ) for x in m_init
+    ]
 
     # use the first gene as the example gene
     m_first = [
@@ -73,6 +81,12 @@ def likelihood_ratio_test(
         beta_list,
         device=device,
     )  # (1, 1, n_regimes+2)
+
+    # root square of alpha and sigma2
+    ou_params_init_h0 = torch.cat([
+        ou_params_init_h0[:, :, :2].sqrt(), 
+        ou_params_init_h0[:, :, 2:]
+    ], dim=-1)
 
     # optimize OU for null model
     m_init_tensor = [
@@ -100,9 +114,13 @@ def likelihood_ratio_test(
         tol=tol
     )
 
+    s_init_tensor = [
+        torch.tensor(s, dtype=torch.float32, device=device) for s in s_init
+    ]
+
     # init Lq with expression data
     pois_params_init = [
-        torch.cat((m, torch.ones_like(m, device=device)), dim=-1) for m in m_init_tensor
+        torch.cat((m_init_tensor[i], s_init_tensor[i]), dim=-1) for i in range(len(m_init))
     ]  # list of (batch_size, N_sim, 2*n_cells)
 
     init_params = pois_params_init + [ou_params_h0]  # list of (batch_size, N_sim, param_dim)
@@ -151,6 +169,7 @@ def likelihood_ratio_test(
             em_iter=em_iter
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
 
+    '''
     # init OU parameters with one example gene
     ou_params_init_h1 = ou_optimize_scipy(
         ou_params_init,
@@ -163,9 +182,17 @@ def likelihood_ratio_test(
         device=device,
     )  # (1, 1, n_regimes+2)
 
+    # root square of alpha and sigma2
+    ou_params_init_h1 = torch.cat([
+        ou_params_init_h1[:, :, :2].sqrt(), 
+        ou_params_init_h1[:, :, 2:]
+    ], dim=-1)
+
     # Expand params_init to match batch size
     ou_params_init_h1_tensor = ou_params_init_h1.expand(batch_size, N_sim, -1)
-
+    '''
+    ou_params_init_h1_tensor = ou_params_h0
+    
     # optimize OU for alternative model
     ou_params_h1, ou_loss_h1 = ou_optimize_torch(
         ou_params_init_h1_tensor,
@@ -185,7 +212,8 @@ def likelihood_ratio_test(
     )
 
     # optimize Lq for alternative model
-    init_params = pois_params_init + [ou_params_h1]  # list of (batch_size, N_sim, param_dim)
+    #init_params = pois_params_init + [ou_params_h1]  # list of (batch_size, N_sim, param_dim)
+    init_params = h0_params
 
     if em_iter == 0: # optimize all params
         h1_params, h1_loss = Lq_optimize_torch(
@@ -226,7 +254,10 @@ def likelihood_ratio_test(
             em_iter=em_iter
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
 
-    return h0_params, h0_loss, h1_params, h1_loss, \
+    return h0_params[-1].clone().detach().cpu().numpy(), \
+        h0_loss.clone().detach().cpu().numpy(), \
+        h1_params[-1].clone().detach().cpu().numpy(), \
+        h1_loss.clone().detach().cpu().numpy(), \
         ou_params_h0.clone().detach().cpu().numpy(), \
         ou_loss_h0.clone().detach().cpu().numpy(), \
         ou_params_h1.clone().detach().cpu().numpy(), \

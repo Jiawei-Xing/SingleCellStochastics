@@ -252,10 +252,10 @@ def run_stochas_sim():
     parser.add_argument("--tree", type=str, required=True, help="File path of input tree")
     parser.add_argument("--regime", type=str, required=True, help="File path of input regime")
     parser.add_argument("--test", type=str, required=True, help="Regime for testing (OU)")
-    parser.add_argument("--root", type=int, required=True, help="Starting expression at the root")
+    parser.add_argument("--root", type=float, required=True, help="Starting expression at the root")
     parser.add_argument("--n_genes", type=int, default=100, help="Number of genes to simulate")
-    parser.add_argument("--sigma2", type=float, required=True, help="Variance for BM or OU")
-    parser.add_argument("--optim", type=int, default=None, help="Optimal expression for OU")
+    parser.add_argument("--sigma", type=float, required=True, help="Standard deviation for BM or OU")
+    parser.add_argument("--optim", type=float, default=None, help="Optimal expression for OU")
     parser.add_argument("--alpha", type=float, required=True, help="Selective strength for OU")
     parser.add_argument("--out", type=str, default=".", help="Output directory")
     parser.add_argument("--label", type=str, default="", help="Label for output")
@@ -267,7 +267,7 @@ def run_stochas_sim():
 
     # simulate gene expression
     plots, read_counts = simulate(clades, cells, paths, node_regime, depth, 
-                                args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma2, args.sample)
+                                args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma ** 2, args.sample)
     plot(plots, args.n_genes, args.out, args.label)
     write_read_counts(read_counts, cells, args.n_genes, args.out, args.label)
 
