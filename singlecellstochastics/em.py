@@ -16,7 +16,9 @@ def run_em(
     window,
     tol,
     approx,
-    em_iter
+    em_iter,
+    prior,
+    kkt
 ):
     """
     Run EM algorithm for Lq optimization.
@@ -37,6 +39,8 @@ def run_em(
     tol: float
     approx: str
     em_iter: int
+    prior: float
+    kkt: bool
     Returns: (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     """
     for i in range(em_iter):
@@ -50,22 +54,21 @@ def run_em(
             share_list_torch,
             epochs_list_torch,
             beta_list_torch,
-            max_iter=max_iter,
-            learning_rate=learning_rate,
-            device=device,
-            wandb_flag=wandb_flag,
-            window=window,
-            tol=tol,
-            approx=approx,
-            em="e"
+            max_iter,
+            learning_rate,
+            device,
+            wandb_flag,
+            window,
+            tol,
+            approx,
+            "e",
+            prior,
+            kkt
         )  # (batch_size, N_sim, all_param_dim)
-
-        # update init_params for M-step
-        init_params = h0_params
 
         # M-step
         h0_params, h0_loss = Lq_optimize_torch(
-            init_params,
+            h0_params,
             mode,
             x_tensor_list,
             gene_names,
@@ -73,14 +76,16 @@ def run_em(
             share_list_torch,
             epochs_list_torch,
             beta_list_torch,
-            max_iter=max_iter,
-            learning_rate=learning_rate,
-            device=device,
-            wandb_flag=wandb_flag,
-            window=window,
-            tol=tol,
-            approx=approx,
-            em="m"
+            max_iter,
+            learning_rate,
+            device,
+            wandb_flag,
+            window,
+            tol,
+            approx,
+            "m",
+            prior,
+            kkt
         )  # (batch_size, N_sim, all_param_dim)
 
         # update init_params for next iteration
@@ -96,14 +101,17 @@ def run_em(
         share_list_torch,
         epochs_list_torch,
         beta_list_torch,
-        max_iter=max_iter,
-        learning_rate=learning_rate,
-        device=device,
-        wandb_flag=wandb_flag,
-        window=window,
-        tol=tol,
-        approx=approx,
-        em="e"
+        max_iter,
+        learning_rate,
+        device,
+        wandb_flag,
+        window,
+        tol,
+        approx,
+        "e",
+        prior,
+        kkt
     )  # (batch_size, N_sim, all_param_dim)
 
-    return h0_params[-1].cpu().numpy(), h0_loss.cpu().numpy()
+    h0_params = [p.clone().detach() for p in h0_params]
+    return h0_params, h0_loss.clone().detach()

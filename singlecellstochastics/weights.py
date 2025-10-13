@@ -61,7 +61,7 @@ def theta_weight_W_torch(alpha_batch, epochs, beta):
         )  # (batch_size, N_sim, L)
 
         # Compute weighted sum using matrix multiplication
-        W_i = torch.matmul(y_diff, beta[i])  # (batch_size, N_sim, n_regimes)
+        W_i = torch.matmul(y_diff, beta[i].to(y.dtype))  # (batch_size, N_sim, n_regimes)
         W_list.append(W_i)
 
     W = torch.stack(W_list, dim=2)  # (batch_size, N_sim, n_cells, n_regimes)

@@ -15,24 +15,13 @@ def save_result(batch_start, batch_size, batch_genes, \
     p_value = 1 - chi2.cdf(2 * lr.flatten(), n_regimes - 1)
 
     for i in range(batch_size):
-        #h0_alpha, h0_sigma = np.logaddexp(0, h0_params[i, 0, 0:2])
-        h0_alpha = h0_params[i, 0, 0]**2
+        h0_alpha = np.exp(h0_params[i, 0, 0])
         h0_sigma = np.abs(h0_params[i, 0, 1])
         h0_theta = h0_params[i, 0, 2]
 
-        #h1_alpha, h1_sigma = np.logaddexp(0, h1_params[i, 0, 0:2])
-        h1_alpha = h1_params[i, 0, 0]**2
+        h1_alpha = np.exp(h1_params[i, 0, 0])
         h1_sigma = np.abs(h1_params[i, 0, 1])
         h1_theta = h1_params[i, 0, 2:]
-
-        '''
-        if approx != "exp": # softplus
-            h0_theta_tf = np.log1p(np.exp(h0_theta))
-            h1_theta_tf = np.log1p(np.exp(h1_theta))
-        else: # exp
-            h0_theta_tf = np.exp(h0_theta)
-            h1_theta_tf = np.exp(h1_theta)
-        '''
 
         result = (
             [batch_start + i, batch_genes[i], h0_alpha, h0_sigma, h0_theta]

@@ -74,7 +74,7 @@ def ou_neg_log_lik_numpy(
 
 # calculate negative log likelihood of OU
 def ou_neg_log_lik_numpy_kkt(
-    param, mode, expr_list, diverge_list, share_list, epochs_list, beta_list
+    params, mode, expr_list, diverge_list, share_list, epochs_list, beta_list
 ):
     """
     Compute negative log likelihood of OU along tree with KKT conditionadapted from EvoGeneX.
@@ -91,7 +91,8 @@ def ou_neg_log_lik_numpy_kkt(
     V: covariance matrix from trees (n_cells, n_cells)
     W: theta weight (n_cells, n_regimes)
     """
-    alpha = np.logaddexp(0, param) # softplus to keep positive
+    #alpha = np.logaddexp(0, param) # softplus to keep positive
+    alpha = params[0]
     n_trees = len(diverge_list)
 
     # share the same OU parameters for all trees
@@ -158,7 +159,7 @@ def ou_neg_log_lik_torch(
     """
     Same OU likelihood with torch. Used for ELBO with torch.
 
-    params_batch: (batch_size, N_sim, ou_param_dim)
+    params_batch: [alpha, other OU params]
     sigma2_q: (batch_size, N_sim, n_cells)
     expr_batch: (batch_size, N_sim, n_cells)
     diverge, share: (n_cells, n_cells)
@@ -168,9 +169,9 @@ def ou_neg_log_lik_torch(
     batch_size, N_sim, n_cells = expr_batch.shape
 
     # Extract parameters (keep positive)
-    alpha = params_batch[:, :, 0]**2  # (batch_size, N_sim)
-    sigma2 = params_batch[:, :, 1]**2  # (batch_size, N_sim)
-    thetas = params_batch[:, :, 2:]  # (batch_size, N_sim, n_regimes)
+    alpha = torch.exp(params_batch[0][:, :, 0])  # (batch_size, N_sim)
+    sigma2 = params_batch[1][:, :, 0]**2  # (batch_size, N_sim)
+    thetas = params_batch[1][:, :, 1:]  # (batch_size, N_sim, n_regimes)
 
     # Compute V for all batches (broadcast alpha)
     alpha = alpha[:, :, None, None]  # (batch_size, N_sim, 1, 1)
@@ -185,7 +186,9 @@ def ou_neg_log_lik_torch(
     
     # Compute W and diff
     if mode == 1:
-        W = torch.ones((batch_size, N_sim, n_cells), dtype=torch.float32, device=device)
+        W = torch.ones(
+            (batch_size, N_sim, n_cells), dtype=alpha.dtype, device=device
+        )
         diff = expr_batch - W * thetas[:, :, 0:1]  # (batch_size, N_sim, n_cells)
     elif mode == 2:
         W = theta_weight_W_torch(
@@ -202,7 +205,7 @@ def ou_neg_log_lik_torch(
         # Add regularization to prevent singular matrix
         print("warning: singular matrix")
         L = torch.linalg.cholesky(
-            V + 1e-6 * torch.eye(n_cells, device=device, dtype=torch.float32)
+            V + 1e-6 * torch.eye(n_cells, device=device, dtype=alpha.dtype)
         )
 
     # log_det = torch.linalg.slogdet(V_reg)[1]
@@ -229,10 +232,98 @@ def ou_neg_log_lik_torch(
     tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch, N_sim)
 
     #const = n_cells * torch.log(torch.tensor(2 * torch.pi, device=device))
-    loss = (
+    loss = 0.5 * (
         log_det
         + n_cells * torch.log(sigma2).squeeze(-1).squeeze(-1)
         + (exp + tr_term) / sigma2.squeeze(-1).squeeze(-1)
     )
 
-    return loss/2  # (batch_size, N_sim)
+    return loss  # (batch_size, N_sim)
+
+
+# calculate expectation of negative OU log likelihood with torch
+def ou_neg_log_lik_torch_kkt(
+    param_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device
+):
+    """
+    Same OU likelihood with torch. Used for ELBO with torch.
+
+    params_batch: [alpha, other OU params]
+    sigma2_q: (batch_size, N_sim, n_cells)
+    expr_batch: (batch_size, N_sim, n_cells)
+    diverge, share: (n_cells, n_cells)
+    epochs, beta: list as before
+    Returns: (batch_size, N_sim) tensor of losses
+    """
+    batch_size, N_sim, n_cells = expr_batch.shape
+
+    # Extract parameters (keep positive)
+    alpha = torch.exp(param_batch[0][:, :, 0])  # (batch_size, N_sim)
+
+    # Compute V for all batches (broadcast alpha)
+    alpha = alpha[:, :, None, None]  # (batch_size, N_sim, 1, 1)
+    V = (
+        (1 / (2 * alpha))
+        * torch.exp(-alpha * diverge)
+        * (1 - torch.exp(-2 * alpha * share))
+    )  # (batch_size, N_sim, n_cells, n_cells)
+    
+    # Compute W and diff
+    if mode == 1:
+        W = torch.ones(
+            (batch_size, N_sim, n_cells, 1), dtype=alpha.dtype, device=device
+        )
+    elif mode == 2:
+        W = theta_weight_W_torch(
+            alpha.squeeze(-1).squeeze(-1), epochs, beta
+        )  # (batch_size, N_sim, n_cells, n_regimes)
+
+    # cholesky decomposition for det and inv of matrix
+    try:
+        L = torch.linalg.cholesky(V)  # (batch_size, N_sim, n_cells, n_cells)
+    except RuntimeError:
+        # Add regularization to prevent singular matrix
+        print("warning: singular matrix")
+        L = torch.linalg.cholesky(
+            V + 1e-6 * torch.eye(n_cells, device=device, dtype=alpha.dtype)
+        )
+
+    # log_det = torch.linalg.slogdet(V_reg)[1]
+    # cholesky: log|V| = 2 * sum(log diag(L))
+    log_det = 2 * torch.sum(
+        torch.log(torch.diagonal(L, dim1=2, dim2=3)), dim=2
+    )  # (batch_size, N_sim)
+    
+    # theta = (W.T @ V^-1 @ W)^-1 @ W.T @ V^-1 @ expr
+    # theta = np.linalg.solve(W.T @ np.linalg.solve(V, W), W.T @ np.linalg.solve(V, expr))
+    # cholesky: theta = (S.T @ S)^-1 @ S.T @ y
+    S = torch.linalg.solve(L, W)      # L^{-1} W
+    y = torch.linalg.solve(L, expr_batch.unsqueeze(-1))   # L^{-1} expr
+    #theta = torch.linalg.solve(S.T @ S, S.T @ y)
+    theta = torch.linalg.lstsq(S, y).solution # (batch, N_sim, n_regimes, 1)    
+    
+    # sigma2 = (expr - W @ theta)^T @ V^-1 @ (expr - W @ theta) / n_cells
+    # sigma2 = (diff @ np.linalg.solve(V, diff)).item() / n_cells
+    # cholesky: sigma2 = (y - S @ theta)^T @ (y - S @ theta) / n_cells
+    r = y - S @ theta
+    sigma2 = (r.square().sum(dim=(-2, -1)) / n_cells) # (batch_size, N_sim)
+
+    # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V_reg), dim1=-2, dim2=-1), dim=-1)
+    # cholesky: trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
+    S_half = torch.diag_embed(
+        torch.sqrt(sigma2_q)
+    )  # Σ^{1/2} = diag(σ_i), shape (..., n, n)
+    Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Σ^{1/2}
+    tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch, N_sim)
+    sigma2 += tr_term / n_cells
+
+    #const = n_cells * torch.log(torch.tensor(2 * torch.pi, device=device))
+    loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood
+
+    sigma = sigma2 ** 0.5  # (batch_size, N_sim)
+    theta = theta.squeeze(-1)  # (batch_size, N_sim, n_regimes)
+    #if theta.shape[-1] == 1:
+    #    n_regimes = beta[0].shape[1]
+    #    theta = theta.expand(-1, -1, n_regimes)  # (batch_size, N_sim, n_regimes)
+
+    return loss, sigma, theta  # (batch_size, N_sim)

@@ -94,7 +94,7 @@ def E_softplus_taylor(u, sigma2):  # Taylor series for E[softplus]
 
 
 # Monte Carlo approximation for E[log(softplus(z))] and E[softplus(z)] with reparameterization
-def E_log_softplus_MC(u, sigma2, n_samples=1000):
+def E_log_softplus_MC(u, sigma2, n_samples=10000):
     """
     Monte Carlo approximation for E[log(softplus(z))] where z ~ N(u, sigma2)
     Uses reparameterization trick: z = u + sqrt(sigma2) * epsilon, where epsilon ~ N(0,1)
@@ -126,7 +126,7 @@ def E_log_softplus_MC(u, sigma2, n_samples=1000):
     return result
 
 
-def E_softplus_MC(u, sigma2, n_samples=1000):
+def E_softplus_MC(u, sigma2, n_samples=10000):
     """
     Monte Carlo approximation for E[softplus(z)] where z ~ N(u, sigma2)
     Uses reparameterization trick: z = u + sqrt(sigma2) * epsilon, where epsilon ~ N(0,1)

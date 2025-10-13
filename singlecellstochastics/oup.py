@@ -70,7 +70,7 @@ def run_ou_poisson():
         help="Max number of iterations for optimization (default: 10,000)"
     )
     parser.add_argument(
-        "--window", type=int, default=500, help="Number of iterations to check convergence (default: 500)"
+        "--window", type=int, default=200, help="Number of iterations to check convergence (default: 200)"
     )
     parser.add_argument(
         "--tol", type=float, default=1e-4, help="Convergence tolerance (default: 1e-4)"
@@ -111,6 +111,18 @@ def run_ou_poisson():
         default=0,
         help="Pseudo count for reverse softplus read counts as inital mean (default: 0, not reverse)"
     )
+    parser.add_argument(
+        "--prior",
+        type=float,
+        default=1.0,
+        help="L2 regularization strength for log alpha, aka precision of the Gaussian prior (default: 1.0)"
+    )
+    parser.add_argument(
+        "--init", action="store_true", help="Initial run with OU model (default: False)"
+    )
+    parser.add_argument(
+        "--no_kkt", action="store_false", help="Not use KKT condition to constrain OU parameters (default: True)"
+    )
     args = parser.parse_args()
 
     tree_files = args.tree.split(",")
@@ -131,6 +143,9 @@ def run_ou_poisson():
     approx = args.approx
     em_iter = args.em_iter
     pseudo = args.pseudo
+    prior = args.prior
+    init = args.init
+    kkt = args.no_kkt
 
     if wandb_flag:
         wandb.login()
@@ -193,9 +208,8 @@ def run_ou_poisson():
         ]  # list of (batch_size, 1, n_cells)
 
         # likelihood ratio test (default)
-        h0_params, h0_loss, h1_params, h1_loss, \
-            ou_params_h0, ou_loss_h0, ou_params_h1, ou_loss_h1 = \
-            likelihood_ratio_test(
+        h0_params, h0_loss, h1_params, h1_loss = likelihood_ratio_test(
+            #ou_params_h0, ou_loss_h0, ou_params_h1, ou_loss_h1 = \
             x_original,
             n_regimes,
             diverge_list,
@@ -207,22 +221,26 @@ def run_ou_poisson():
             epochs_list_torch,
             beta_list_torch,
             batch_gene_names,
-            max_iter=max_iter,
-            learning_rate=learning_rate,
-            device=device,
-            wandb_flag=wandb_flag,
-            window=window,
-            tol=tol,
-            approx=approx,
-            em_iter=em_iter,
-            pseudo=pseudo
+            max_iter,
+            learning_rate,
+            device,
+            wandb_flag,
+            window,
+            tol,
+            approx,
+            em_iter,
+            pseudo,
+            batch_start,
+            prior,
+            init,
+            kkt
         )  # (batch_size, 1, ...)
 
         # save result
         results = save_result(batch_start, batch_size, batch_genes, \
             h0_params, h1_params, h0_loss, h1_loss, results, approx)
-        results_ou = save_result(batch_start, batch_size, batch_genes, \
-            ou_params_h0, ou_params_h1, ou_loss_h0, ou_loss_h1, results_ou, approx)
+        #results_ou = save_result(batch_start, batch_size, batch_genes, \
+        #   ou_params_h0, ou_params_h1, ou_loss_h0, ou_loss_h1, results_ou, approx)
 
         # collect all ou params and lr
         ou_params_all.append(h0_params[:, 0, :])  # (batch_size, ...)
@@ -269,7 +287,7 @@ def run_ou_poisson():
 
     # output results
     output_results(results, output_dir + prefix + "_chi-squared.tsv", regimes)
-    output_results(results_ou, output_dir + prefix + "_ou-init.tsv", regimes)
+    #output_results(results_ou, output_dir + prefix + "_ou-init.tsv", regimes)
     
     # using empirical for each gene
     if N_sim_each:

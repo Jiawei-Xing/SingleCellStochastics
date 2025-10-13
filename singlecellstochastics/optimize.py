@@ -5,7 +5,7 @@ from scipy.optimize import minimize
 import wandb
 
 from .likelihood import ou_neg_log_lik_numpy, ou_neg_log_lik_numpy_kkt
-from .likelihood import ou_neg_log_lik_torch
+from .likelihood import ou_neg_log_lik_torch, ou_neg_log_lik_torch_kkt
 from .elbo import Lq_neg_log_lik_torch
 
 
@@ -35,7 +35,7 @@ def ou_optimize_scipy(
     def fit_one(i, j):
         expr = [x[i, j, :] for x in expr_list]
         res = minimize(
-            ou_neg_log_lik_numpy,
+            ou_neg_log_lik_numpy_kkt,
             params_init,
             args=(mode, expr, diverge_list, share_list, epochs_list, beta_list),
             bounds=[(1e-6, None)]*2 + [(None, None)]*(len(params_init)-2),
@@ -75,9 +75,10 @@ def ou_optimize_torch(
     gene_names,
     window,
     tol,
+    kkt
 ):
     """
-    Optimize the OU-only likelihood with PyTorch Adam.
+    Optimize the OU-Gaussian likelihood with PyTorch Adam.
     Returns OU parameters for each batch and sim.
     Used for initializing OU parameters for ELBO with expression data.
 
@@ -92,19 +93,37 @@ def ou_optimize_torch(
     gene_names: list of gene names
     window: number of recent iterations to check for convergence
     tol: convergence tolerance
-    """
-    ou_params = params_init.clone().detach().requires_grad_(True)
+    kkt: whether to use KKT condition for OU likelihood
+    """       
     batch_size, N_sim, _ = expr_list_torch[0].shape
     n_trees = len(expr_list_torch)
 
-    # Track best parameters for all parameter types
-    best_params = params_init.clone().detach()
-    best_loss = torch.full((batch_size, N_sim), float("inf"), device=device)
-    optimizer = torch.optim.Adam([ou_params], lr=learning_rate)
-    
+    # Initialize OU parameters for torch optimization
+    ou_params = [
+        params_init[:, :, 0:1].clone().detach(),
+        params_init[:, :, 1:].clone().detach()
+    ] # [alpha, others]
+
+    # Set requires_grad based on kkt
+    ou_params[0] = ou_params[0].requires_grad_(True) # optimize alpha
+    if not kkt:
+        ou_params[1] = ou_params[1].requires_grad_(True) # optimize all
+
+    # Track best parameters and loss
+    best_params = [
+        p.clone().detach() for p in ou_params
+    ] # [alpha, others]
+
+    best_loss = torch.full(
+        (batch_size, N_sim), float("inf"), dtype=params_init.dtype, device=device
+    )
+    optimizer = torch.optim.Adam(ou_params, lr=learning_rate)
+
     # Track loss history for convergence checking
     loss_history = []
-    converged_mask = torch.zeros((batch_size, N_sim), dtype=torch.bool, device=device)
+    converged_mask = torch.zeros(
+        (batch_size, N_sim), dtype=torch.bool, device=device
+    )
 
     for n in range(max_iter):
         optimizer.zero_grad()
@@ -116,7 +135,9 @@ def ou_optimize_torch(
         # get loss for each tree for not yet converged genes
         for i in range(n_trees):
             expr_tensor = expr_list_torch[i][active_batch, :, :] # only use not yet converged genes
-            ou_params_tensor = ou_params[active_batch, :, :] # only optimize not yet converged genes
+            ou_params_tensor = [
+                p[active_batch, :, :] for p in ou_params
+            ] # only optimize not yet converged genes
             
             sigma2_q = torch.zeros_like(expr_tensor) # trace term = 0
             diverge = diverge_list_torch[i]
@@ -124,39 +145,70 @@ def ou_optimize_torch(
             epochs = epochs_list_torch[i]
             beta = beta_list_torch[i]
 
-            loss = ou_neg_log_lik_torch(
-                ou_params_tensor,
-                sigma2_q,
-                mode,
-                expr_tensor,
-                diverge,
-                share,
-                epochs,
-                beta,
-                device=device
-            )
+            if kkt:
+                loss, sigma, theta = ou_neg_log_lik_torch_kkt(
+                    ou_params_tensor,
+                    sigma2_q,
+                    mode,
+                    expr_tensor,
+                    diverge,
+                    share,
+                    epochs,
+                    beta,
+                    device
+                )
+            else:
+                loss = ou_neg_log_lik_torch(
+                    ou_params_tensor,
+                    sigma2_q,
+                    mode,
+                    expr_tensor,
+                    diverge,
+                    share,
+                    epochs,
+                    beta,
+                    device
+                )
             loss_matrix[active_batch, :, i] = loss
 
         # average loss across trees (use torch.logsumexp for better numerical stability)
         average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
-            torch.tensor(n_trees, device=device, dtype=torch.float32)
+            torch.tensor(n_trees, device=device, dtype=loss.dtype)
         )  # (batch_size, N_sim)
 
         # update best params for not yet converged genes
         with torch.no_grad():
-            # ou alpha should be positive
-            #if (ou_params[:, :, 0] < 1e-6).any():
-            #    print("warning: negative OU init params")
-            #    ou_params[:, :, 0].clamp_(min=1e-6)
-
             mask = (average_loss < best_loss) & ~converged_mask
-            best_loss[mask] = average_loss[mask].clone().detach()
-            best_params[mask] = ou_params[mask].clone().detach()
+            best_loss = torch.where(
+                mask,
+                average_loss.clone().detach(),
+                best_loss
+            ) # update best loss
+
+            # update sigma and theta from kkt
+            if kkt:
+                other_params = torch.cat(
+                    (sigma.unsqueeze(-1).clone().detach(), # (B,S,1)
+                    theta.clone().detach()), dim=-1 # (B,S,n_regimes)
+                )
+                if mode == 1:
+                    ou_params[1][active_batch, :, :2] = other_params
+                else:
+                    ou_params[1][active_batch, :, :] = other_params
+
+            best_params = [
+                torch.where(
+                    mask.unsqueeze(-1),  # (B,S,1)
+                    ou_params[i].clone().detach(), # (B,S,n)
+                    best_params[i]
+                ) for i in range(len(ou_params))
+            ] # update best sigma and theta
 
             if wandb_flag:
-                wandb.log(
-                    {f"{gene_names[0]}_h{mode-1}_ou_loss": best_loss[0, 0], "iter": n}
-                )
+                wandb.log({
+                        "iter": n,
+                        f"{gene_names[0]}_h{mode-1}_ou_loss": best_loss[0, 0], 
+                })
 
         # Store loss history
         loss_history.append(average_loss.clone().detach())
@@ -165,7 +217,7 @@ def ou_optimize_torch(
         if n >= window:
             # Check if loss has stabilized within window
             start_loss = loss_history[-window]
-            denom = torch.maximum(start_loss.abs(), torch.tensor(1.0, device=device))
+            denom = start_loss.abs().clamp_min(1.0)
             relative_decrease = torch.abs(start_loss - best_loss) / denom
             
             # Mark as newly converged if variance is below tolerance
@@ -202,6 +254,10 @@ def ou_optimize_torch(
         print(f"   - Decrease window (current: {window})")
         print(f"   - Check data quality for these genes")
 
+    best_params = torch.cat(
+        [p for p in best_params], dim=-1
+     ) # (batch_size, N_sim, n_params)
+
     return best_params, best_loss
 
 
@@ -222,7 +278,9 @@ def Lq_optimize_torch(
     window,
     tol,
     approx,
-    em
+    em, 
+    prior,
+    kkt
 ):
     """
     Optimize ELBO with PyTorch Adam.
@@ -237,103 +295,150 @@ def Lq_optimize_torch(
     tol: convergence tolerance
     approx: approximation method for Poisson likelihood expectation
     em: "e" for E-step, "m" for M-step, None for both together
+    prior: L2 regularization strength for OU alpha
+    kkt: whether to use KKT condition for OU likelihood
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
-    # Determine which parameters should have gradients based on EM mode
+    batch_size, N_sim, _ = params[0].shape
+    n_trees = len(x_tensor_list)
+
+    # Initialize parameters for optimization
+    params_tensor = [
+        p.clone().detach() for p in params[:-1]
+    ] + [
+        params[-1][:, :, 0:1].clone().detach(),
+        params[-1][:, :, 1:].clone().detach()
+    ] # [Lq tree1, Lq tree2, ..., Lq treeN, alpha, other OU]
+
+    # Set requires_grad based on EM mode
     if em == "e":
         # E-step: optimize ELBO with fixed OU parameters
-        requires_grad_mask = [True] * (len(params) - 1) + [False]
+        for i in range(len(params_tensor)-2):
+            params_tensor[i] = params_tensor[i].requires_grad_(True)
     elif em == "m":
         # M-step: optimize OU parameters with fixed ELBO
-        requires_grad_mask = [False] * (len(params) - 1) + [True]
+        params_tensor[-2] = params_tensor[-2].requires_grad_(True) # alpha
+        if not kkt:
+            params_tensor[-1] = params_tensor[-1].requires_grad_(True) # other OU
     else:
         # optimize both ELBO and OU parameters
-        requires_grad_mask = [True] * len(params)
-    
-    # Create params_tensor with appropriate gradient requirements
-    params_tensor = [
-        p.clone().detach().requires_grad_(requires_grad) 
-        for p, requires_grad in zip(params, requires_grad_mask)
-    ]  # list of (batch_size, N_sim, param_dim)
-
-    batch_size, N_sim, _ = params_tensor[0].shape
-    n_trees = len(x_tensor_list)
+        for i in range(len(params_tensor)-1):
+            params_tensor[i] = params_tensor[i].requires_grad_(True)
+        if not kkt:
+            params_tensor[-1] = params_tensor[-1].requires_grad_(True) # other OU
     
     # Track best parameters for all parameter types
-    best_params = [p.clone().detach() for p in params]
-    best_loss = torch.full((batch_size, N_sim), float("inf"), device=device)
+    best_params = [p.clone().detach() for p in params_tensor]
+    best_loss = torch.full(
+        (batch_size, N_sim), float("inf"), dtype=params[0].dtype, device=device
+    )
     optimizer = torch.optim.Adam(params_tensor, lr=learning_rate)
 
     # Track loss history for convergence checking
     loss_history = []
-    converged_mask = torch.zeros((batch_size, N_sim), dtype=torch.bool, device=device)
+    converged_mask = torch.zeros(
+        (batch_size, N_sim), dtype=torch.bool, device=device
+    )
 
     for n in range(max_iter):
         optimizer.zero_grad()
 
         # initialize loss matrix and store indices of not yet converged genes
-        loss_matrix = torch.zeros(batch_size, N_sim, n_trees, device=device)
+        loss_matrix = torch.zeros(
+            batch_size, N_sim, n_trees, dtype=params[0].dtype, device=device
+        )
         active_batch = (~converged_mask).any(dim=1)
 
         # get loss for each tree for not yet converged genes
         for i in range(n_trees):
             x_tensor = x_tensor_list[i][active_batch, :, :]
             Lq_params = params_tensor[i][active_batch, :, :]
-            ou_params = params_tensor[-1][active_batch, :, :]
+            ou_params = [
+                params_tensor[-2][active_batch, :, :],
+                params_tensor[-1][active_batch, :, :]
+            ] # [alpha, others]
 
             diverge = diverge_list_torch[i]
             share = share_list_torch[i]
             epochs = epochs_list_torch[i]
             beta = beta_list_torch[i]
 
-            loss = Lq_neg_log_lik_torch(
-                Lq_params,
-                ou_params,
-                mode,
-                x_tensor,
-                diverge,
-                share,
-                epochs,
-                beta,
-                device=device,
-                approx=approx
-            )
+            if kkt:
+                loss, sigma, theta = Lq_neg_log_lik_torch(
+                    Lq_params,
+                    ou_params,
+                    mode,
+                    x_tensor,
+                    diverge,
+                    share,
+                    epochs,
+                    beta,
+                    device,
+                    approx,
+                    prior,
+                    kkt
+                )
+            else:
+                loss = Lq_neg_log_lik_torch(
+                    Lq_params,
+                    ou_params,
+                    mode,
+                    x_tensor,
+                    diverge,
+                    share,
+                    epochs,
+                    beta,
+                    device,
+                    approx,
+                    prior,
+                    kkt
+                )
             loss_matrix[active_batch, :, i] = loss
 
         # average loss across trees (use torch.logsumexp for better numerical stability)
         average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
-            torch.tensor(n_trees, device=device, dtype=torch.float32)
+            torch.tensor(n_trees, device=device, dtype=loss.dtype)
         )  # (batch_size, N_sim)
 
         # update best params for not yet converged genes
         with torch.no_grad():
-            # q s2, ou alpha, and ou sigma2 should be positive
-            # q m and ou thetas could be negative given softplus transform
-            #for i in range(n_trees - 1):
-            #    n_cells = x_tensor_list[i].shape[-1]
-            #    if (params_tensor[i][:, :, n_cells:] < 1e-6).any():
-            #        print("warning: negative Lq params")
-            #        params_tensor[i][:, :, n_cells:].clamp_(min=1e-6)
-            #if (params_tensor[-1][:, :, 0] < 1e-6).any():
-            #    print("warning: negative OU params")
-            #    params_tensor[-1][:, :, 0].clamp_(min=1e-6)
-
-            # update best params
             mask = (average_loss < best_loss) & ~converged_mask
-            best_loss[mask] = average_loss[mask].clone().detach()
+            best_loss = torch.where(
+                mask,
+                average_loss.clone().detach(),
+                best_loss
+            ) # update best loss
+
+            # update sigma and theta from kkt
+            if kkt:
+                other_params = torch.cat(
+                    (sigma.unsqueeze(-1).clone().detach(), # (B,S,1)
+                    theta.clone().detach()), dim=-1 # (B,S,n_regimes)
+                )
+                if mode == 1:
+                    params_tensor[-1][active_batch, :, :2] = other_params
+                else:
+                    params_tensor[-1][active_batch, :, :] = other_params
+
             for i, param in enumerate(params_tensor):
-                best_params[i][mask] = param[mask].clone().detach()
+                best_params[i] = torch.where(
+                    mask.unsqueeze(-1),  # (B,S,1)
+                    param.clone().detach(), # (B,S,all_param_dim)
+                    best_params[i]
+                ) # update best Lq params
 
             if wandb_flag:
                 # plot loss of first gene in batch
                 if em is None:
-                    wandb.log(
-                        {f"{gene_names[0]}_h{mode-1}_all_loss": best_loss[0, 0], "iter": n}
-                    )
+                    wandb.log({
+                            "iter": n,
+                            f"{gene_names[0]}_h{mode-1}_elbo_loss": best_loss[0, 0], 
+                    })
                 else:
-                    wandb.log(
-                        {f"{gene_names[0]}_h{mode-1}_{em}_loss": best_loss[0, 0], "iter": n}
-                    )
+                    wandb.log({
+                            "iter": n,
+                            f"{gene_names[0]}_h{mode-1}_{em}_loss": best_loss[0, 0], 
+                    })
         
         # Store loss history
         loss_history.append(average_loss.clone().detach())
@@ -342,7 +447,9 @@ def Lq_optimize_torch(
         if n >= window:
             # Check if loss has stabilized within window
             start_loss = loss_history[-window]
-            denom = torch.maximum(start_loss.abs(), torch.tensor(1.0, device=device))
+            denom = torch.maximum(
+                start_loss.abs(), torch.tensor(1.0, dtype=loss.dtype, device=device)
+            )
             relative_decrease = torch.abs(start_loss - best_loss) / denom
             
             # Mark as newly converged if variance is below tolerance
@@ -358,7 +465,7 @@ def Lq_optimize_torch(
         loss = average_loss[~converged_mask].mean()
         loss.backward()
         optimizer.step()
-
+    '''
     # warning if not all genes have converged
     print(f"\nChecking convergence for h{mode-1} ELBO...")
     if not converged_mask.all():
@@ -378,9 +485,9 @@ def Lq_optimize_torch(
         print(f"   - Increase tol (current: {tol})")
         print(f"   - Decrease window (current: {window})")
         print(f"   - Check data quality for these genes")
+    '''
+    best_params = [p for p in best_params[:-2]] + [
+        torch.cat((best_params[-2], best_params[-1]), dim=-1)
+    ] # [Lq tree1, Lq tree2, ..., Lq treeN, all OU]
 
-    best_params_list = [p.clone().detach() for p in best_params]
-    return (
-        best_params_list,
-        best_loss.clone().detach(),
-    )
+    return best_params, best_loss
