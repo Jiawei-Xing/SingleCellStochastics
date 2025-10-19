@@ -123,6 +123,12 @@ def run_ou_poisson():
     parser.add_argument(
         "--no_kkt", action="store_false", help="Not use KKT condition to constrain OU parameters (default: True)"
     )
+    parser.add_argument(
+        "--grid",
+        type=int,
+        default=0,
+        help="Grid search range for alpha with fixed other parameters (default: 0, no grid search)"
+    )
     args = parser.parse_args()
 
     tree_files = args.tree.split(",")
@@ -146,13 +152,13 @@ def run_ou_poisson():
     prior = args.prior
     init = args.init
     kkt = args.no_kkt
+    grid = args.grid
 
     if wandb_flag:
         wandb.login()
         wandb.init(project="SingleCellStochastics", name=wandb_flag)
 
     results = {}
-    results_ou = {}
     results_empirical_each = {}
     results_empirical_all = {}
     ou_params_all = []
@@ -233,14 +239,13 @@ def run_ou_poisson():
             batch_start,
             prior,
             init,
-            kkt
+            kkt,
+            grid
         )  # (batch_size, 1, ...)
 
         # save result
         results = save_result(batch_start, batch_size, batch_genes, \
             h0_params, h1_params, h0_loss, h1_loss, results, approx)
-        #results_ou = save_result(batch_start, batch_size, batch_genes, \
-        #   ou_params_h0, ou_params_h1, ou_loss_h0, ou_loss_h1, results_ou, approx)
 
         # collect all ou params and lr
         ou_params_all.append(h0_params[:, 0, :])  # (batch_size, ...)
@@ -252,7 +257,7 @@ def run_ou_poisson():
             x_original = simulate_null_each(
                 tree_list, h0_params, N_sim_each, cells_list
             )  # list of (batch_size, N_sim, n_cells)
-            _, h0_loss_sim, _, h1_loss_sim, _, _, _, _ = likelihood_ratio_test(
+            _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
                 x_original,
                 n_regimes,
                 diverge_list,
@@ -264,15 +269,20 @@ def run_ou_poisson():
                 epochs_list_torch,
                 beta_list_torch,
                 batch_gene_names,
-                max_iter=max_iter,
-                learning_rate=learning_rate,
-                device=device,
-                wandb_flag=wandb_flag,
-                window=window,
-                tol=tol,
-                approx=approx,
-                em_iter=em_iter,
-                pseudo=pseudo
+                max_iter,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                approx,
+                em_iter,
+                pseudo,
+                batch_start,
+                prior,
+                init,
+                kkt,
+                grid
             )  # (batch_size, N_sim, ...)
             null_LRs = h0_loss_sim - h1_loss_sim  # (batch_size, N_sim)
 
@@ -283,11 +293,9 @@ def run_ou_poisson():
                 )
                 result = results[batch_start + i][:-1] + [p_empirical]
                 results_empirical_each[batch_start + i] = result
-                #print("sim_gene result: " + "\t".join(list(map(str, result))))
 
     # output results
     output_results(results, output_dir + prefix + "_chi-squared.tsv", regimes)
-    #output_results(results_ou, output_dir + prefix + "_ou-init.tsv", regimes)
     
     # using empirical for each gene
     if N_sim_each:
@@ -322,7 +330,7 @@ def run_ou_poisson():
             # empirical null distribution for all genes
             x_original = [np.expand_dims(x, axis=1) for x in x_original]  # list of (N_sim_all, 1, n_cells)
             gene_names = ["sim_all"] * N_sim_all  # (N_sim_all,)
-            _, h0_loss_sim, _, h1_loss_sim, _, _, _, _ = likelihood_ratio_test(
+            _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
                 x_original,
                 n_regimes,
                 diverge_list,
@@ -334,15 +342,20 @@ def run_ou_poisson():
                 epochs_list_torch,
                 beta_list_torch,
                 gene_names,
-                max_iter=max_iter,
-                learning_rate=learning_rate,
-                device=device,
-                wandb_flag=wandb_flag,
-                window=window,
-                tol=tol,
-                approx=approx,
-                em_iter=em_iter,
-                pseudo=pseudo
+                max_iter,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                approx,
+                em_iter,
+                pseudo,
+                batch_start,
+                prior,
+                init,
+                kkt,
+                grid
             )  # (N_sim_all, 1, ...)
             null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
 

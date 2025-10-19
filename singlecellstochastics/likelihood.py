@@ -322,8 +322,5 @@ def ou_neg_log_lik_torch_kkt(
 
     sigma = sigma2 ** 0.5  # (batch_size, N_sim)
     theta = theta.squeeze(-1)  # (batch_size, N_sim, n_regimes)
-    #if theta.shape[-1] == 1:
-    #    n_regimes = beta[0].shape[1]
-    #    theta = theta.expand(-1, -1, n_regimes)  # (batch_size, N_sim, n_regimes)
 
     return loss, sigma, theta  # (batch_size, N_sim)

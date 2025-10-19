@@ -465,7 +465,7 @@ def Lq_optimize_torch(
         loss = average_loss[~converged_mask].mean()
         loss.backward()
         optimizer.step()
-    '''
+    
     # warning if not all genes have converged
     print(f"\nChecking convergence for h{mode-1} ELBO...")
     if not converged_mask.all():
@@ -485,7 +485,7 @@ def Lq_optimize_torch(
         print(f"   - Increase tol (current: {tol})")
         print(f"   - Decrease window (current: {window})")
         print(f"   - Check data quality for these genes")
-    '''
+    
     best_params = [p for p in best_params[:-2]] + [
         torch.cat((best_params[-2], best_params[-1]), dim=-1)
     ] # [Lq tree1, Lq tree2, ..., Lq treeN, all OU]

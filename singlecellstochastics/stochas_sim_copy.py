@@ -153,11 +153,13 @@ def OU_expression_all(node, parent_expr=None, expr={}, test_regime=None, root_ex
 # simulate gene expression by BM or OU
 def simulate(clades, cells, paths, node_regime, depth, n_genes, root_expr, test_regime, optim=None, alpha=None, sigma2=None, sample=True):
     read_counts = []
+    read_counts_latent = []
     plots = []
     for _ in range(n_genes):
         plot = []
         expr = OU_expression_all(node=clades[0], test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma2=sigma2, node_regime=node_regime)
         read_counts.append({})
+        read_counts_latent.append({})
 
         # BM-OU
         for path in paths.values():
@@ -199,10 +201,13 @@ def simulate(clades, cells, paths, node_regime, depth, n_genes, root_expr, test_
                 plot.append((x, y, "h1"))
             else:
                 plot.append((x, y, "h0"))
+
+            read = int(round(expr[cell]))
+            read_counts_latent[-1][cell] = read
         
         plots.append(plot)
 
-    return plots, read_counts
+    return plots, read_counts, read_counts_latent
 
 
 def plot(plots, n_genes, output_dir, label):
@@ -266,10 +271,11 @@ def run_stochas_sim():
     clades, cells, paths, node_regime, depth = read_tree(args.tree, args.regime)
 
     # simulate gene expression
-    plots, read_counts = simulate(clades, cells, paths, node_regime, depth, 
+    plots, read_counts, read_counts_latent = simulate(clades, cells, paths, node_regime, depth, 
                                 args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma ** 2, args.sample)
     plot(plots, args.n_genes, args.out, args.label)
     write_read_counts(read_counts, cells, args.n_genes, args.out, args.label)
+    write_read_counts(read_counts_latent, cells, args.n_genes, args.out, args.label + "_latent")
 
 
 if __name__ == "__main__":

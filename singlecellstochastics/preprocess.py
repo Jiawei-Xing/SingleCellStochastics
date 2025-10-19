@@ -61,10 +61,7 @@ def process_data(tree_files, gene_files, regime_files, rnull, device="cpu"):
                 clade.name = "internal_node" + str(i)
                 i = i + 1
 
-        # Store paths from each node to root (add an extra root)
-        # root = [Phylo.BaseTree.Clade(branch_length=0.0, name='root')]
-        # paths = {'root': root}
-        # paths.update({clade.name: root + tree.get_path(clade) for clade in clades})
+        # Store paths from each node to root
         paths = {clade.name: tree.get_path(clade) for clade in clades}
 
         # Precompute node index mapping for all nodes and cells
@@ -113,23 +110,34 @@ def process_data(tree_files, gene_files, regime_files, rnull, device="cpu"):
         # regime for thetas
         with open(regime_file, "r") as f:
             csv_file = csv.reader(f)
-            next(csv_file)
             node_regime = {}
             regimes = set()
-            for row in csv_file:
-                if row[1] == "":
-                    # mrca of a cell with itself
-                    cell_idx = cells.index(row[0])
-                    node = mrca_idx[cell_idx, cell_idx]
-                else:
-                    # mrca of two cells
-                    cell1_idx = cells.index(row[0])
-                    cell2_idx = cells.index(row[1])
-                    node = mrca_idx[cell1_idx, cell2_idx]
 
-                # regime for each node
-                node_regime[node] = row[2]
-                regimes.add(row[2])
+            # regime file in mrca format
+            if csv_file[0] == "node,node2,regime\n":
+                next(csv_file)  # skip header
+                for row in csv_file:
+                    if row[1] == "":
+                        # mrca of a cell with itself
+                        cell_idx = cells.index(row[0])
+                        node = mrca_idx[cell_idx, cell_idx]
+                    else:
+                        # mrca of two cells
+                        cell1_idx = cells.index(row[0])
+                        cell2_idx = cells.index(row[1])
+                        node = mrca_idx[cell1_idx, cell2_idx]
+                    # regime for each node
+                    node_regime[node] = row[2]
+                    regimes.add(row[2])
+            else:
+                # regime file in node-regime format
+                next(csv_file)  # skip header
+                for row in csv_file:
+                    node_name = row[0]
+                    regime = row[1]
+                    node = node_idx[node_name]
+                    node_regime[node] = regime
+                    regimes.add(regime)
 
         # sort regimes and move rnull to 1st
         regimes = sorted(list(regimes))

@@ -75,7 +75,7 @@ def get_ou_expr_one_branch(
     optim: float,
     alpha: float,
     branch_length: float,
-    sigma2: float
+    sigma: float
 ) -> float:
     """
     Simulate gene expression for a single branch under the Ornstein-Uhlenbeck (OU) process.
@@ -85,13 +85,13 @@ def get_ou_expr_one_branch(
         optim (float): Optimal expression value (theta) for the OU process.
         alpha (float): Selective strength parameter for the OU process.
         branch_length (float): Length of the branch.
-        sigma2 (float): Variance parameter for the OU process.
+        sigma (float): Variance parameter for the OU process.
 
     Returns:
         float: Simulated expression value at the child node.
     """
     mean = optim + (parent_expr - optim) * np.exp(-alpha * branch_length)
-    var = sigma2 / (2 * alpha) * (1 - np.exp(-2 * alpha * branch_length))
+    var = sigma**2 / (2 * alpha) * (1 - np.exp(-2 * alpha * branch_length))
     std = np.sqrt(np.maximum(var, 1e-10))
     new_expr = np.random.normal(loc=mean, scale=std)
     return new_expr
@@ -100,7 +100,7 @@ def get_ou_expr_one_branch(
 def get_bm_expr_one_branch(
     parent_expr: float,
     branch_length: float,
-    sigma2: float
+    sigma: float
 ) -> float:
     """
     Simulate gene expression for a single branch under the Brownian Motion (BM) process.
@@ -108,12 +108,12 @@ def get_bm_expr_one_branch(
     Args:
         parent_expr (float): Expression value at the parent node.
         branch_length (float): Length of the branch.
-        sigma2 (float): Variance parameter for the BM process.
+        sigma (float): Variance parameter for the BM process.
     
     Returns:
         float: Simulated expression value at the child node.
     """
-    var = sigma2 * branch_length
+    var = sigma**2 * branch_length
     std = np.sqrt(np.maximum(var, 1e-10))
     new_expr = np.random.normal(loc=parent_expr, scale=std)
     return new_expr
@@ -157,7 +157,7 @@ def get_latent_gene_expression_at_tips(
     root_expr: float = None,
     optim: float = None,
     alpha: float = None,
-    sigma2: float = None,
+    sigma: float = None,
     background_model: str = "OU"
 ) -> None:
     """
@@ -169,7 +169,7 @@ def get_latent_gene_expression_at_tips(
         root_expr (float, optional): Expression value at the root node.
         optim (float, optional): Optimal expression value (theta) for the OU process.
         alpha (float, optional): Selective strength parameter for the OU process.
-        sigma2 (float, optional): Variance parameter for the OU/BM process.
+        sigma (float, optional): Variance parameter for the OU/BM process.
         background_model (str, optional): Model for background lineages ("OU" or "BM").
 
     Returns:
@@ -186,11 +186,11 @@ def get_latent_gene_expression_at_tips(
             
             # Simulate expression based on regime and model
             if node.regime == test_regime:
-                new_expr = get_ou_expr_one_branch(parent_expr, optim, alpha, node.branch_length, sigma2)
+                new_expr = get_ou_expr_one_branch(parent_expr, optim, alpha, node.branch_length, sigma)
             elif background_model == "OU":
-                new_expr = get_ou_expr_one_branch(parent_expr, root_expr, alpha, node.branch_length, sigma2)
+                new_expr = get_ou_expr_one_branch(parent_expr, root_expr, alpha, node.branch_length, sigma)
             elif background_model == "BM":
-                new_expr = get_bm_expr_one_branch(parent_expr, node.branch_length, sigma2)
+                new_expr = get_bm_expr_one_branch(parent_expr, node.branch_length, sigma)
             else:
                 raise ValueError("background_model input must be OU or BM")
         
@@ -206,14 +206,14 @@ def get_latent_gene_expression_at_tips(
 
 def clamp_latent_gene_expression_at_tips(
     tree: Phylo.BaseTree.Tree, 
-    method: str = "clamp"
+    method: str = "softplus"
 ) -> None:
     """
     Clamp or transform negative latent gene expression values at the tips of the tree.
     
     Args:
         tree (Tree): A Biopython `Tree` object with simulated expression values.
-        method (str): Method to handle negative expressions. Options are "clamp" (set to zero) or "softplus" (apply softplus transformation). Default is "clamp".
+        method (str): Method to handle negative expressions. Options are "clamp" (set to zero) or "softplus" (apply softplus transformation). Default is "softplus".
         
     Returns:
         None
@@ -252,7 +252,7 @@ def simulate(
     test_regime: str,
     optim: float = None,
     alpha: float = None,
-    sigma2: float = None
+    sigma: float = None,
 ) -> tuple[list[str], dict[int, dict[str, int]]]:
     """
     Simulate gene expression data for multiple genes along a phylogenetic tree.
@@ -264,7 +264,7 @@ def simulate(
         test_regime (str): Regime label for which to apply the test OU process.
         optim (float, optional): Optimal expression value (theta) for the OU process.
         alpha (float, optional): Selective strength parameter for the OU process.
-        sigma2 (float, optional): Variance parameter for the OU/BM process.
+        sigma (float, optional): Variance parameter for the OU/BM process.
         
     Returns:
         tuple: A tuple containing:
@@ -273,6 +273,7 @@ def simulate(
                 mapping cell names to read counts.
     """
     read_counts = {}
+    read_counts_latent = {}
     plots = []
     for i in range(n_genes):
         plot = []
@@ -281,73 +282,88 @@ def simulate(
         reset_all_nodes_expr(tree)
         reset_all_nodes_read_counts(tree)
         
-        get_latent_gene_expression_at_tips(tree=tree, test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma2=sigma2, background_model="OU")
+        get_latent_gene_expression_at_tips(tree=tree, test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma=sigma, background_model="OU")
         clamp_latent_gene_expression_at_tips(tree)
         get_poisson_sampled_read_counts(tree)
         read_counts[i] = {node.name: node.read_count for node in tree.get_terminals()}
+        read_counts_latent[i] = {node.name: node.expr for node in tree.get_terminals()}
 
-        # # BM-OU
-        # for path in paths.values():
-        #     for i in range(len(path) - 1):
-        #         clade1 = path[i]
-        #         clade2 = path[i + 1]
-        #         x = (depth[clade1.name], depth[clade2.name])
-        #         y = (expr[clade1.name], expr[clade2.name])
-        #         regime = node_regime[clade2.name]
+        # BM-OU expr
+        for clade in tree.find_clades():
+            path = tree.get_path(clade)
+            for i in range(len(path) - 1):
+                clade1 = path[i]
+                clade2 = path[i + 1]
+                depth1 = sum(n.branch_length for n in tree.get_path(clade1))
+                depth2 = sum(n.branch_length for n in tree.get_path(clade2))
+                x = (depth1, depth2)
+                y = (clade1.expr, clade2.expr)
+                regime = clade2.regime
                 
-        #         if regime == test_regime:
-        #             plot.append((x, y, "h1"))
-        #         else:
-        #             plot.append((x, y, "h0"))
+                if regime == test_regime:
+                    plot.append((x, y, "h1"))
+                else:
+                    plot.append((x, y, "h0"))
 
-        # # Poisson
-        # for cell in cells:
-        #     read = np.random.poisson(expr[cell], 1)
-        #     read_counts[-1][cell] = read[0]
-        #     x = (depth[cell], 1.1)
-        #     y = (expr[cell], read[0])
-        #     regime = node_regime[cell]
+        # Poisson read counts
+        for cell in tree.get_terminals():
+            depth = sum(n.branch_length for n in tree.get_path(cell))
+            x = (depth, depth + 0.1)
+            y = (cell.expr, cell.read_count)
+            regime = cell.regime
                 
-        #     if regime == test_regime:
-        #         plot.append((x, y, "h1"))
-        #     else:
-        #         plot.append((x, y, "h0"))
+            if regime == test_regime:
+                plot.append((x, y, "h1"))
+            else:
+                plot.append((x, y, "h0"))
         
-        # plots.append(plot)
+        plots.append(plot)
         
     cells = [node.name for node in tree.get_terminals()]
     
-    return cells, read_counts
+    return plots, cells, read_counts
 
 
-# def plot(plots, n_genes, output_dir, label):
-#     cols = math.ceil(math.sqrt(n_genes))
-#     rows = math.ceil(n_genes / cols)
+def plot(plots, n_genes, output_dir, label):
+    '''
+    Plot gene expression evolution for multiple genes.
 
-#     fig, axes = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3))
-#     # Ensure axes is a 2D array and flatten
-#     if rows * cols == 1:
-#         axes = np.array([[axes]])
-#     elif rows == 1 or cols == 1:
-#         axes = np.atleast_2d(axes)
-#     axes_flat = axes.ravel()
+    Args:
+        plots (list): A list of plots for each gene.
+        n_genes (int): Number of genes to plot.
+        output_dir (str): Directory to save the output plot.
+        label (str): Label for the output file.
 
-#     for gene, plot in enumerate(plots):
-#         ax = axes_flat[gene]
-#         for l in set(plot):
-#             if l[2] == "h0":
-#                 ax.plot(l[0], l[1], color="black", marker="o", markersize=0.1, linewidth=0.1)
-#             else:
-#                 ax.plot(l[0], l[1], "ro-", markersize=0.1, linewidth=0.5)
-#         ax.set_title(f"gene {gene+1}")
+    Returns:
+        None (output saved as a PNG file).
+    '''
+    cols = math.ceil(math.sqrt(n_genes))
+    rows = math.ceil(n_genes / cols)
 
-#     # Hide unused axes (if any)
-#     for ax in axes_flat[n_genes:]:
-#         ax.set_visible(False)
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3))
+    # Ensure axes is a 2D array and flatten
+    if rows * cols == 1:
+        axes = np.array([[axes]])
+    elif rows == 1 or cols == 1:
+        axes = np.atleast_2d(axes)
+    axes_flat = axes.ravel()
 
-#     plt.tight_layout(pad=0.5)
-#     plt.savefig(f"{output_dir}/sim_{label}.png", dpi=300, bbox_inches="tight")
-#     plt.close(fig)
+    for gene, plot in enumerate(plots):
+        ax = axes_flat[gene]
+        for l in set(plot):
+            if l[2] == "h0":
+                ax.plot(l[0], l[1], color="black", marker="o", markersize=0.1, linewidth=0.1)
+            else:
+                ax.plot(l[0], l[1], "ro-", markersize=0.1, linewidth=0.5)
+        ax.set_title(f"gene {gene+1}")
+
+    # Hide unused axes (if any)
+    for ax in axes_flat[n_genes:]:
+        ax.set_visible(False)
+
+    plt.tight_layout(pad=0.5)
+    plt.savefig(f"{output_dir}/sim_{label}.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 def write_read_counts(
@@ -388,8 +404,8 @@ def run_stochas_sim():
     parser.add_argument("--regime", type=str, required=True, help="File path of input regime")
     parser.add_argument("--test", type=str, required=True, help="Regime for testing (OU)")
     parser.add_argument("--root", type=int, required=True, help="Starting expression at the root")
-    parser.add_argument("--n_genes", type=int, default=100, help="Number of genes to simulate")
-    parser.add_argument("--sigma2", type=float, required=True, help="Variance for BM or OU")
+    parser.add_argument("--n_genes", type=int, default=500, help="Number of genes to simulate")
+    parser.add_argument("--sigma", type=float, required=True, help="Variance for BM or OU")
     parser.add_argument("--optim", type=int, default=None, help="Optimal expression for OU")
     parser.add_argument("--alpha", type=float, required=True, help="Selective strength for OU")
     parser.add_argument("--out", type=str, default=".", help="Output directory")
@@ -400,14 +416,11 @@ def run_stochas_sim():
     tree = read_tree(args.tree)
     tree = assign_nodes_to_regimes(tree, args.regime)
 
-    cells, read_counts = simulate(tree, args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma2)
-    print(read_counts)
-    print(read_counts.keys())
-    
+    plots, cells, read_counts = simulate(tree, args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma)
+    #print(read_counts)
+    #print(read_counts.keys())
+    plot(plots, args.n_genes, args.out, args.label)
     write_read_counts(read_counts, cells, args.n_genes, args.out, args.label)
-    
-    # plot(plots, args.n_genes, args.out, args.label)
-
 
 if __name__ == "__main__":
     run_stochas_sim()

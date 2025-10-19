@@ -30,7 +30,8 @@ def likelihood_ratio_test(
     batch_start,
     prior,
     init,
-    kkt
+    kkt,
+    grid
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -61,9 +62,7 @@ def likelihood_ratio_test(
             for x in x_pseudo
         ] # reverse read counts through softplus or exp
     else:
-        m_init = [
-            np.log1p(x) for x in expr # log normalize of read counts
-        ]
+        m_init = expr
 
     # Initialize q standard deviation with expression data
     s_init = [
@@ -186,45 +185,6 @@ def likelihood_ratio_test(
             kkt
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     
-    alphas = [i+1 for i in range(200)]
-    elbos = []
-    for alpha in alphas: # try different initial alpha
-        init_params[-1][0, 0, 0] = np.log(alpha)
-        h0_params_grid, h0_loss_grid = Lq_optimize_torch(
-            init_params,
-            1,
-            x_tensor,
-            gene_names,
-            diverge_list_torch,
-            share_list_torch,
-            epochs_list_torch,
-            beta_list_torch,
-            1,
-            learning_rate,
-            device,
-            wandb_flag,
-            window,
-            tol,
-            approx,
-            None,
-            prior,
-            kkt
-        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
-        elbos.append(h0_loss_grid.clone().detach().cpu().numpy()[0, 0])
-
-    plt.plot(alphas, elbos, marker='o', label='-ELBO', ms=2)
-    plt.xlabel("alpha")
-    plt.ylabel("-ELBO")
-    plt.title("h0 ELBO")
-    plt.grid(True, which="both", ls="--", alpha=0.6)
-    best_idx = int(np.argmin(elbos))
-    plt.scatter(alphas[best_idx], elbos[best_idx], color="red", zorder=5, label="elbo best α")
-    plt.legend()
-    plt.savefig(f"{batch_start}_h0_elbo.png")
-    plt.show()
-    plt.close()
-    print(f"h0 best alpha: {alphas[int(np.argmin(elbos))]}, elbo: {np.min(elbos)}")
-
     # optimize Lq for alternative model
     if em_iter == 0: # optimize all params
         h1_params, h1_loss = Lq_optimize_torch(
@@ -269,43 +229,68 @@ def likelihood_ratio_test(
             kkt
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     
-    elbos = []
-    for alpha in alphas: # try different initial alpha
-        init_params[-1][0, 0, 0] = np.log(alpha)
-        h1_params_grid, h1_loss_grid = Lq_optimize_torch(
-            init_params,
-            2,
-            x_tensor,
-            gene_names,
-            diverge_list_torch,
-            share_list_torch,
-            epochs_list_torch,
-            beta_list_torch,
-            1,
-            learning_rate,
-            device,
-            wandb_flag,
-            window,
-            tol,
-            approx,
-            None,
-            prior,
-            kkt
-        )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
-        elbos.append(h1_loss_grid.clone().detach().cpu().numpy()[0, 0])
+    # Optional: grid search for alpha when fixing other parameters
+    if grid > 0:
+        alphas = [i+1 for i in range(grid)]
+        h0_elbos = []
+        h1_elbos = []
+        for alpha in alphas: # try different initial alpha
+            init_params[-1][0, 0, 0] = np.log(alpha)
+            h0_params_grid, h0_loss_grid = Lq_optimize_torch(
+                init_params,
+                1,
+                x_tensor,
+                gene_names,
+                diverge_list_torch,
+                share_list_torch,
+                epochs_list_torch,
+                beta_list_torch,
+                1,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                approx,
+                None,
+                prior,
+                kkt
+            )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
+            h1_params_grid, h1_loss_grid = Lq_optimize_torch(
+                init_params,
+                2,
+                x_tensor,
+                gene_names,
+                diverge_list_torch,
+                share_list_torch,
+                epochs_list_torch,
+                beta_list_torch,
+                1,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                approx,
+                None,
+                prior,
+                kkt
+            )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
+            h0_elbos.append(h0_loss_grid.clone().detach().cpu().numpy()[0, 0])
+            h1_elbos.append(h1_loss_grid.clone().detach().cpu().numpy()[0, 0])
 
-    plt.plot(alphas, elbos, marker='o', label='-ELBO', ms=2)
-    plt.xlabel("alpha")
-    plt.ylabel("-ELBO")
-    plt.title("h1 ELBO")
-    plt.grid(True, which="both", ls="--", alpha=0.6)
-    best_idx = int(np.argmin(elbos))
-    plt.scatter(alphas[best_idx], elbos[best_idx], color="red", zorder=5, label="elbo best α")
-    plt.legend()
-    plt.savefig(f"{batch_start}_h1_elbo.png")
-    plt.show()
-    plt.close()
-    print(f"h1 best alpha: {alphas[int(np.argmin(elbos))]}, elbo: {np.min(elbos)}")
+        plt.plot(alphas, h0_elbos, marker='o', label='h0 -ELBO', ms=2)
+        plt.plot(alphas, h1_elbos, marker='o', label='h1 -ELBO', ms=2)
+        plt.xlabel("alpha")
+        plt.ylabel("-ELBO")
+        plt.grid(True, which="both", ls="--", alpha=0.6)
+        best_idx = int(np.argmin(h0_elbos))
+        plt.scatter(alphas[best_idx], h0_elbos[best_idx], color="red", zorder=5, label="h0 best α")
+        best_idx = int(np.argmin(h1_elbos))
+        plt.scatter(alphas[best_idx], h1_elbos[best_idx], color="green", zorder=5, label="h1 best α")
+        plt.legend()
+        plt.savefig(f"{batch_start}_elbo.png")
+        plt.close()
     
     return h0_params[-1].clone().detach().cpu().numpy(), \
         h0_loss.clone().detach().cpu().numpy(), \
