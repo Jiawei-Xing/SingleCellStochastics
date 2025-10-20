@@ -52,6 +52,7 @@ def compare_results():
     n_pos = len(df_oup_pos)
     truth = np.array([False]*n_neg + [True]*n_pos)
 
+    # ROC and AUC
     result_oup_neg = np.sign(df_oup_neg["h1_theta1"].values - df_oup_neg["h1_theta0"].values) * (-np.log10(df_oup_neg["p"].values))
     result_oup_pos = np.sign(df_oup_pos["h1_theta1"].values - df_oup_pos["h1_theta0"].values) * (-np.log10(df_oup_pos["p"].values))
     p_oup = np.concatenate((result_oup_neg, result_oup_pos))

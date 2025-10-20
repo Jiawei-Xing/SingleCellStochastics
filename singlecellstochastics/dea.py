@@ -2,6 +2,7 @@ import scanpy as sc
 import pandas as pd
 import anndata as ad
 import argparse
+import csv
 
 def run_dea():
     """
@@ -10,21 +11,32 @@ def run_dea():
 
     parser = argparse.ArgumentParser(description="Run DEA using the Wilcoxon method between the 'met' and 'pri' groups.")
     parser.add_argument("--regime", type=str, required=True, help="Path to the regime file")
+    parser.add_argument("--test", type=str, required=True, help="Regime to test against primary")
     parser.add_argument("--expr", type=str, required=True, help="Path to the expression file")
     parser.add_argument("--outdir", type=str, required=True, help="Path to the output directory")
     args = parser.parse_args()
 
     regime_file = args.regime
+    test = args.test
     expr_file = args.expr
     outdir = args.outdir
 
     # cells in metastatic regime
     met = []
     with open(regime_file) as f:
-        for line in f:
-            leaf1, leaf2, regime = line.strip().split(",")
-            if leaf2 == "" and regime == "1":
-                met.append(leaf1)
+        csv_file = csv.reader(f)
+        header = next(csv_file)
+
+        if header == ["node", "node2", "regime"]:
+            for row in csv_file:
+                leaf1, leaf2, regime = row
+                if leaf2 == "" and regime == test:
+                    met.append(leaf1)
+        elif header == ["node_name", "regime"]:
+            for row in csv_file:
+                leaf1, regime = row
+                if regime == test:
+                    met.append(leaf1)
 
     # read count
     count_matrix = pd.read_csv(expr_file, index_col=0, header=0, sep="\t")

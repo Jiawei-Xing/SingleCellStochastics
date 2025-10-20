@@ -178,7 +178,7 @@ def run_ou_poisson():
         epochs_list_torch,
         beta_list_torch,
         regime_list,
-    ) = process_data(tree_files, gene_files, regime_files, rnull, device=device)
+    ) = process_data(tree_files, gene_files, regime_files, rnull, device)
 
     regimes = list(
         dict.fromkeys(x for sub in regime_list for x in sub)

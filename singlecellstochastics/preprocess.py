@@ -6,7 +6,7 @@ import torch
 
 
 # precompute and store input data for later usage
-def process_data(tree_files, gene_files, regime_files, rnull, device="cpu"):
+def process_data(tree_files, gene_files, regime_files, rnull, device):
     """
     Precompute input data and store for optimization.
 
@@ -110,12 +110,12 @@ def process_data(tree_files, gene_files, regime_files, rnull, device="cpu"):
         # regime for thetas
         with open(regime_file, "r") as f:
             csv_file = csv.reader(f)
+            header = next(csv_file)
             node_regime = {}
             regimes = set()
 
             # regime file in mrca format
-            if csv_file[0] == "node,node2,regime\n":
-                next(csv_file)  # skip header
+            if header == ["node", "node2", "regime"]:
                 for row in csv_file:
                     if row[1] == "":
                         # mrca of a cell with itself
@@ -129,9 +129,9 @@ def process_data(tree_files, gene_files, regime_files, rnull, device="cpu"):
                     # regime for each node
                     node_regime[node] = row[2]
                     regimes.add(row[2])
-            else:
-                # regime file in node-regime format
-                next(csv_file)  # skip header
+                    
+            # regime file in node-regime format
+            elif header == ["node_name", "regime"]:
                 for row in csv_file:
                     node_name = row[0]
                     regime = row[1]
