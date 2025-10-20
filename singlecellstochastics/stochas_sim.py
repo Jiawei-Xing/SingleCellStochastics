@@ -398,6 +398,7 @@ def write_read_counts(
             counts = [str(read_counts[gene][cell]) for gene in range(n_genes)]
             f.write(f"{cell}\t" + "\t".join(counts) + "\n")
 
+
 def run_stochas_sim():
     parser = argparse.ArgumentParser("Stochastic simulation of gene expression evolution along lineage")
     parser.add_argument("--tree", type=str, required=True, help="File path of input tree")
