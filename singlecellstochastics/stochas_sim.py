@@ -244,6 +244,19 @@ def get_poisson_sampled_read_counts(
         node.read_count = np.random.poisson(node.expr)
 
 
+def get_NB_sampled_read_counts(
+    tree: Phylo.BaseTree.Tree,
+    r: float = None
+) -> None:
+    """
+    Simulate observed read counts at the tips of the tree by sampling from a negative binomial distribution
+    with the latent expression values as the rate parameter and an input dispersion parameter.
+    """
+    for node in tree.get_terminals():
+        p = r / (r + node.expr)
+        node.read_count = np.random.negative_binomial(r, p)
+
+
 # simulate gene expression by BM or OU
 def simulate(
     tree: Phylo.BaseTree.Tree,
@@ -253,6 +266,7 @@ def simulate(
     optim: float = None,
     alpha: float = None,
     sigma: float = None,
+    dispersion: float = None
 ) -> tuple[list[str], dict[int, dict[str, int]]]:
     """
     Simulate gene expression data for multiple genes along a phylogenetic tree.
@@ -284,7 +298,11 @@ def simulate(
         
         get_latent_gene_expression_at_tips(tree=tree, test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma=sigma, background_model="OU")
         clamp_latent_gene_expression_at_tips(tree)
-        get_poisson_sampled_read_counts(tree)
+        if dispersion == 0:
+            get_poisson_sampled_read_counts(tree)
+        else:
+            get_NB_sampled_read_counts(tree, dispersion)
+
         read_counts[i] = {node.name: node.read_count for node in tree.get_terminals()}
         read_counts_latent[i] = {node.name: node.expr for node in tree.get_terminals()}
 
@@ -411,15 +429,14 @@ def run_stochas_sim():
     parser.add_argument("--alpha", type=float, required=True, help="Selective strength for OU")
     parser.add_argument("--out", type=str, default=".", help="Output directory")
     parser.add_argument("--label", type=str, default="", help="Label for output")
+    parser.add_argument("--dispersion", type=float, default="0", help="Dispersion for negative binomial sampling (default: Poisson, no dispersion)")
     args = parser.parse_args()
 
     
     tree = read_tree(args.tree)
     tree = assign_nodes_to_regimes(tree, args.regime)
 
-    plots, cells, read_counts = simulate(tree, args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma)
-    #print(read_counts)
-    #print(read_counts.keys())
+    plots, cells, read_counts = simulate(tree, args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma, args.dispersion)
     plot(plots, args.n_genes, args.out, args.label)
     write_read_counts(read_counts, cells, args.n_genes, args.out, args.label)
 
