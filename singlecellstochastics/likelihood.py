@@ -241,6 +241,34 @@ def ou_neg_log_lik_torch(
     return loss  # (batch_size, N_sim)
 
 
+def psd_safe_cholesky(V, base_jitter=1e-6, max_tries=7):
+    # 1) Symmetrize (critical!)
+    V = 0.5 * (V + V.transpose(-1, -2))
+
+    # 2) Replace NaN/Inf if any (optional but practical)
+    if not torch.isfinite(V).all():
+        V = torch.where(torch.isfinite(V), V, torch.zeros_like(V))
+
+    n = V.shape[-1]
+    eye = torch.eye(n, dtype=V.dtype, device=V.device)
+    jitter = base_jitter
+
+    # 3) Try with exponentially increasing jitter
+    for _ in range(max_tries):
+        try:
+            return torch.linalg.cholesky(V + jitter * eye)
+        except RuntimeError:
+            jitter *= 10.0  # 1e-6 -> 1e-5 -> 1e-4 -> ... as needed
+
+    # 4) PSD projection fallback (clip negative eigenvalues), then Cholesky
+    evals, evecs = torch.linalg.eigh(V)  # V is symmetric now
+    # Use a small floor relative to dtype
+    floor = 1e-10 if V.dtype == torch.float64 else 1e-8
+    evals = torch.clamp(evals, min=floor)
+    V_psd = (evecs * evals.unsqueeze(-2)) @ evecs.transpose(-1, -2)
+    return torch.linalg.cholesky(V_psd + jitter * eye)
+
+
 # calculate expectation of negative OU log likelihood with torch
 def ou_neg_log_lik_torch_kkt(
     param_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device
@@ -284,9 +312,12 @@ def ou_neg_log_lik_torch_kkt(
     except RuntimeError:
         # Add regularization to prevent singular matrix
         print("warning: singular matrix")
-        L = torch.linalg.cholesky(
-            V + 1e-6 * torch.eye(n_cells, device=device, dtype=alpha.dtype)
-        )
+        try:
+            L = torch.linalg.cholesky(
+                V + 1e-6 * torch.eye(n_cells, device=device, dtype=V.dtype)
+            )
+        except RuntimeError:
+            L = psd_safe_cholesky(V, base_jitter=1e-6, max_tries=7)
 
     # log_det = torch.linalg.slogdet(V_reg)[1]
     # cholesky: log|V| = 2 * sum(log diag(L))
