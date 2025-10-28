@@ -31,7 +31,8 @@ def likelihood_ratio_test(
     prior,
     init,
     kkt,
-    grid
+    grid,
+    nb
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -134,7 +135,11 @@ def likelihood_ratio_test(
         torch.cat((m_init_tensor[i], s_init_tensor[i]), dim=-1) for i in range(len(m_init))
     ]  # list of (batch_size, N_sim, 2*n_cells)
 
-    init_params = pois_params_init + [ou_params_init]  # list of (batch_size, N_sim, param_dim)
+    # Initialize dispersion parameter for negative binomial
+    logr = torch.tensor(5, dtype=torch.float32, device=device) # initial r=exp(5)=148.41
+
+    # Combine all initial parameters
+    init_params = pois_params_init + [logr] + [ou_params_init]  # list of (batch_size, N_sim, param_dim)
  
     # Convert expression data to torch tensor
     x_tensor = [
@@ -161,7 +166,8 @@ def likelihood_ratio_test(
             approx,
             None,
             prior,
-            kkt
+            kkt,
+            nb
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
         h0_params, h0_loss = run_em(
@@ -182,7 +188,8 @@ def likelihood_ratio_test(
             approx,
             em_iter,
             prior,
-            kkt
+            kkt,
+            nb
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     
     # optimize Lq for alternative model
@@ -205,7 +212,8 @@ def likelihood_ratio_test(
             approx,
             None,
             prior,
-            kkt
+            kkt,
+            nb
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
         h1_params, h1_loss = run_em(
@@ -226,7 +234,8 @@ def likelihood_ratio_test(
             approx,
             em_iter,
             prior,
-            kkt
+            kkt,
+            nb
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     
     # Optional: grid search for alpha when fixing other parameters
@@ -254,7 +263,8 @@ def likelihood_ratio_test(
                 approx,
                 None,
                 prior,
-                kkt
+                kkt,
+                nb
             )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
             h1_params_grid, h1_loss_grid = Lq_optimize_torch(
                 init_params,
@@ -274,7 +284,8 @@ def likelihood_ratio_test(
                 approx,
                 None,
                 prior,
-                kkt
+                kkt,
+                nb
             )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
             h0_elbos.append(h0_loss_grid.clone().detach().cpu().numpy()[0, 0])
             h1_elbos.append(h1_loss_grid.clone().detach().cpu().numpy()[0, 0])

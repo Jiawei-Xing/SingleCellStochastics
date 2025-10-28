@@ -129,6 +129,9 @@ def run_ou_poisson():
         default=0,
         help="Grid search range for alpha with fixed other parameters (default: 0, no grid search)"
     )
+    parser.add_argument(
+        "--nb", action="store_true", help="Use negative binomial instead of Poisson (default: False)"
+    )
     args = parser.parse_args()
 
     tree_files = args.tree.split(",")
@@ -153,6 +156,7 @@ def run_ou_poisson():
     init = args.init
     kkt = args.no_kkt
     grid = args.grid
+    nb = args.nb
 
     if wandb_flag:
         wandb.login()
@@ -240,7 +244,8 @@ def run_ou_poisson():
             prior,
             init,
             kkt,
-            grid
+            grid,
+            nb
         )  # (batch_size, 1, ...)
 
         # save result
@@ -282,7 +287,8 @@ def run_ou_poisson():
                 prior,
                 init,
                 kkt,
-                grid
+                grid,
+                nb
             )  # (batch_size, N_sim, ...)
             null_LRs = h0_loss_sim - h1_loss_sim  # (batch_size, N_sim)
 
@@ -355,7 +361,8 @@ def run_ou_poisson():
                 prior,
                 init,
                 kkt,
-                grid
+                grid,
+                nb
             )  # (N_sim_all, 1, ...)
             null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
 

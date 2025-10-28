@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from .likelihood import ou_neg_log_lik_torch, ou_neg_log_lik_torch_kkt
-from .approx import E_log_softplus_taylor, E_softplus_taylor, E_log_softplus_MC, E_softplus_MC, E_log_exp, E_exp
+from .approx import E_log_softplus_taylor, E_softplus_taylor, E_log_softplus_MC, E_softplus_MC, E_log_exp, E_exp, E_log_r_softplus_MC, E_log_r_exp
     
 # calculate negative log likelihood of ELBO with torch
 def Lq_neg_log_lik_torch(
@@ -17,7 +17,8 @@ def Lq_neg_log_lik_torch(
     device, 
     approx, 
     prior, 
-    kkt
+    kkt,
+    nb
 ):
     """
     ELBO for approximating model evidence.
@@ -32,11 +33,12 @@ def Lq_neg_log_lik_torch(
     approx: approximation method for Poisson likelihood expectation
     prior: L2 regularization strength for OU alpha
     kkt: whether to use KKT condition for OU likelihood
+    nb: whether to use negative binomial likelihood
     Returns: (batch_size, N_sim) tensor of losses
     """
     n_cells = x_tensor.shape[-1]
     m = Lq_params[:, :, :n_cells]  # (batch_size, N_sim, n_cells)
-    s2 = Lq_params[:, :, n_cells:]**2  # (batch_size, N_sim, n_cells)
+    s2 = Lq_params[:, :, n_cells:2*n_cells]**2  # (batch_size, N_sim, n_cells)
     
     # OU -log lik
     if kkt:
@@ -49,20 +51,39 @@ def Lq_neg_log_lik_torch(
         )  # (batch_size, N_sim)
 
     # Poisson -log lik
-    if approx == "softplus_taylor":
-        E_log_approx = E_log_softplus_taylor(m, s2)
-        E_approx = E_softplus_taylor(m, s2)
-    elif approx == "softplus_MC":
-        E_log_approx = E_log_softplus_MC(m, s2)
-        E_approx = E_softplus_MC(m, s2)
-    elif approx == "exp":
-        E_log_approx = E_log_exp(m, s2)
-        E_approx = E_exp(m, s2)
-    else:
-        raise ValueError(f"Invalid approximation method: {approx}")
+    if not nb:
+        if approx == "softplus_taylor":
+            E_log_approx = E_log_softplus_taylor(m, s2)
+            E_approx = E_softplus_taylor(m, s2)
+        elif approx == "softplus_MC":
+            E_log_approx = E_log_softplus_MC(m, s2)
+            E_approx = E_softplus_MC(m, s2)
+        elif approx == "exp":
+            E_log_approx = E_log_exp(m, s2)
+            E_approx = E_exp(m, s2)
+        else:
+            raise ValueError(f"Invalid approximation method: {approx}")
 
-    #const= - torch.lgamma(x_tensor + 1)
-    term2 = -torch.sum(x_tensor * E_log_approx - E_approx, dim=-1) # (batch_size, N_sim)
+        #const= - torch.lgamma(x_tensor + 1)
+        term2 = -torch.sum(x_tensor * E_log_approx - E_approx, dim=-1) # (batch_size, N_sim)
+    
+    # Negative binomial -log lik
+    else:
+        r = torch.exp(Lq_params[:, :, -1:])  # dispersion parameter (batch_size, N_sim, 1)
+        if approx == "softplus_MC":
+            E_log_approx = E_log_softplus_MC(m, s2)
+            E_log_r_approx = E_log_r_softplus_MC(m, s2, r)
+        elif approx == "exp":
+            E_log_approx = E_log_exp(m, s2)
+            E_log_r_approx = E_log_r_exp(m, s2, r)
+        else:
+            raise ValueError(f"Invalid approximation method: {approx}")
+        
+        term2 = -torch.sum(
+            torch.lgamma(x_tensor + r) - torch.lgamma(r) + r * torch.log(r) +
+            x_tensor * E_log_approx - (x_tensor + r) * E_log_r_approx,
+            dim=-1
+        )  # (batch_size, N_sim)
 
     # -entropy
     #const = torch.log(torch.tensor(2 * torch.pi * torch.e, device=device))

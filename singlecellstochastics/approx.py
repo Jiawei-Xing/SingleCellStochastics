@@ -114,7 +114,7 @@ def E_log_softplus_MC(u, sigma2, n_samples=10000):
         Monte Carlo approximation of E[log(softplus(z))]
     """
     # Reparameterization: z = u + sqrt(sigma2) * epsilon, epsilon ~ N(0,1)
-    epsilon = torch.randn(n_samples, *u.shape, device=u.device, dtype=u.dtype)
+    epsilon = torch.randn(n_samples, *u.shape, device=u.device, dtype=u.dtype) # (n_samples, ...)
     z = u.unsqueeze(0) + torch.sqrt(sigma2).unsqueeze(0) * epsilon
     
     # Apply log(softplus) transformation
@@ -171,3 +171,70 @@ def E_exp(u, sigma2):
     return torch.exp(u + sigma2 / 2)
 
     
+def E_log_r_softplus_MC(u, sigma2, r, n_samples=10000):
+    """
+    Monte Carlo approximation for E[log(r + softplus(z))] where z ~ N(u, sigma2)
+    Uses reparameterization trick: z = u + sqrt(sigma2) * epsilon, where epsilon ~ N(0,1)
+    
+    Parameters:
+    -----------
+    u : torch.Tensor
+        Mean of the normal distribution
+    sigma2 : torch.Tensor
+        Variance of the normal distribution
+    r : float
+        Dispersion parameter
+    n_samples : int
+        Number of Monte Carlo samples
+        
+    Returns:
+    --------
+    result : torch.Tensor
+        Monte Carlo approximation of E[log(r + softplus(z))]
+    """
+    # Reparameterization: z = u + sqrt(sigma2) * epsilon, epsilon ~ N(0,1)
+    epsilon = torch.randn(n_samples, *u.shape, device=u.device, dtype=u.dtype)
+    z = u.unsqueeze(0) + torch.sqrt(sigma2).unsqueeze(0) * epsilon
+    
+    # Apply log(r + softplus) transformation
+    log_r_softplus_z = torch.log(r + torch.nn.functional.softplus(z))
+    
+    # Take the mean over samples dimension
+    result = torch.mean(log_r_softplus_z, dim=0)
+    
+    return result
+
+
+def E_log_r_exp(u, sigma2, r, n_samples=10000):
+    """
+    Monte Carlo approximation for E[log(r + exp(z))] where z ~ N(u, sigma2)
+    Uses reparameterization trick: z = u + sqrt(sigma2) * epsilon, where epsilon ~ N(0,1)
+    
+    Parameters:
+    -----------
+    u : torch.Tensor
+        Mean of the normal distribution
+    sigma2 : torch.Tensor
+        Variance of the normal distribution
+    r : float
+        Dispersion parameter
+    n_samples : int
+        Number of Monte Carlo samples
+        
+    Returns:
+    --------
+    result : torch.Tensor
+        Monte Carlo approximation of E[log(r + exp(z))]
+    """
+    # Reparameterization: z = u + sqrt(sigma2) * epsilon, epsilon ~ N(0,1)
+    epsilon = torch.randn(n_samples, *u.shape, device=u.device, dtype=u.dtype)
+    z = u.unsqueeze(0) + torch.sqrt(sigma2).unsqueeze(0) * epsilon
+    
+    # Apply log(r + exp) transformation
+    log_r_exp_z = torch.log(r + torch.exp(z))
+    
+    # Take the mean over samples dimension
+    result = torch.mean(log_r_exp_z, dim=0)
+    
+    return result
+

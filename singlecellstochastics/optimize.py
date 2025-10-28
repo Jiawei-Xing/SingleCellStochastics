@@ -280,7 +280,8 @@ def Lq_optimize_torch(
     approx,
     em, 
     prior,
-    kkt
+    kkt,
+    nb
 ):
     """
     Optimize ELBO with PyTorch Adam.
@@ -308,7 +309,7 @@ def Lq_optimize_torch(
     ] + [
         params[-1][:, :, 0:1].clone().detach(),
         params[-1][:, :, 1:].clone().detach()
-    ] # [Lq tree1, Lq tree2, ..., Lq treeN, alpha, other OU]
+    ] # [Lq tree1, Lq tree2, ..., Lq treeN, r, alpha, other OU]
 
     # Set requires_grad based on EM mode
     if em == "e":
@@ -376,7 +377,8 @@ def Lq_optimize_torch(
                     device,
                     approx,
                     prior,
-                    kkt
+                    kkt,
+                    nb
                 )
             else:
                 loss = Lq_neg_log_lik_torch(
@@ -391,7 +393,8 @@ def Lq_optimize_torch(
                     device,
                     approx,
                     prior,
-                    kkt
+                    kkt,
+                    nb
                 )
             loss_matrix[active_batch, :, i] = loss
 

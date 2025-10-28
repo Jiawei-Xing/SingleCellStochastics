@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import precision_score, recall_score, f1_score, roc_curve, auc, precision_recall_curve
+from sklearn.metrics import precision_score, recall_score, f1_score, roc_curve, auc, precision_recall_curve, average_precision_score
 import argparse
 import sys
 import os
@@ -72,7 +72,7 @@ def compare_results():
     roc_auc2 = auc(fpr2, tpr2)
 
     result_egx_neg = np.sign(df_egx_neg["ou2_theta"].iloc[1::2].values - df_egx_neg["ou2_theta"].iloc[::2].values) * (-np.log10(df_egx_neg["ou2_vs_ou1_pvalue"].iloc[::2].values))
-    result_egx_pos = np.sign(df_egx_pos["ou2_theta"].iloc[1::2].values - df_egx_pos["ou2_theta"].iloc[::2].values) * (-np.log10(df_egx_pos["ou2_vs_ou1_pvalue"].iloc[::2].values))
+    result_egx_pos = np.sign(df_egx_pos["ou2_theta"].iloc[1::2].values - df_egx_pos["ou2_theta"].iloc[::2].values) * (-np.log10(np.maximum(1e-100, df_egx_pos["ou2_vs_ou1_pvalue"].iloc[::2].values)))
     p_egx = np.concatenate((result_egx_neg, result_egx_pos))
     fpr3, tpr3, _ = roc_curve(truth, p_egx)
     roc_auc3 = auc(fpr3, tpr3)
@@ -147,7 +147,7 @@ def compare_results():
             f.write("category\tlabel\tmethod\troc\tprc\tprecision\trecall\tf1\n")
         f.write(f"{category}\t{label}\tOUP\t{roc_auc1}\t{prc_auc1}\t{precision_oup}\t{recall_oup}\t{f1_oup}\n")
         f.write(f"{category}\t{label}\tDEA\t{roc_auc2}\t{prc_auc2}\t{precision_dea}\t{recall_dea}\t{f1_dea}\n")
-        f.write(f"{category}\t{label}EGX\t{roc_auc3}\t{prc_auc3}\t{precision_egx}\t{recall_egx}\t{f1_egx}\n")
+        f.write(f"{category}\t{label}\tEGX\t{roc_auc3}\t{prc_auc3}\t{precision_egx}\t{recall_egx}\t{f1_egx}\n")
 
 
 if __name__ == "__main__":
