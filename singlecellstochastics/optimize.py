@@ -354,6 +354,7 @@ def Lq_optimize_torch(
         for i in range(n_trees):
             x_tensor = x_tensor_list[i][active_batch, :, :]
             Lq_params = params_tensor[i][active_batch, :, :]
+            r_param = params_tensor[-3][active_batch, :, 0:1]
             ou_params = [
                 params_tensor[-2][active_batch, :, :],
                 params_tensor[-1][active_batch, :, :]
@@ -367,6 +368,7 @@ def Lq_optimize_torch(
             if kkt:
                 loss, sigma, theta = Lq_neg_log_lik_torch(
                     Lq_params,
+                    r_param,
                     ou_params,
                     mode,
                     x_tensor,
@@ -383,6 +385,7 @@ def Lq_optimize_torch(
             else:
                 loss = Lq_neg_log_lik_torch(
                     Lq_params,
+                    r_param,
                     ou_params,
                     mode,
                     x_tensor,
@@ -471,7 +474,7 @@ def Lq_optimize_torch(
     
     # warning if not all genes have converged
     print(f"\nChecking convergence for h{mode-1} ELBO...")
-    if not converged_mask.all():
+    if not converged_mask.all() and 'relative_decrease' in locals():
         print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")

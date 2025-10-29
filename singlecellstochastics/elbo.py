@@ -7,6 +7,7 @@ from .approx import E_log_softplus_taylor, E_softplus_taylor, E_log_softplus_MC,
 # calculate negative log likelihood of ELBO with torch
 def Lq_neg_log_lik_torch(
     Lq_params, 
+    log_r,
     ou_params, 
     mode, 
     x_tensor, 
@@ -24,6 +25,7 @@ def Lq_neg_log_lik_torch(
     ELBO for approximating model evidence.
 
     Lq_params: (batch_size, N_sim, 2*n_cells)
+    log_r: (batch_size, N_sim, 1) log dispersion parameter for negative binomial
     ou_params: [alpha, other OU params]
     mode: 1 for H0, 2 for H1
     x_tensor: (batch_size, N_sim, n_cells)
@@ -69,18 +71,18 @@ def Lq_neg_log_lik_torch(
     
     # Negative binomial -log lik
     else:
-        r = torch.exp(Lq_params[:, :, -1:])  # dispersion parameter (batch_size, N_sim, 1)
+        r = torch.exp(log_r)  # dispersion parameter (batch_size, N_sim, 1)
         if approx == "softplus_MC":
             E_log_approx = E_log_softplus_MC(m, s2)
             E_log_r_approx = E_log_r_softplus_MC(m, s2, r)
         elif approx == "exp":
             E_log_approx = E_log_exp(m, s2)
-            E_log_r_approx = E_log_r_exp(m, s2, r)
+            E_log_r_approx = E_log_r_exp(m, s2, log_r)
         else:
             raise ValueError(f"Invalid approximation method: {approx}")
         
         term2 = -torch.sum(
-            torch.lgamma(x_tensor + r) - torch.lgamma(r) + r * torch.log(r) +
+            torch.lgamma(x_tensor + r) - torch.lgamma(r) + r * log_r +
             x_tensor * E_log_approx - (x_tensor + r) * E_log_r_approx,
             dim=-1
         )  # (batch_size, N_sim)

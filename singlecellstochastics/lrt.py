@@ -95,13 +95,13 @@ def likelihood_ratio_test(
 
     # Initialize OU means for torch
     m_init_tensor = [
-        torch.tensor(m, dtype=torch.float32, device=device) for m in m_init
+        torch.tensor(m, dtype=torch.float64, device=device) for m in m_init
     ]  # list of (batch_size, N_sim, n_cells)
     
     # Initialize OU parameters
     batch_size, N_sim, _ = m_init_tensor[0].shape
     ou_params_init = torch.ones(
-        (batch_size, N_sim, n_regimes + 2), dtype=torch.float32, device=device
+        (batch_size, N_sim, n_regimes + 2), dtype=torch.float64, device=device
     )
 
     # Initial run with OU model
@@ -127,7 +127,7 @@ def likelihood_ratio_test(
 
     # Initialize q std for torch
     s_init_tensor = [
-        torch.tensor(s, dtype=torch.float32, device=device) for s in s_init
+        torch.tensor(s, dtype=torch.float64, device=device) for s in s_init
     ]
 
     # Initialize all Lq parameters for torch
@@ -136,14 +136,16 @@ def likelihood_ratio_test(
     ]  # list of (batch_size, N_sim, 2*n_cells)
 
     # Initialize dispersion parameter for negative binomial
-    logr = torch.tensor(5, dtype=torch.float32, device=device) # initial r=exp(5)=148.41
+    log_r = torch.ones(
+        (batch_size, N_sim, 1), dtype=torch.float64, device=device
+    ) * 5  # (batch_size, N_sim, 1), init from large r=exp(5) ~ 148.4
 
     # Combine all initial parameters
-    init_params = pois_params_init + [logr] + [ou_params_init]  # list of (batch_size, N_sim, param_dim)
+    init_params = pois_params_init + [log_r] + [ou_params_init]  # list of (batch_size, N_sim, param_dim)
  
     # Convert expression data to torch tensor
     x_tensor = [
-        torch.tensor(x, dtype=torch.float32, device=device) for x in expr
+        torch.tensor(x, dtype=torch.float64, device=device) for x in expr
     ]  # list of (batch_size, N_sim, n_cells)
 
     # optimize Lq for null model
@@ -303,9 +305,13 @@ def likelihood_ratio_test(
         plt.savefig(f"{batch_start}_elbo.png")
         plt.close()
     
-    return h0_params[-1].clone().detach().cpu().numpy(), \
+    # combine r and ou params
+    h0_params = torch.cat((h0_params[-2], h0_params[-1]), dim=-1)
+    h1_params = torch.cat((h1_params[-2], h1_params[-1]), dim=-1)
+
+    return h0_params.clone().detach().cpu().numpy(), \
         h0_loss.clone().detach().cpu().numpy(), \
-        h1_params[-1].clone().detach().cpu().numpy(), \
+        h1_params.clone().detach().cpu().numpy(), \
         h1_loss.clone().detach().cpu().numpy()
 
     

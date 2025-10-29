@@ -130,7 +130,7 @@ def run_ou_poisson():
         help="Grid search range for alpha with fixed other parameters (default: 0, no grid search)"
     )
     parser.add_argument(
-        "--nb", action="store_true", help="Use negative binomial instead of Poisson (default: False)"
+        "--no_nb", action="store_false", help="Use poisson instead of negative binomial (default: negative binomial)"
     )
     args = parser.parse_args()
 
@@ -156,7 +156,7 @@ def run_ou_poisson():
     init = args.init
     kkt = args.no_kkt
     grid = args.grid
-    nb = args.nb
+    nb = args.no_nb
 
     if wandb_flag:
         wandb.login()
@@ -219,7 +219,6 @@ def run_ou_poisson():
 
         # likelihood ratio test (default)
         h0_params, h0_loss, h1_params, h1_loss = likelihood_ratio_test(
-            #ou_params_h0, ou_loss_h0, ou_params_h1, ou_loss_h1 = \
             x_original,
             n_regimes,
             diverge_list,
