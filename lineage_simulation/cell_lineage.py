@@ -9,6 +9,7 @@ parser.add_argument("-p", "--proportion", type=float, default=1.0, help="Sample 
 parser.add_argument("-s", "--sample", type=str, default="sampled_cells.txt", help="File path of sampled cells")
 parser.add_argument("-t", "--tree", type=str, default="tree.nwk", help="File path of output tree")
 parser.add_argument("-r", "--regime", type=str, default="regime.csv", help="File path of output regime")
+parser.add_argument("-r2", "--regime_mrca", type=str, default="regime_mrca.csv", help="File path of output regime in mrca format")
 args = parser.parse_args()
 
 # read input parameters
@@ -19,6 +20,7 @@ p = args.proportion
 sample_file = args.sample
 tree_file = args.tree
 regime_file = args.regime
+regime_mrca_file = args.regime_mrca
 
 # each node has label, generation, regime, parent, and children
 class Node:
@@ -80,6 +82,7 @@ with open(cell_file) as f:
         # sample cells from clone
         elif line[0].isdigit():
             cells = line.strip().strip(',').split('\t')[-1].split(',')
+            cells = ["c" + cell for cell in cells]
             site = line.split('\t')[0]
             mutations = line.split('\t')[1]        
             samples[(site, mutations)] = random.sample(cells, round(n * p))
@@ -94,14 +97,16 @@ migration = {}
 with open(migration_file) as f:
     for line in f:
         site = line.split(':')[0].split()[1]
-        cell = line.split()[-1].strip().strip(',')
+        cell = "c" + line.split()[-1].strip().strip(',')
         migration[cell] = site
 
 # read parent:child pairs
 nodes = {}
 with open(division_file) as f:
     for line in f:
-        gen, parent, child = line.strip().split()
+        gen = line.strip().split()[0]
+        parent = "c" + line.strip().split()[1]
+        child = "c" + line.strip().split()[2]
         
         # add nodes to dict
         if parent not in nodes:
@@ -122,28 +127,38 @@ with open(division_file) as f:
         if child in migration: # migration happened
             nodes[child].regime = migration[child]
         else: # inherit from parent
-            nodes[child].regime = nodes[parent].regime            
+            nodes[child].regime = nodes[parent].regime
 
 # flatten leaves from samples
 leaves = [nodes[cell] for sample in samples.values() for cell in sample]
 cells = [cell for sample in samples.values() for cell in sample]
 
 # select and keep leaves and ancestors for tree
-nodesTree = selectNodes(keepNodes=leaves, root=nodes['0'])
+nodesTree = selectNodes(keepNodes=leaves, root=nodes['c0'])
 
 # only keep children in tree
 for node in nodesTree.values():
     node.children = [n for n in node.children if n.label in nodesTree]
 
 # build newick tree from root
-nwk = buildTree(node=nodes['0'], nodesTree=nodesTree) + ";"
+nwk = buildTree(node=nodes['c0'], nodesTree=nodesTree) + ";"
 with open(tree_file, 'w') as f:
     f.write(nwk)
 
+# output regime file with node and regime
+with open(regime_file, 'w') as f:
+    f.write("node_name,regime\n")
+    for node in nodesTree.values():
+        if not node.children:  # leaf nodes
+            f.write(f"{node.label},{node.regime}\n")
+        elif len(node.children) > 1:  # internal nodes with more than one child
+            f.write(f"{node.label},{node.regime}\n")
+    f.write(f"c0,{nodes['c0'].regime}\n")  # always include root
+
 # regime file with cell pairs and regimes of their mrca
 mrca = []
-with open(regime_file, 'w') as f:
-    f.write('node1,node2,regime\n')
+with open(regime_mrca_file, 'w') as f:
+    f.write('node,node2,regime\n')
     # regime leaf cells
     for cell in cells:
         f.write(f"{cell},,{nodes[cell].regime}\n")
