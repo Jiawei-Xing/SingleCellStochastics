@@ -12,7 +12,7 @@ with open(file) as f:
         counts[line.split()[0]] = line.strip().split()
 
 # output long format for evogenex
-with open(f"{file.split('/')[-1][:-4]}_long.csv", 'w') as f:
+with open(f"{file[:-4]}_long.csv", 'w') as f:
     f.write("gene,species,replicate,exprval\n")
     for i in range(1, n + 1):
         for cell, value in counts.items():

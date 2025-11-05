@@ -37,7 +37,6 @@ def compare_results():
     parser.add_argument("--DEA_neg", type=str, required=True, help="DEA result for negative simulation")
     parser.add_argument("--DEA_pos", type=str, required=True, help="DEA result for positive simulation")
     parser.add_argument("--output", type=str, required=True, help="Output dir")
-    parser.add_argument("--category", type=str, required=True, help="Simulation category")
     parser.add_argument("--label", type=str, required=True, help="Simulation label")
     args = parser.parse_args()
 
@@ -50,7 +49,6 @@ def compare_results():
     df_dea_pos = pd.read_csv(args.DEA_pos, sep="\t")
 
     output = args.output
-    category = args.category
     label = args.label
 
     # ground truth
@@ -90,7 +88,7 @@ def compare_results():
     plt.title('ROC')
     plt.legend(loc="lower right")
     plt.grid()
-    plt.savefig(os.path.join(output, f'{category}_{label}_ROC.png'))
+    plt.savefig(os.path.join(output, f'{label}_ROC.png'))
     plt.close()
 
     # OUP: Compute Precision-Recall curve and AUC
@@ -117,7 +115,7 @@ def compare_results():
     plt.title('Precision-Recall Curve')
     plt.legend(loc="lower right")
     plt.grid()
-    plt.savefig(os.path.join(output, f'{category}_{label}_PRC.png'))
+    plt.savefig(os.path.join(output, f'{label}_PRC.png'))
     plt.close()
 
     # f1 scores
@@ -144,10 +142,10 @@ def compare_results():
 
     with open(outfile, 'a') as f:
         if flag: # first line in file
-            f.write("category\tlabel\tmethod\troc\tprc\tprecision\trecall\tf1\n")
-        f.write(f"{category}\t{label}\tOUP\t{roc_auc1}\t{prc_auc1}\t{precision_oup}\t{recall_oup}\t{f1_oup}\n")
-        f.write(f"{category}\t{label}\tDEA\t{roc_auc2}\t{prc_auc2}\t{precision_dea}\t{recall_dea}\t{f1_dea}\n")
-        f.write(f"{category}\t{label}\tEGX\t{roc_auc3}\t{prc_auc3}\t{precision_egx}\t{recall_egx}\t{f1_egx}\n")
+            f.write("label\tmethod\troc\tprc\tprecision\trecall\tf1\n")
+        f.write(f"{label}\tOUP\t{roc_auc1}\t{prc_auc1}\t{precision_oup}\t{recall_oup}\t{f1_oup}\n")
+        f.write(f"{label}\tDEA\t{roc_auc2}\t{prc_auc2}\t{precision_dea}\t{recall_dea}\t{f1_dea}\n")
+        f.write(f"{label}\tEGX\t{roc_auc3}\t{prc_auc3}\t{precision_egx}\t{recall_egx}\t{f1_egx}\n")
 
 
 if __name__ == "__main__":

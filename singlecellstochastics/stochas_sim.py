@@ -430,6 +430,7 @@ def run_stochas_sim():
     parser.add_argument("--out", type=str, default=".", help="Output directory")
     parser.add_argument("--label", type=str, default="", help="Label for output")
     parser.add_argument("--dispersion", type=float, default="0", help="Dispersion for negative binomial sampling (default: Poisson, no dispersion)")
+    parser.add_argument("--plot", action="store_true", help="Whether to plot the gene expression evolution (default: False)")
     args = parser.parse_args()
 
     
@@ -437,7 +438,8 @@ def run_stochas_sim():
     tree = assign_nodes_to_regimes(tree, args.regime)
 
     plots, cells, read_counts = simulate(tree, args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma, args.dispersion)
-    plot(plots, args.n_genes, args.out, args.label)
+    if args.plot:
+        plot(plots, args.n_genes, args.out, args.label)
     write_read_counts(read_counts, cells, args.n_genes, args.out, args.label)
 
 if __name__ == "__main__":

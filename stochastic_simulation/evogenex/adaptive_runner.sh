@@ -75,6 +75,6 @@ for data_file in $DATA_PATH*; do
       ./adaptive_driver.sbatch $TREE_FILE $SINGLE_REGIME_FILE $TWO_REGIME_FILE $data_file $output_file  
   else
     echo "Using CPU"
-    Rscript ./adaptive_evogenex.R $TREE_FILE $SINGLE_REGIME_FILE $TWO_REGIME_FILE $data_file $output_file
+    Rscript /grid/siepel/home/xing/gene_expression_evolution/SingleCellStochastics/stochastic_simulation/evogenex/adaptive_evogenex.R $TREE_FILE $SINGLE_REGIME_FILE $TWO_REGIME_FILE $data_file $output_file
   fi
 done
