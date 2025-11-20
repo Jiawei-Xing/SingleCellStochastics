@@ -328,8 +328,8 @@ def ou_neg_log_lik_torch_kkt(
     # theta = (W.T @ V^-1 @ W)^-1 @ W.T @ V^-1 @ expr
     # theta = np.linalg.solve(W.T @ np.linalg.solve(V, W), W.T @ np.linalg.solve(V, expr))
     # cholesky: theta = (S.T @ S)^-1 @ S.T @ y
-    S = torch.linalg.solve(L, W)      # L^{-1} W
-    y = torch.linalg.solve(L, expr_batch.unsqueeze(-1))   # L^{-1} expr
+    S = torch.linalg.solve_triangular(L, W, upper=False) # L^{-1} W
+    y = torch.linalg.solve_triangular(L, expr_batch.unsqueeze(-1), upper=False)   # L^{-1} expr
     #theta = torch.linalg.solve(S.T @ S, S.T @ y)
     theta = torch.linalg.lstsq(S, y).solution # (batch, N_sim, n_regimes, 1)    
     
@@ -337,7 +337,7 @@ def ou_neg_log_lik_torch_kkt(
     # sigma2 = (diff @ np.linalg.solve(V, diff)).item() / n_cells
     # cholesky: sigma2 = (y - S @ theta)^T @ (y - S @ theta) / n_cells
     r = y - S @ theta
-    sigma2 = (r.square().sum(dim=(-2, -1)) / n_cells) # (batch_size, N_sim)
+    sigma2 = r.square().sum(dim=(-2, -1)) / n_cells # (batch_size, N_sim)
 
     # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V_reg), dim1=-2, dim2=-1), dim=-1)
     # cholesky: trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
@@ -351,7 +351,7 @@ def ou_neg_log_lik_torch_kkt(
     #const = n_cells * torch.log(torch.tensor(2 * torch.pi, device=device))
     loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood
 
-    sigma = sigma2 ** 0.5  # (batch_size, N_sim)
+    sigma = sigma2.sqrt()  # (batch_size, N_sim)
     theta = theta.squeeze(-1)  # (batch_size, N_sim, n_regimes)
 
     return loss, sigma, theta  # (batch_size, N_sim)

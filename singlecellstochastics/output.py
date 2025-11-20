@@ -15,6 +15,8 @@ def save_result(batch_start, batch_size, batch_genes, \
     p_value = 1 - chi2.cdf(2 * lr.flatten(), n_regimes - 1)
 
     for i in range(batch_size):
+        if i >= h0_params.shape[0]:
+            break
         h0_r = np.exp(h0_params[i, 0, 0])
         h0_alpha = np.exp(h0_params[i, 0, 1])
         h0_sigma = np.abs(h0_params[i, 0, 2])

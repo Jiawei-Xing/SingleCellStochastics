@@ -58,7 +58,7 @@ def process_data(tree_files, gene_files, regime_files, rnull, device):
 
             # Fix internal node names
             if clade.name is None:
-                clade.name = "internal_node" + str(i)
+                clade.name = "add_internal_node" + str(i)
                 i = i + 1
 
         # Store paths from each node to root

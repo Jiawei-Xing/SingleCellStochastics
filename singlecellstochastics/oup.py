@@ -5,6 +5,8 @@ import argparse
 import wandb
 import os
 import pickle
+import time
+import gc
 
 from .preprocess import process_data
 from .lrt import likelihood_ratio_test
@@ -121,7 +123,7 @@ def run_ou_poisson():
         "--init", action="store_true", help="Initial run with OU model (default: False)"
     )
     parser.add_argument(
-        "--no_kkt", action="store_false", help="Not use KKT condition to constrain OU parameters (default: True)"
+        "--no_kkt", action="store_false", help="Not use KKT condition to constrain OU parameters (default: use KKT)"
     )
     parser.add_argument(
         "--grid",
@@ -130,7 +132,13 @@ def run_ou_poisson():
         help="Grid search range for alpha with fixed other parameters (default: 0, no grid search)"
     )
     parser.add_argument(
-        "--no_nb", action="store_false", help="Use poisson instead of negative binomial (default: negative binomial)"
+        "--no_nb", action="store_false", help="Use poisson instead of negative binomial (default: use negative binomial)"
+    )
+    parser.add_argument(
+        "--dtype", type=str, default="float64", help="Data type for torch tensors (default: float64)"
+    )
+    parser.add_argument(
+        "--resume", action="store_true", help="Resume batch from log file (default: False)"
     )
     args = parser.parse_args()
 
@@ -157,6 +165,14 @@ def run_ou_poisson():
     kkt = args.no_kkt
     grid = args.grid
     nb = args.no_nb
+    resume = args.resume
+
+    if args.dtype == "float32":
+        dtype = torch.float32  
+    elif args.dtype == "float64":
+        dtype = torch.float64  
+    else:
+        raise ValueError("Unsupported dtype. Use float32 or float64.")
 
     if wandb_flag:
         wandb.login()
@@ -193,8 +209,24 @@ def run_ou_poisson():
     if batch_size > len(df_list[0].columns):
         batch_size = len(df_list[0].columns)
 
+    # Resume from log file
+    log_file = os.path.join(output_dir, f"{prefix}.log")
+    if resume:
+        if os.path.exists(log_file):
+            with open(log_file, 'r') as f_log:
+                for line in f_log:
+                    parts = line.strip().split("\t")
+                    gene_idx = int(parts[0])
+                    gene_name = str(parts[1])
+                    params = list(map(float, parts[2:]))
+                    results[gene_idx] = [gene_idx, gene_name] + params
+        else:
+            print(f"Log file {log_file} not found. Starting from scratch.")
+
     # loop over gene batches
-    for batch_start in range(0, len(df_list[0].columns), batch_size):
+    gene_idx_start = max(results.keys()) + 1 if results else 0
+    
+    for batch_start in range(gene_idx_start, len(df_list[0].columns), batch_size):
         # gene expression in tissues (batch)
         batch_genes = df_list[0].columns[batch_start : batch_start + batch_size]
 
@@ -232,6 +264,7 @@ def run_ou_poisson():
             batch_gene_names,
             max_iter,
             learning_rate,
+            dtype,
             device,
             wandb_flag,
             window,
@@ -275,6 +308,7 @@ def run_ou_poisson():
                 batch_gene_names,
                 max_iter,
                 learning_rate,
+                dtype,
                 device,
                 wandb_flag,
                 window,
@@ -299,12 +333,32 @@ def run_ou_poisson():
                 result = results[batch_start + i][:-1] + [p_empirical]
                 results_empirical_each[batch_start + i] = result
 
+        # log file
+        with open(log_file, 'a') as f_log:
+            for i in range(batch_size):
+                if batch_start + i not in results:
+                    continue
+                f_log.write("\t".join(list(map(str, results[batch_start + i]))))
+                f_log.write("\n")
+
+        # free memory
+        del x_original, h0_params, h1_params, h0_loss, h1_loss
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            time.sleep(0.5)
+
     # output results
-    output_results(results, output_dir + prefix + "_chi-squared.tsv", regimes)
+    output_file = os.path.join(output_dir, f"{prefix}_chi-squared.tsv")
+    output_results(results, output_file, regimes)
     
     # using empirical for each gene
     if N_sim_each:
-        output_results(results_empirical_each, output_dir + prefix + "_empirical-each.tsv", regimes)
+        output_results(
+            results_empirical_each, 
+            os.path.join(output_dir, f"{prefix}_empirical-each.tsv"), 
+            regimes
+        )
 
     # empirical null distribution for all genes
     if N_sim_all:
@@ -349,6 +403,7 @@ def run_ou_poisson():
                 gene_names,
                 max_iter,
                 learning_rate,
+                dtype,
                 device,
                 wandb_flag,
                 window,
@@ -378,7 +433,11 @@ def run_ou_poisson():
             results_empirical_all[i] = result
 
         # output results
-        output_results(results_empirical_all, output_dir + prefix + "_empirical-all.tsv", regimes)
+        output_results(
+            results_empirical_all, 
+            os.path.join(output_dir, f"{prefix}_empirical-all.tsv"), 
+            regimes
+        )
 
 
 if __name__ == "__main__":

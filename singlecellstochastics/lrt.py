@@ -20,6 +20,7 @@ def likelihood_ratio_test(
     gene_names,
     max_iter,
     learning_rate,
+    dtype,
     device,
     wandb_flag,
     window,
@@ -95,13 +96,13 @@ def likelihood_ratio_test(
 
     # Initialize OU means for torch
     m_init_tensor = [
-        torch.tensor(m, dtype=torch.float64, device=device) for m in m_init
+        torch.tensor(m, dtype=dtype, device=device) for m in m_init
     ]  # list of (batch_size, N_sim, n_cells)
     
     # Initialize OU parameters
     batch_size, N_sim, _ = m_init_tensor[0].shape
     ou_params_init = torch.ones(
-        (batch_size, N_sim, n_regimes + 2), dtype=torch.float64, device=device
+        (batch_size, N_sim, n_regimes + 2), dtype=dtype, device=device
     )
 
     # Initial run with OU model
@@ -127,7 +128,7 @@ def likelihood_ratio_test(
 
     # Initialize q std for torch
     s_init_tensor = [
-        torch.tensor(s, dtype=torch.float64, device=device) for s in s_init
+        torch.tensor(s, dtype=dtype, device=device) for s in s_init
     ]
 
     # Initialize all Lq parameters for torch
@@ -137,7 +138,7 @@ def likelihood_ratio_test(
 
     # Initialize dispersion parameter for negative binomial
     log_r = torch.ones(
-        (batch_size, N_sim, 1), dtype=torch.float64, device=device
+        (batch_size, N_sim, 1), dtype=dtype, device=device
     ) * 5  # (batch_size, N_sim, 1), init from large r=exp(5) ~ 148.4
 
     # Combine all initial parameters
@@ -145,7 +146,7 @@ def likelihood_ratio_test(
  
     # Convert expression data to torch tensor
     x_tensor = [
-        torch.tensor(x, dtype=torch.float64, device=device) for x in expr
+        torch.tensor(x, dtype=dtype, device=device) for x in expr
     ]  # list of (batch_size, N_sim, n_cells)
 
     # optimize Lq for null model
