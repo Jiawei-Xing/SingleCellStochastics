@@ -19,7 +19,8 @@ def Lq_neg_log_lik_torch(
     approx, 
     prior, 
     kkt,
-    nb
+    nb,
+    lib
 ):
     """
     ELBO for approximating model evidence.
@@ -36,6 +37,7 @@ def Lq_neg_log_lik_torch(
     prior: L2 regularization strength for OU alpha
     kkt: whether to use KKT condition for OU likelihood
     nb: whether to use negative binomial likelihood
+    lib: library size normalization
     Returns: (batch_size, N_sim) tensor of losses
     """
     n_cells = x_tensor.shape[-1]
@@ -67,17 +69,17 @@ def Lq_neg_log_lik_torch(
             raise ValueError(f"Invalid approximation method: {approx}")
 
         #const= - torch.lgamma(x_tensor + 1)
-        term2 = -torch.sum(x_tensor * E_log_approx - E_approx, dim=-1) # (batch_size, N_sim)
+        term2 = -torch.sum(x_tensor * E_log_approx - lib * E_approx, dim=-1) # (batch_size, N_sim)
     
     # Negative binomial -log lik
     else:
         r = torch.exp(log_r)  # dispersion parameter (batch_size, N_sim, 1)
         if approx == "softplus_MC":
             E_log_approx = E_log_softplus_MC(m, s2)
-            E_log_r_approx = E_log_r_softplus_MC(m, s2, r)
+            E_log_r_approx = E_log_r_softplus_MC(m, s2, r, lib)
         elif approx == "exp":
             E_log_approx = E_log_exp(m, s2)
-            E_log_r_approx = E_log_r_exp(m, s2, log_r)
+            E_log_r_approx = E_log_r_exp(m, s2, log_r, lib)
         else:
             raise ValueError(f"Invalid approximation method: {approx}")
         

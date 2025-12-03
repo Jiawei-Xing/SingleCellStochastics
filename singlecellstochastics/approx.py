@@ -171,7 +171,7 @@ def E_exp(u, sigma2):
     return torch.exp(u + sigma2 / 2)
 
     
-def E_log_r_softplus_MC(u, sigma2, r, n_samples=10000):
+def E_log_r_softplus_MC(u, sigma2, r, lib, n_samples=10000):
     """
     Monte Carlo approximation for E[log(r + softplus(z))] where z ~ N(u, sigma2)
     Uses reparameterization trick: z = u + sqrt(sigma2) * epsilon, where epsilon ~ N(0,1)
@@ -184,6 +184,8 @@ def E_log_r_softplus_MC(u, sigma2, r, n_samples=10000):
         Variance of the normal distribution
     r : float
         Dispersion parameter
+    lib : float
+        Library size factor
     n_samples : int
         Number of Monte Carlo samples
         
@@ -197,7 +199,7 @@ def E_log_r_softplus_MC(u, sigma2, r, n_samples=10000):
     z = u.unsqueeze(0) + torch.sqrt(sigma2).unsqueeze(0) * epsilon
     
     # Apply log(r + softplus) transformation
-    log_r_softplus_z = torch.log(r + torch.nn.functional.softplus(z))
+    log_r_softplus_z = torch.log(r + lib * torch.nn.functional.softplus(z))
     
     # Take the mean over samples dimension
     result = torch.mean(log_r_softplus_z, dim=0)
@@ -205,7 +207,7 @@ def E_log_r_softplus_MC(u, sigma2, r, n_samples=10000):
     return result
 
 
-def E_log_r_exp(u, sigma2, log_r, n_samples=10000):
+def E_log_r_exp(u, sigma2, log_r, lib, n_samples=10000):
     """
     Monte Carlo approximation for E[log(r + exp(z))] where z ~ N(u, sigma2)
     Uses reparameterization trick: z = u + sqrt(sigma2) * epsilon, where epsilon ~ N(0,1)
@@ -218,6 +220,8 @@ def E_log_r_exp(u, sigma2, log_r, n_samples=10000):
         Variance of the normal distribution
     r : float
         Dispersion parameter
+    lib : float
+        Library size factor
     n_samples : int
         Number of Monte Carlo samples
         
@@ -231,7 +235,7 @@ def E_log_r_exp(u, sigma2, log_r, n_samples=10000):
     z = u.unsqueeze(0) + torch.sqrt(sigma2).unsqueeze(0) * epsilon
     
     # Apply log(r + exp) transformation
-    log_r_exp_z = torch.logaddexp(log_r, z)
+    log_r_exp_z = torch.logaddexp(log_r, torch.log(lib) + z)
     
     # Take the mean over samples dimension
     result = torch.mean(log_r_exp_z, dim=0)

@@ -140,6 +140,9 @@ def run_ou_poisson():
     parser.add_argument(
         "--resume", action="store_true", help="Resume batch from log file (default: False)"
     )
+    parser.add_argument(
+        "--library", type=str, default=None, help="Library size file per cell (optional)"
+    )
     args = parser.parse_args()
 
     tree_files = args.tree.split(",")
@@ -166,6 +169,7 @@ def run_ou_poisson():
     grid = args.grid
     nb = args.no_nb
     resume = args.resume
+    library_files = args.library.split(",") if args.library is not None else [None] * len(tree_files)
 
     if args.dtype == "float32":
         dtype = torch.float32  
@@ -198,7 +202,8 @@ def run_ou_poisson():
         epochs_list_torch,
         beta_list_torch,
         regime_list,
-    ) = process_data(tree_files, gene_files, regime_files, rnull, device)
+        library_list
+    ) = process_data(tree_files, gene_files, regime_files, library_files, rnull, device)
 
     regimes = list(
         dict.fromkeys(x for sub in regime_list for x in sub)
@@ -277,7 +282,8 @@ def run_ou_poisson():
             init,
             kkt,
             grid,
-            nb
+            nb,
+            library_list
         )  # (batch_size, 1, ...)
 
         # save result
@@ -321,7 +327,8 @@ def run_ou_poisson():
                 init,
                 kkt,
                 grid,
-                nb
+                nb,
+                library_list
             )  # (batch_size, N_sim, ...)
             null_LRs = h0_loss_sim - h1_loss_sim  # (batch_size, N_sim)
 
@@ -416,7 +423,8 @@ def run_ou_poisson():
                 init,
                 kkt,
                 grid,
-                nb
+                nb,
+                library_list
             )  # (N_sim_all, 1, ...)
             null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
 

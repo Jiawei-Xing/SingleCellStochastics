@@ -18,7 +18,9 @@ def run_em(
     approx,
     em_iter,
     prior,
-    kkt
+    kkt,
+    nb,
+    library_list_tensor
 ):
     """
     Run EM algorithm for Lq optimization.
@@ -63,7 +65,9 @@ def run_em(
             approx,
             "e",
             prior,
-            kkt
+            kkt,
+            nb,
+            library_list_tensor
         )  # (batch_size, N_sim, all_param_dim)
 
         # M-step
@@ -85,7 +89,9 @@ def run_em(
             approx,
             "m",
             prior,
-            kkt
+            kkt,
+            nb,
+            library_list_tensor
         )  # (batch_size, N_sim, all_param_dim)
 
         # update init_params for next iteration
@@ -110,7 +116,9 @@ def run_em(
         approx,
         "e",
         prior,
-        kkt
+        kkt,
+        nb,
+        library_list_tensor
     )  # (batch_size, N_sim, all_param_dim)
 
     h0_params = [p.clone().detach() for p in h0_params]

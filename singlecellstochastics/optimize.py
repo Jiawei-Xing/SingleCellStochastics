@@ -281,7 +281,8 @@ def Lq_optimize_torch(
     em, 
     prior,
     kkt,
-    nb
+    nb,
+    library_list_tensor
 ):
     """
     Optimize ELBO with PyTorch Adam.
@@ -298,6 +299,8 @@ def Lq_optimize_torch(
     em: "e" for E-step, "m" for M-step, None for both together
     prior: L2 regularization strength for OU alpha
     kkt: whether to use KKT condition for OU likelihood
+    nb: whether to use negative binomial likelihood
+    lib: library size normalization
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
     batch_size, N_sim, _ = params[0].shape
@@ -365,6 +368,8 @@ def Lq_optimize_torch(
             epochs = epochs_list_torch[i]
             beta = beta_list_torch[i]
 
+            lib = library_list_tensor[i] # (n_cells,)
+
             if kkt:
                 loss, sigma, theta = Lq_neg_log_lik_torch(
                     Lq_params,
@@ -380,7 +385,8 @@ def Lq_optimize_torch(
                     approx,
                     prior,
                     kkt,
-                    nb
+                    nb,
+                    lib
                 )
             else:
                 loss = Lq_neg_log_lik_torch(
@@ -397,7 +403,8 @@ def Lq_optimize_torch(
                     approx,
                     prior,
                     kkt,
-                    nb
+                    nb,
+                    lib
                 )
             loss_matrix[active_batch, :, i] = loss
 

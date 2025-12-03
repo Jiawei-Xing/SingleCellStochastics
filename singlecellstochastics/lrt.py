@@ -33,7 +33,8 @@ def likelihood_ratio_test(
     init,
     kkt,
     grid,
-    nb
+    nb,
+    library_list
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -51,6 +52,9 @@ def likelihood_ratio_test(
     prior: prior for alpha
     init: whether to initialize with OU optimization
     kkt: whether to use KKT condition in optimization
+    grid: grid search for alpha
+    nb: whether to use negative binomial likelihood
+    library_list: list of library size normalization factors
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
     # Initialize OU means with expression data
@@ -149,6 +153,11 @@ def likelihood_ratio_test(
         torch.tensor(x, dtype=dtype, device=device) for x in expr
     ]  # list of (batch_size, N_sim, n_cells)
 
+    # Convert librayy size to torch tensor
+    library_list_tensor = [
+        torch.tensor(lib.values.squeeze(), dtype=dtype, device=device) for lib in library_list
+    ]  # list of (n_cells,)
+
     # optimize Lq for null model
     if em_iter == 0: # optimize all params
         h0_params, h0_loss = Lq_optimize_torch(
@@ -170,7 +179,8 @@ def likelihood_ratio_test(
             None,
             prior,
             kkt,
-            nb
+            nb,
+            library_list_tensor
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
         h0_params, h0_loss = run_em(
@@ -192,7 +202,8 @@ def likelihood_ratio_test(
             em_iter,
             prior,
             kkt,
-            nb
+            nb,
+            library_list_tensor
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     
     # optimize Lq for alternative model
@@ -216,7 +227,8 @@ def likelihood_ratio_test(
             None,
             prior,
             kkt,
-            nb
+            nb,
+            library_list_tensor
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
         h1_params, h1_loss = run_em(
@@ -238,7 +250,8 @@ def likelihood_ratio_test(
             em_iter,
             prior,
             kkt,
-            nb
+            nb,
+            library_list_tensor
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     
     # Optional: grid search for alpha when fixing other parameters
@@ -267,7 +280,8 @@ def likelihood_ratio_test(
                 None,
                 prior,
                 kkt,
-                nb
+                nb,
+                library_list_tensor
             )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
             h1_params_grid, h1_loss_grid = Lq_optimize_torch(
                 init_params,
@@ -288,7 +302,8 @@ def likelihood_ratio_test(
                 None,
                 prior,
                 kkt,
-                nb
+                nb,
+                library_list_tensor
             )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
             h0_elbos.append(h0_loss_grid.clone().detach().cpu().numpy()[0, 0])
             h1_elbos.append(h1_loss_grid.clone().detach().cpu().numpy()[0, 0])

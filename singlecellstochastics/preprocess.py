@@ -6,7 +6,7 @@ import torch
 
 
 # precompute and store input data for later usage
-def process_data(tree_files, gene_files, regime_files, rnull, device):
+def process_data(tree_files, gene_files, regime_files, library_files, rnull, device):
     """
     Precompute input data and store for optimization.
 
@@ -18,6 +18,12 @@ def process_data(tree_files, gene_files, regime_files, rnull, device):
     share_list: list of share matrices (tree)
     epochs_list: list of depths (tree)
     beta_list: list of active regimes (tree)
+    diverge_list_torch: list of divergence matrices (torch)
+    share_list_torch: list of share matrices (torch)
+    epochs_list_torch: list of depths (torch)
+    beta_list_torch: list of active regimes (torch)
+    regime_list: list of regimes
+    library_list: list of library size dataframes
     """
     tree_list = []
     cells_list = []
@@ -31,8 +37,9 @@ def process_data(tree_files, gene_files, regime_files, rnull, device):
     epochs_list_torch = []
     beta_list_torch = []
     regime_list = []
+    library_list = []
 
-    for tree_file, gene_file, regime_file in zip(tree_files, gene_files, regime_files):
+    for tree_file, gene_file, regime_file, library_file in zip(tree_files, gene_files, regime_files, library_files):
         # Read the phylogenetic tree
         tree = Phylo.read(tree_file, "newick")
         cells = sorted([n.name for n in tree.get_terminals()])
@@ -44,6 +51,18 @@ def process_data(tree_files, gene_files, regime_files, rnull, device):
         df.index = df.index.astype(str)  # cell names
         df = df.loc[cells]  # important to match cell orders!
         df_list.append(df)
+
+        # Read library sizes if provided, reorder cells as tree leaves
+        if library_file:
+            lib_df = pd.read_csv(library_file, sep="\t", index_col=0, header=None)
+            lib_df.index = lib_df.index.astype(str)
+            lib_df = lib_df.loc[cells]
+            library_list.append(lib_df)
+
+        # if no library sizes provided, use ones
+        else:
+            lib_df = pd.DataFrame(np.ones((len(cells), 1)), index=cells)
+            library_list.append(lib_df)
 
         # Edit tree
         total_length = max(tree.depths().values())
@@ -183,4 +202,5 @@ def process_data(tree_files, gene_files, regime_files, rnull, device):
         epochs_list_torch,
         beta_list_torch,
         regime_list,
+        library_list
     )
