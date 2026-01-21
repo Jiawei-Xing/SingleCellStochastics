@@ -1,5 +1,5 @@
 wandb
-test
+test*
 build
 *.egg-info
 dist
@@ -11,3 +11,7 @@ __pycache__
 .env
 *.err
 *.out
+other
+*.sh
+real_data
+infer_params
