@@ -2,8 +2,10 @@
 
 This repository provides tools for stochastic modeling and analysis of single-cell gene expression dynamics along cell lineages, particularly supporting the detection of significant gene expression changes on metastatic branches within a metastatic cancer cell lineage via likelihood ratio test. We also provide some simulation tools used to evaluate the model.
 
+The model is composed of a tree-based Ornstein-Uhlenbeck process and a negative binomial observation model. The likelihood is approximated by mean-field variational inference. 
+
 <div style="text-align: left;">
-  <img src="ou_poisson_graphical_model.png" alt="OU-Poisson graphical model" width="400"/>
+  <img src="graphical_model.png" alt="graphical model" width="1000"/>
 </div>
 
 ## Installation
@@ -30,6 +32,7 @@ It is also possible to run the python directly from `singlecellstochastics/oup.p
 Users can also import specific functions within a python interactive terminal such as `from singlecellstochastics.lrt import likelihood_ratio_test` or other functions that one needs to access.
 
 ## Model parameters
+
 ### Required parameters
 These parameters are required to run the model:
 
@@ -97,25 +100,18 @@ These parameters are for model developers and changes on them are generally not 
 
 `--dtype`: data type for tensors. Set to float32 under limited memory. Default uses float64.
 
+## Simulations
 
+### Lineage simulation
 
-
-
-<!-- TO JIAWEI: I did not change the code, just updated the formatting to be proper with python package standards. I did not work with the simulation parts of the original script.
-I instead commented out simulation parts since you said you need to work on them more for now. I also ignored the wandb for now, but that can be added back in with little effort.
--->
-
-<!-- Using GPU and wandb for optimization is recommended.
-
-## Lineage simulation
 Example cell lineages can be simulated with a modified version of the agent-based cancer cell simulator from [MACHINA](https://www.nature.com/articles/s41588-018-0106-z). 
-### Required environment
+
 Create and activate the required conda environment with `Lineage_simulation/env/lineage_sim.yml`:
 ```
 conda env create -n simulate -f Lineage_simulation/env/lineage_sim.yml
 conda activate simulate
 ```
-### Cell simulation
+
 To compile the C++ code:
 ```
 cd Lineage_simulation
@@ -125,6 +121,7 @@ cd build
 cmake ..
 make
 ```
+
 The sim folder contains an example `color.txt` file for `simulate`. Run an example simulation:
 ```
 build/simulate -C 100 -c sim/color.txt -m 1 -mig 1e-2 -K 1000 -f 1 > sim/m1_mig1e-2_K1e3_f1.log
@@ -132,23 +129,18 @@ build/simulate -C 100 -c sim/color.txt -m 1 -mig 1e-2 -K 1000 -f 1 > sim/m1_mig1
 This will output a log file, `cellDivisionHistory.txt` (generation, parent cell, child cell), `cloneCells.txt` (clone site, {clone mutations}, clone cells), and `migrationCells.txt` (cells migrating to other sites). 
 
 Alternatively, clone the original [MACHINA repo](https://github.com/raphael-group/machina) and modify code from `machina/src/simulation` based on `Lineage_simulation/src`. Compile and run the simulation by following the instructions from MACHINA.
-### Lineage reconstruction
-Sample cells from simulation and build a cell lineage tree using `cell_lineage.py`. It takes clonal cells, migration cells, and cell division history from simulation, samples cells from each clone with a proportion (default p=1.0, using all simulated cells), and coalesces them into a cell lineage tree, along with a regime file indicating migration sites along lineage. An example of cell lineage tree by sampling 30% of simulated cells:
+
+Then, sample cells from the simulation and build a cell lineage tree using `cell_lineage.py`. It takes clonal cells, migration cells, and cell division history from simulation, samples cells from each clone with a proportion (default p=1.0, using all simulated cells), and coalesces them into a cell lineage tree, along with a regime file indicating migration sites along the lineage. An example of a cell lineage tree by sampling 30% of simulated cells:
 ```
-python cell_lineage.py --cells sim/cloneCells.txt --division sim/cellDivisionHistory.txt --migration sim/migrationCells.txt -p 0.3
+python cell_lineage.py --cells sim/cloneCells.txt --division sim/cellDivisionHistory.txt --migration sim/migrationCells.txt --proportion 0.3
 ```
-## Stochastic simulation
-`Stochastic_simulation/data` contains input files for simulations, including a Newick tree file from lineage simulation and regime files indicating tissue labels on the tree. Regime files are previously defined by [EvoGeneX](https://liebertpub.com/doi/10.1089/cmb.2022.0121), containing cell pairs and labels of their most recent common ancestors on the tree. `prep_regime.py` generates regime files from migrating cells, including those in a lineage close to the root (as from lineage simulation), those in a lineage close to the tip, and those in both lineages (visualized in PNG files). Example regimes were produced from the following command:
+There are two formats of regime files: either two columns with all nodes and corresponding labels as in `lineage_simulation/regime.csv`, or three columns with pairs of leaves indicating nodes at MRCA and an additional column for labels as in `lineage_simulation/regime_mrca.csv`.
+
+### Stochastic simulation
+`stochastic_simulation/data` contains input files for simulations, including a Newick tree file from lineage simulation and regime files indicating tissue labels on the tree. 
+
+`stochastic_simulation/src` contains a Python script for gene expression simulations. `stochas_sim.py` takes the tree and regime as input, and simulates gene expression read counts with Ornstein-Uhlenbeck process along the tree. Simulated read counts and illustrations of stochastic processes are generated in `stochastic_simulation/sim`. Example simulations were produced from the following command:
 ```
-python prep_regime.py -t tree.nwk -c cells_root.txt -r regime_root.csv
-python prep_regime.py -t tree.nwk -c cells_tip.txt -r regime_tip.csv
-python prep_regime.py -t tree.nwk -c cells_both.txt -r regime_both.csv
+python src/stochas_sim.py --tree data/tree.nwk --regime data/regime_root.csv --test 1 --root 0 --optim 1 --sigma 1 --alpha 3 --out sim/500_NB0.5_a3_s1 --label root0-1 --dispersion 0.5
 ```
 
-`Stochastic_simulation/src` contains a Python script for gene expression simulations. `stochas_sim.py` takes the tree and regime as input, and simulates gene expression read counts with Brownian motion (negative control) and Ornstein-Uhlenbeck process (positive expression changes) along the tree. Simulated read counts and illustrations of stochastic processes are generated in `Stochastic_simulation/sim`. Example simulations were produced from the following command:
-```
-python src/stochas_sim.py --tree data/tree.nwk --regime data/regime_root.csv --test 1 --root 5 --optim 10 --out sim --label root5-10
-python src/stochas_sim.py --tree data/tree.nwk --regime data/regime_tip.csv --test 1 --root 5 --optim 10 --out sim --label tip5-10
-python src/stochas_sim.py --tree data/tree.nwk --regime data/regime_both.csv --test 1 --root 5 --optim 10 --out sim --label both5-10
-```
- -->
