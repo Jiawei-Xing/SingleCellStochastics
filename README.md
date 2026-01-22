@@ -139,8 +139,8 @@ There are two formats of regime files: either two columns with all nodes and cor
 ### Stochastic simulation
 `stochastic_simulation/data` contains input files for simulations, including a Newick tree file from lineage simulation and regime files indicating tissue labels on the tree. 
 
-`stochastic_simulation/src` contains a Python script for gene expression simulations. `stochas_sim.py` takes the tree and regime as input, and simulates gene expression read counts with Ornstein-Uhlenbeck process along the tree. Simulated read counts and illustrations of stochastic processes are generated in `stochastic_simulation/sim`. Example simulations were produced from the following command:
+The model takes the tree and regime as input, and simulates gene expression read counts with Ornstein-Uhlenbeck process along the tree. Simulated read counts and illustrations of stochastic processes are generated in `stochastic_simulation/sim`. Example simulations were produced from the following command:
 ```
-python src/stochas_sim.py --tree data/tree.nwk --regime data/regime_root.csv --test 1 --root 0 --optim 1 --sigma 1 --alpha 3 --out sim/500_NB0.5_a3_s1 --label root0-1 --dispersion 0.5
+run-stochas-sim --tree data/tree.nwk --regime data/regime_root.csv --test 1 --root 0 --optim 1 --sigma 1 --alpha 3 --out sim/500_NB0.5_a3_s1 --label root0-1 --dispersion 0.5
 ```
 
