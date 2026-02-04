@@ -8,7 +8,7 @@ Single-cell gene expression evolves dynamically along cell division histories. H
 To fully leverage this lineage information, we present a flexible probabilistic framework that models stochastic single-cell gene expression over inferred cell lineage trees. By grounding gene expression analysis in explicit cell lineage phylogenies with topology and branch lengths, our model enables the inference of continuous expression dynamics, despite the high sparsity and low coverage of sequencing data. By providing a rigorous foundation for modeling sparse count data on latent tree structures, this model establishes a generalizable framework that naturally extends to multi-gene programs, lineage uncertainty, and multi-modal integration, paving the way for a comprehensive atlas of single-cell stochastic dynamics.
 
 ## Model design
-The model is composed of a tree-based Ornstein-Uhlenbeck process and a negative binomial observation model. The likelihood is approximated by mean-field variational inference, and a likelihood ratio test is used for detecting differentially expressed genes in selected lineages. Python-based model source codes are available in the folder `singlecellstochastics`.
+The model is composed of a tree-based Ornstein-Uhlenbeck process and a negative binomial observation model. The log-likelihood is approximated by mean-field variational inference, and a likelihood ratio test is used for detecting differentially expressed genes in selected lineages. We implemented the model using PyTorch, leveraging vectorized optimization to process multiple cells and genes in parallel batches, which significantly accelerates computations on GPU hardware. Python-based model source codes are available in the folder `singlecellstochastics`.
 
 <div style="text-align: left;">
   <img src="graphical_model.png" alt="graphical model" width="1000"/>
@@ -31,7 +31,7 @@ The model tests for the significance of gene expression changes for the regime l
 ```
 run-ou-poisson --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts.tsv --regime examples/input_data/regime.csv --null 0 --output examples/output_results/
 ```
-The result contains a hypothesis test for each gene, including the estimated model parameters and a -log likelihood for the null (h0) and alternative (h1) hypotheses, respectively. 
+The result contains a hypothesis test for each gene, including the estimated model parameters and a negative log-likelihood for the null (h0) and alternative (h1) hypotheses, respectively. 
 The p-values are converted to q-values with the FDR control through the Benjamini-Hochberg procedure. The significance is determined by a threshold of 0.05 for the q-values.
 
 It is also possible to run the python directly from `singlecellstochastics/oup.py` by replacing `run-ou-poisson` in the commands above with `python -m singlecellstochastics.oup`.
@@ -102,7 +102,7 @@ These parameters are for model developers and changes on them are generally not 
 
 `--prior`: L2 regularization strength for log alpha. Equivalently, the precision of the Gaussian prior. Default is 1.0.
 
-`--grid`: a maximal value for grid search of alpha while fixing other parameters. This could help to visualize the sensitivity of the -log likelihood to the alpha parameter. Default does not perform grid search.
+`--grid`: a maximal value for grid search of alpha while fixing other parameters. This could help to visualize the sensitivity of the negative log-likelihood to the alpha parameter. Default does not perform grid search.
 
 `--dtype`: data type for tensors. Set to float32 under limited memory. Default uses float64.
 
