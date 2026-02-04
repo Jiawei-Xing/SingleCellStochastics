@@ -2,14 +2,17 @@
 
 This repository provides tools for stochastic modeling and analysis of single-cell gene expression dynamics along cell lineages, particularly supporting the detection of significant gene expression changes on metastatic branches within a metastatic cancer cell lineage via likelihood ratio test. We also provide some simulation tools used to evaluate the model.
 
-The model is composed of a tree-based Ornstein-Uhlenbeck process and a negative binomial observation model. The likelihood is approximated by mean-field variational inference. 
+## Motivation
+Single-cell gene expression evolves dynamically along cell division histories. However, most existing single-cell methods treat cells as static snapshots, neglecting the rich information encoded in their underlying lineage structures. Recent advances in single-cell lineage tracing, including the CRISPR-based barcoding, now enable the reconstruction of high-resolution lineage phylogenies, providing a natural framework pinpoint exactly when and where transcriptional changes occur. This capability is fundamental to decoding the dynamics of development, differentiation, and disease progression. 
+
+To fully leverage this lineage information, we present a flexible probabilistic framework that models stochastic single-cell gene expression over inferred cell lineage trees. By grounding gene expression analysis in explicit cell lineage phylogenies with topology and branch lengths, our model enables the inference of continuous expression dynamics, despite the high sparsity and low coverage of sequencing data. By providing a rigorous foundation for modeling sparse count data on latent tree structures, this model establishes a generalizable framework that naturally extends to multi-gene programs, lineage uncertainty, and multi-modal integration, paving the way for a comprehensive atlas of single-cell stochastic dynamics.
+
+## Model design
+The model is composed of a tree-based Ornstein-Uhlenbeck process and a negative binomial observation model. The likelihood is approximated by mean-field variational inference, and a likelihood ratio test is used for detecting differentially expressed genes in selected lineages. Python-based model source codes are available in the folder `singlecellstochastics`.
 
 <div style="text-align: left;">
   <img src="graphical_model.png" alt="graphical model" width="1000"/>
 </div>
-
-## Motivation
-Single-cell gene expression evolves dynamically along cell division histories. However, most existing single-cell methods treat cells as static snapshots, neglecting the rich information encoded in their underlying lineage structures. Recent advances in single-cell lineage tracing, including the CRISPR-based barcoding, now enable the reconstruction of high-resolution lineage phylogenies, providing a natural framework pinpoint exactly when and where transcriptional changes occur. This capability is fundamental to decoding the dynamics of development, differentiation, and disease progression. To fully leverage this lineage information, we present a flexible probabilistic framework that models stochastic single-cell gene expression over inferred cell lineage trees. By grounding gene expression analysis in explicit cell lineage phylogenies with topology and branch lengths, our model enables the inference of continuous expression dynamics, despite the high sparsity and low coverage of sequencing data. By providing a rigorous foundation for modeling sparse count data on latent tree structures, this model establishes a generalizable framework that naturally extends to multi-gene programs, lineage uncertainty, and multi-modal integration, paving the way for a comprehensive atlas of single-cell stochastic dynamics.
 
 ## Installation
 We have made the package pip installable, but not yet available publicly on pypi, so users must install locally by cloning this repo and then within the repo (and prefereably within a clean and isolated environment) running:
@@ -105,7 +108,7 @@ These parameters are for model developers and changes on them are generally not 
 
 ## Simulations
 
-### Lineage simulation
+### Cancer cell lineage simulation
 
 Example cell lineages can be simulated with a modified version of the agent-based cancer cell simulator from [MACHINA](https://www.nature.com/articles/s41588-018-0106-z). 
 
@@ -139,7 +142,7 @@ python cell_lineage.py --cells sim/cloneCells.txt --division sim/cellDivisionHis
 ```
 There are two formats of regime files: either two columns with all nodes and corresponding labels as in `lineage_simulation/regime.csv`, or three columns with pairs of leaves indicating nodes at MRCA and an additional column for labels as in `lineage_simulation/regime_mrca.csv`.
 
-### Stochastic simulation
+### Stochastic gene expression simulation
 `stochastic_simulation/data` contains input files for simulations, including a Newick tree file from lineage simulation and regime files indicating tissue labels on the tree. 
 
 The model takes the tree and regime as input, and simulates gene expression read counts with Ornstein-Uhlenbeck process along the tree. Simulated read counts and illustrations of stochastic processes are generated in `stochastic_simulation/sim`. Example simulations were produced from the following command:
