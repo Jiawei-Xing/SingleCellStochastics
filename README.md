@@ -8,6 +8,9 @@ The model is composed of a tree-based Ornstein-Uhlenbeck process and a negative 
   <img src="graphical_model.png" alt="graphical model" width="1000"/>
 </div>
 
+## Motivation
+Single-cell gene expression evolves dynamically along cell division histories. However, most existing single-cell methods treat cells as static snapshots, neglecting the rich information encoded in their underlying lineage structures. Recent advances in single-cell lineage tracing, including the CRISPR-based barcoding, now enable the reconstruction of high-resolution lineage phylogenies, providing a natural framework pinpoint exactly when and where transcriptional changes occur. This capability is fundamental to decoding the dynamics of development, differentiation, and disease progression. To fully leverage this lineage information, we present a flexible probabilistic framework that models stochastic single-cell gene expression over inferred cell lineage trees. By grounding gene expression analysis in explicit cell lineage phylogenies with topology and branch lengths, our model enables the inference of continuous expression dynamics, despite the high sparsity and low coverage of sequencing data. By providing a rigorous foundation for modeling sparse count data on latent tree structures, this model establishes a generalizable framework that naturally extends to multi-gene programs, lineage uncertainty, and multi-modal integration, paving the way for a comprehensive atlas of single-cell stochastic dynamics.
+
 ## Installation
 We have made the package pip installable, but not yet available publicly on pypi, so users must install locally by cloning this repo and then within the repo (and prefereably within a clean and isolated environment) running:
 ```
@@ -39,10 +42,10 @@ These parameters are required to run the model:
 `--tree`: input tree inferred from single-cell lineage tracing. Each leaf represents a cell. 
 
 `--expr`: input gene expression read count file (cells x genes). Each row matches a leaf from the input tree; each column represents a gene expression raw read count. 
-Read counts should not be preprocessed, as the model explicitly models the single-cell overdispersion with negative binomial observation models.
+Read counts should not be log transformed, as the model explicitly models the single-cell overdispersion with negative binomial observation models.
 
-`--regime`: input labels for each node on the tree, including the root, all internal nodes, and leaves. 
-The model can take two formats of regime files: a file with a node column and a label column if all nodes are named in the tree, or a file with two leaf columns and a label column where nodes are represented by the MRCA of two leaves.
+`--regime`: input labels (e.g., metastatic tissues) for each node on the tree, including the root, all internal nodes, and leaves. 
+The model can take two formats of regime files: a file with a node column and a label column if all nodes are named in the tree file, or a file with two leaf columns and a label column where nodes are represented by the MRCA of two leaves.
 
 `--null`: input label for the null hypothesis. In the case of cancer metastasis, this label could be the primary tumor, and the model could be used to detect differential expression of tissue-specific metastasis.
 
