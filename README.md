@@ -2,7 +2,13 @@
 
 This repository provides tools for stochastic modeling and analysis of single-cell gene expression dynamics along cell lineages, particularly supporting the detection of significant gene expression changes on metastatic branches within a metastatic cancer cell lineage via likelihood ratio test. We also provide some simulation tools used to evaluate the model.
 
-The model is composed of a tree-based Ornstein-Uhlenbeck process and a negative binomial observation model. The likelihood is approximated by mean-field variational inference. 
+## Motivation
+Single-cell gene expression evolves dynamically along cell division histories. However, most existing single-cell methods treat cells as static snapshots, neglecting the rich information encoded in their underlying lineage structures. Recent advances in single-cell lineage tracing, including the CRISPR-based barcoding, now enable the reconstruction of high-resolution lineage phylogenies, providing a natural framework pinpoint exactly when and where transcriptional changes occur. This capability is fundamental to decoding the dynamics of development, differentiation, and disease progression. 
+
+To fully leverage this lineage information, we present a flexible probabilistic framework that models stochastic single-cell gene expression over inferred cell lineage trees. By grounding gene expression analysis in explicit cell lineage phylogenies with topology and branch lengths, our model enables the inference of continuous expression dynamics, despite the high sparsity and low coverage of sequencing data. By providing a rigorous foundation for modeling sparse count data on latent tree structures, this model establishes a generalizable framework that naturally extends to multi-gene programs, lineage uncertainty, and multi-modal integration, paving the way for a comprehensive atlas of single-cell stochastic dynamics.
+
+## Model design
+The model is composed of a tree-based Ornstein-Uhlenbeck process and a negative binomial observation model. The log-likelihood is approximated by mean-field variational inference, and a likelihood ratio test is used for detecting differentially expressed genes in selected lineages. We implemented the model using PyTorch, leveraging vectorized optimization to process multiple cells and genes in parallel batches, which significantly accelerates computations on GPU hardware. Python-based model source codes are available in the folder `singlecellstochastics`.
 
 <div style="text-align: left;">
   <img src="graphical_model.png" alt="graphical model" width="1000"/>
@@ -25,7 +31,7 @@ The model tests for the significance of gene expression changes for the regime l
 ```
 run-ou-poisson --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts.tsv --regime examples/input_data/regime.csv --null 0 --output examples/output_results/
 ```
-The result contains a hypothesis test for each gene, including the estimated model parameters and a -log likelihood for the null (h0) and alternative (h1) hypotheses, respectively. 
+The result contains a hypothesis test for each gene, including the estimated model parameters and a negative log-likelihood for the null (h0) and alternative (h1) hypotheses, respectively. 
 The p-values are converted to q-values with the FDR control through the Benjamini-Hochberg procedure. The significance is determined by a threshold of 0.05 for the q-values.
 
 It is also possible to run the python directly from `singlecellstochastics/oup.py` by replacing `run-ou-poisson` in the commands above with `python -m singlecellstochastics.oup`.
@@ -39,10 +45,10 @@ These parameters are required to run the model:
 `--tree`: input tree inferred from single-cell lineage tracing. Each leaf represents a cell. 
 
 `--expr`: input gene expression read count file (cells x genes). Each row matches a leaf from the input tree; each column represents a gene expression raw read count. 
-Read counts should not be preprocessed, as the model explicitly models the single-cell overdispersion with negative binomial observation models.
+Read counts should not be log transformed, as the model explicitly models the single-cell overdispersion with negative binomial observation models.
 
-`--regime`: input labels for each node on the tree, including the root, all internal nodes, and leaves. 
-The model can take two formats of regime files: a file with a node column and a label column if all nodes are named in the tree, or a file with two leaf columns and a label column where nodes are represented by the MRCA of two leaves.
+`--regime`: input labels (e.g., metastatic tissues) for each node on the tree, including the root, all internal nodes, and leaves. 
+The model can take two formats of regime files: a file with a node column and a label column if all nodes are named in the tree file, or a file with two leaf columns and a label column where nodes are represented by the MRCA of two leaves.
 
 `--null`: input label for the null hypothesis. In the case of cancer metastasis, this label could be the primary tumor, and the model could be used to detect differential expression of tissue-specific metastasis.
 
@@ -96,13 +102,13 @@ These parameters are for model developers and changes on them are generally not 
 
 `--prior`: L2 regularization strength for log alpha. Equivalently, the precision of the Gaussian prior. Default is 1.0.
 
-`--grid`: a maximal value for grid search of alpha while fixing other parameters. This could help to visualize the sensitivity of the -log likelihood to the alpha parameter. Default does not perform grid search.
+`--grid`: a maximal value for grid search of alpha while fixing other parameters. This could help to visualize the sensitivity of the negative log-likelihood to the alpha parameter. Default does not perform grid search.
 
 `--dtype`: data type for tensors. Set to float32 under limited memory. Default uses float64.
 
 ## Simulations
 
-### Lineage simulation
+### Cancer cell lineage simulation
 
 Example cell lineages can be simulated with a modified version of the agent-based cancer cell simulator from [MACHINA](https://www.nature.com/articles/s41588-018-0106-z). 
 
@@ -136,11 +142,11 @@ python cell_lineage.py --cells sim/cloneCells.txt --division sim/cellDivisionHis
 ```
 There are two formats of regime files: either two columns with all nodes and corresponding labels as in `lineage_simulation/regime.csv`, or three columns with pairs of leaves indicating nodes at MRCA and an additional column for labels as in `lineage_simulation/regime_mrca.csv`.
 
-### Stochastic simulation
+### Stochastic gene expression simulation
 `stochastic_simulation/data` contains input files for simulations, including a Newick tree file from lineage simulation and regime files indicating tissue labels on the tree. 
 
-`stochastic_simulation/src` contains a Python script for gene expression simulations. `stochas_sim.py` takes the tree and regime as input, and simulates gene expression read counts with Ornstein-Uhlenbeck process along the tree. Simulated read counts and illustrations of stochastic processes are generated in `stochastic_simulation/sim`. Example simulations were produced from the following command:
+The model takes the tree and regime as input, and simulates gene expression read counts with Ornstein-Uhlenbeck process along the tree. Simulated read counts and illustrations of stochastic processes are generated in `stochastic_simulation/sim`. Example simulations were produced from the following command:
 ```
-python src/stochas_sim.py --tree data/tree.nwk --regime data/regime_root.csv --test 1 --root 0 --optim 1 --sigma 1 --alpha 3 --out sim/500_NB0.5_a3_s1 --label root0-1 --dispersion 0.5
+run-stochas-sim --tree data/tree.nwk --regime data/regime_root.csv --test 1 --root 0 --optim 1 --sigma 1 --alpha 3 --out sim/500_NB0.5_a3_s1 --label root0-1 --dispersion 0.5
 ```
 
