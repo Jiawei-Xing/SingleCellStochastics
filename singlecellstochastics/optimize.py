@@ -288,7 +288,7 @@ def Lq_optimize_torch(
     Optimize ELBO with PyTorch Adam.
 
     params: List of (batch_size, N_sim, all_param_dim)
-            [Lq_params tree1, Lq_params tree2, ..., Lq_params treeN, shared OU_params]
+            [Lq_params tree1, Lq_params tree2, ..., Lq_params treeN, logr, shared OU_params]
     mode: 1 for H0, 2 for H1
     x_tensor: list of (batch_size, N_sim, n_cells)
     gene_names: list of gene names
@@ -312,7 +312,7 @@ def Lq_optimize_torch(
     ] + [
         params[-1][:, :, 0:1].clone().detach(),
         params[-1][:, :, 1:].clone().detach()
-    ] # [Lq tree1, Lq tree2, ..., Lq treeN, r, alpha, other OU]
+    ] # [Lq tree1, Lq tree2, ..., Lq treeN, logr, alpha, other OU]
 
     # Set requires_grad based on EM mode
     if em == "e":
@@ -501,6 +501,6 @@ def Lq_optimize_torch(
     
     best_params = [p for p in best_params[:-2]] + [
         torch.cat((best_params[-2], best_params[-1]), dim=-1)
-    ] # [Lq tree1, Lq tree2, ..., Lq treeN, all OU]
+    ] # [Lq tree1, Lq tree2, ..., Lq treeN, logr, all OU]
 
     return best_params, best_loss

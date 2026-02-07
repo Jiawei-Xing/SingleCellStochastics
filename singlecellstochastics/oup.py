@@ -143,6 +143,9 @@ def run_ou_poisson():
     parser.add_argument(
         "--library", type=str, default=None, help="Library size file per cell (optional)"
     )
+    parser.add_argument(
+        "--importance", type=int, default=0, help="Number of importance samples for likelihood (default: 0)"
+    )
     args = parser.parse_args()
 
     tree_files = args.tree.split(",")
@@ -170,6 +173,7 @@ def run_ou_poisson():
     nb = args.no_nb
     resume = args.resume
     library_files = args.library.split(",") if args.library is not None else [None] * len(tree_files)
+    importance = args.importance
 
     if args.dtype == "float32":
         dtype = torch.float32  
@@ -283,7 +287,8 @@ def run_ou_poisson():
             kkt,
             grid,
             nb,
-            library_list
+            library_list,
+            importance
         )  # (batch_size, 1, ...)
 
         # save result
@@ -328,7 +333,8 @@ def run_ou_poisson():
                 kkt,
                 grid,
                 nb,
-                library_list
+                library_list,
+                importance
             )  # (batch_size, N_sim, ...)
             null_LRs = h0_loss_sim - h1_loss_sim  # (batch_size, N_sim)
 
@@ -424,7 +430,8 @@ def run_ou_poisson():
                 kkt,
                 grid,
                 nb,
-                library_list
+                library_list,
+                importance
             )  # (N_sim_all, 1, ...)
             null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
 

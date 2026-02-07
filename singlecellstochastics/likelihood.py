@@ -159,7 +159,7 @@ def ou_neg_log_lik_torch(
     """
     Same OU likelihood with torch. Used for ELBO with torch.
 
-    params_batch: [alpha, other OU params]
+    params_batch: [log_alpha, other OU params]
     sigma2_q: (batch_size, N_sim, n_cells)
     expr_batch: (batch_size, N_sim, n_cells)
     diverge, share: (n_cells, n_cells)
@@ -276,7 +276,7 @@ def ou_neg_log_lik_torch_kkt(
     """
     Same OU likelihood with torch. Used for ELBO with torch.
 
-    params_batch: [alpha, other OU params]
+    params_batch: [log_alpha, other OU params]
     sigma2_q: (batch_size, N_sim, n_cells)
     expr_batch: (batch_size, N_sim, n_cells)
     diverge, share: (n_cells, n_cells)

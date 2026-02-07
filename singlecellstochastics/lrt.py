@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 
 from .optimize import ou_optimize_scipy, ou_optimize_torch, Lq_optimize_torch
 from .em import run_em
+from .importance import importance_sampling
 
 # likelihood ratio test
 def likelihood_ratio_test(
@@ -34,7 +35,8 @@ def likelihood_ratio_test(
     kkt,
     grid,
     nb,
-    library_list
+    library_list,
+    importance
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -55,7 +57,8 @@ def likelihood_ratio_test(
     grid: grid search for alpha
     nb: whether to use negative binomial likelihood
     library_list: list of library size normalization factors
-    Returns: (batch_size, N_sim) numpy array of params and losses
+    importance: number of importance samples for likelihood
+    Returns: (batch_size, N_sim) numpy array of params and losses for null and alternative models
     """
     # Initialize OU means with expression data
     if pseudo > 0:
@@ -321,7 +324,37 @@ def likelihood_ratio_test(
         plt.savefig(f"{batch_start}_elbo.png")
         plt.close()
     
-    # combine r and ou params
+    # importance sampling using elbo as a proposal for more accurate likelihood estimation
+    if importance:
+        h0_loss = importance_sampling(
+            h0_params, 
+            1, 
+            x_tensor, 
+            diverge_list_torch, 
+            share_list_torch, 
+            epochs_list_torch, 
+            beta_list_torch, 
+            device, 
+            nb,
+            library_list_tensor,
+            10000
+        )
+
+        h1_loss = importance_sampling(
+            h1_params, 
+            2, 
+            x_tensor, 
+            diverge_list_torch, 
+            share_list_torch, 
+            epochs_list_torch, 
+            beta_list_torch, 
+            device, 
+            nb,
+            library_list_tensor,
+            10000
+        )
+
+    # combine logr and ou params
     h0_params = torch.cat((h0_params[-2], h0_params[-1]), dim=-1)
     h1_params = torch.cat((h1_params[-2], h1_params[-1]), dim=-1)
 

@@ -7,7 +7,7 @@ def save_result(batch_start, batch_size, batch_genes, \
     h0_params, h1_params, h0_loss, h1_loss, results, approx):
     """
     Save result of likelihood ratio test for each gene in batch.
-    params: (batch_size, 1, param_dim) numpy array, (r, alpha, sigma2, theta, ...) for h0 and h1
+    params: (batch_size, 1, param_dim) numpy array, (logr, log_alpha, sigma, theta, ...) for h0 and h1
     loss: (batch_size, 1) numpy array
     """
     n_regimes = h0_params.shape[2] - 3
