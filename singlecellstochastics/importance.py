@@ -43,12 +43,12 @@ def importance_sampling(
     for i in range(ntree):
         # sample z_i ~ q(z|x) for each tree
         ncell = x_tensor[i].shape[-1]
-        q_mean, q_var = params[i], params[i + ncell] # (batch_size, n_cells)
+        q_mean, q_var = params[i], params[i + ncell] # (batch_size, N_sim, n_cells)
         dist = torch.distributions.Normal(q_mean, torch.sqrt(q_var))
-        samples = dist.sample((n_samples,)) # (n_samples, batch_size, n_cells)
+        samples = dist.sample((n_samples,)) # (n_samples, batch_size, N_sim, n_cells)
 
         # log q(z_i|x)
-        log_q = torch.log(samples)
+        log_q = torch.log(samples).sum(dim=-1)  # (n_samples, batch_size, N_sim)
 
         # OU params
         batch_size, N_sim, n_cells = x_tensor[i].shape
@@ -87,7 +87,7 @@ def importance_sampling(
             loc=mean,
             covariance_matrix=V
         )
-        log_p_z = dist.log_prob(samples)   # (n,)
+        log_p_z = dist.log_prob(samples)   # (n_samples, batch_size, N_sim)
 
         # log p(x_i|z_i)
         if not nb:
@@ -104,7 +104,7 @@ def importance_sampling(
         log_p_xz = log_p_z + log_p_x_given_z  # (n_samples, batch_size, N_sim)
 
         # log p(x,z_i) - log q(z_i|x)
-        log_p_q.append(log_p_xz - log_q) 
+        log_p_q.append(log_p_xz - log_q)  # (n_samples, batch_size, N_sim)
 
     # log_sum_exp over samples, then average over trees
     log_p_q = torch.stack(log_p_q, dim=0)  # (ntree, n_samples, batch_size, N_sim)
