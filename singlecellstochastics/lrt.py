@@ -325,7 +325,7 @@ def likelihood_ratio_test(
         plt.close()
     
     # importance sampling using elbo as a proposal for more accurate likelihood estimation
-    if importance:
+    if importance > 0:
         h0_loss = importance_sampling(
             h0_params, 
             1, 
@@ -335,9 +335,12 @@ def likelihood_ratio_test(
             epochs_list_torch, 
             beta_list_torch, 
             device, 
+            approx,
+            prior,
+            kkt,
             nb,
             library_list_tensor,
-            10000
+            importance
         )
 
         h1_loss = importance_sampling(
@@ -349,9 +352,12 @@ def likelihood_ratio_test(
             epochs_list_torch, 
             beta_list_torch, 
             device, 
+            approx,
+            prior,
+            kkt,
             nb,
             library_list_tensor,
-            10000
+            importance
         )
 
     # combine logr and ou params

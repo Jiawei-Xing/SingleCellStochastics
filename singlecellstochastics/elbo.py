@@ -194,9 +194,6 @@ def Lq_neg_log_lik_torch_samples(
     term3 = -0.5 * torch.sum(torch.log(s2), dim=-1)  # (1, batch_size, N_sim)
 
     reg = 0.5 * prior *  (ou_params[0][:, :, 0] ** 2)  # (batch_size, N_sim)
-    loss = term1.unsqueeze(0) + term2 + term3 + reg.unsqueeze(0)  # (batch_size, N_sim)
+    loss = term1.unsqueeze(0) + term2 + term3 + reg.unsqueeze(0)  # (nsamples, batch_size, N_sim)
 
-    if kkt:
-        return loss, sigma, theta  # (batch_size, N_sim)
-    else:
-        return loss  # (batch_size, N_sim)
+    return loss  # (nsamples, batch_size, N_sim)

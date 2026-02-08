@@ -1,7 +1,7 @@
 import torch
 
 from .weights import theta_weight_W_torch
-from elbo import Lq_neg_log_lik_torch_samples
+from .elbo import Lq_neg_log_lik_torch_samples
 
 def importance_sampling(
     params,
@@ -38,16 +38,16 @@ def importance_sampling(
         negative log_likelihood: (batch_size, N_sim)
     """
     log_r = params[-2].unsqueeze(0) # add dim for samples
-    ou_params = params[-1]
+    ou_params = [params[-1][..., :1], params[-1][..., 1:]] # split alpha and others for ou likelihood
     ntree = len(x_tensor)
 
     # Compute log p(x,z_i) and elbo, looping over trees
     log_p_q = []
     for i in range(ntree):
         # sample z_i ~ q(z|x) for each tree
-        ncell = x_tensor[i].shape[-1]
-        q_mean, q_var = params[i], params[i + ncell] # (batch_size, N_sim, n_cells)
-        dist = torch.distributions.Normal(q_mean, torch.sqrt(q_var))
+        n_cells = x_tensor[i].shape[-1]
+        q_mean, q_std = params[i][:, :, :n_cells], params[i][:, :, n_cells:2*n_cells] # (batch_size, N_sim, n_cells)
+        dist = torch.distributions.Normal(q_mean, q_std)
         samples = dist.sample((n_samples,)) # (n_samples, batch_size, N_sim, n_cells)
 
         # ELBO
@@ -66,14 +66,14 @@ def importance_sampling(
             prior, 
             kkt,
             nb,
-            lib
+            lib[i]
         )  # (n_samples, batch_size, N_sim)
 
         # OU params
         batch_size, N_sim, n_cells = x_tensor[i].shape
-        alpha = torch.exp(ou_params[:, :, 0])  # (batch_size, N_sim)
-        sigma2 = ou_params[:, :, 1]**2  # (batch_size, N_sim)
-        thetas = ou_params[:, :, 2:]  # (batch_size, N_sim, n_regimes)
+        alpha = torch.exp(ou_params[0][:, :, 0])  # (batch_size, N_sim)
+        sigma2 = ou_params[1][:, :, 0]**2  # (batch_size, N_sim)
+        thetas = ou_params[1][:, :, 1:]  # (batch_size, N_sim, n_regimes)
 
         alpha = alpha[:, :, None, None]  # (batch_size, N_sim, 1, 1)
         sigma2 = sigma2[:, :, None, None]  # (batch_size, N_sim, 1, 1)
@@ -113,7 +113,6 @@ def importance_sampling(
             dist = torch.distributions.Poisson(rate=torch.nn.functional.softplus(samples) * lib[i])
         else:            
             mu = torch.nn.functional.softplus(samples) * lib[i]
-            log_r = log_r.unsqueeze(-1) # add dim for cells
             dist = torch.distributions.NegativeBinomial(
                 total_count = torch.exp(log_r), 
                 logits = torch.log(mu) - log_r
