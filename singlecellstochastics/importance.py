@@ -1,7 +1,7 @@
-from math import dist
 import torch
 
 from .weights import theta_weight_W_torch
+from elbo import Lq_neg_log_lik_torch_samples
 
 def importance_sampling(
     params,
@@ -12,15 +12,17 @@ def importance_sampling(
     epochs_list_torch, 
     beta_list_torch, 
     device,
+    approx, 
+    prior, 
+    kkt,
     nb,
     lib,
     n_samples
 ):
     """
     Estimate the real log-likelihood using importance sampling.
-    Uses fixed q parameters from optimization as proposal distribution,
-    and computes importance weights from samples drawn from q.
-    log p(x) ≈ log_sum_exp(log p(x,z_i) - log q(z_i|x)) - log(n_samples)
+    Sample from optimized q(z) and use ELBO as proposal distribution.
+    log p(x) ≈ log_sum_exp(log p(x,z_i) - elbo) - log(n_samples)
     
     Args:
         params: list of (Lq_params_tree1, ..., Lq_params_treeN, log_r, ou_params)
@@ -28,17 +30,18 @@ def importance_sampling(
         x_tensor: list of (batch_size, N_sim, n_cells) * trees observed counts
         diverge_list_torch, share_list_torch, epochs_list_torch, beta_list_torch: tree parameters
         device: torch device
+        approx, prior, kkt: ELBO parameters
         nb: whether to use negative binomial
         lib: library size normalization
     
     Returns:
-        negative log_likelihood: (batch_size, N_sim) tensor of log-likelihood estimates
+        negative log_likelihood: (batch_size, N_sim)
     """
     log_r = params[-2]
     ou_params = params[-1]
     ntree = len(x_tensor)
 
-    # Compute log p(x,z_i) and log q(z_i|x), looping over trees
+    # Compute log p(x,z_i) and elbo, looping over trees
     log_p_q = []
     for i in range(ntree):
         # sample z_i ~ q(z|x) for each tree
@@ -47,8 +50,24 @@ def importance_sampling(
         dist = torch.distributions.Normal(q_mean, torch.sqrt(q_var))
         samples = dist.sample((n_samples,)) # (n_samples, batch_size, N_sim, n_cells)
 
-        # log q(z_i|x)
-        log_q = torch.log(samples).sum(dim=-1)  # (n_samples, batch_size, N_sim)
+        # ELBO
+        neg_elbo = Lq_neg_log_lik_torch_samples(
+            params[i], 
+            log_r,
+            ou_params, 
+            mode, 
+            samples, 
+            diverge_list_torch[i], 
+            share_list_torch[i], 
+            epochs_list_torch[i], 
+            beta_list_torch[i], 
+            device, 
+            approx, 
+            prior, 
+            kkt,
+            nb,
+            lib
+        )  # (n_samples, batch_size, N_sim)
 
         # OU params
         batch_size, N_sim, n_cells = x_tensor[i].shape
@@ -93,9 +112,10 @@ def importance_sampling(
         if not nb:
             dist = torch.distributions.Poisson(rate=torch.nn.functional.softplus(samples) * lib[i])
         else:            
+            mu = torch.nn.functional.softplus(samples) * lib[i]
             dist = torch.distributions.NegativeBinomial(
-                total_count=torch.nn.functional.softplus(log_r) * lib[i], 
-                logits=samples
+                total_count = torch.exp(log_r), 
+                logits = torch.log(mu) - log_r
             )
         log_p_x_given_z = dist.log_prob(x_tensor[i].unsqueeze(0))  # (n_samples, batch_size, N_sim, n_cells)
         log_p_x_given_z = log_p_x_given_z.sum(dim=-1)  # (n_samples, batch_size, N_sim)
@@ -103,12 +123,11 @@ def importance_sampling(
         # log p(x,z_i) = log p(z_i) + log p(x_i|z_i)
         log_p_xz = log_p_z + log_p_x_given_z  # (n_samples, batch_size, N_sim)
 
-        # log p(x,z_i) - log q(z_i|x)
-        log_p_q.append(log_p_xz - log_q)  # (n_samples, batch_size, N_sim)
+        # log p(x,z_i) - elbo
+        log_p_q.append(log_p_xz + neg_elbo)  # (n_samples, batch_size, N_sim)
 
-    # log_sum_exp over samples, then average over trees
-    log_p_q = torch.stack(log_p_q, dim=0)  # (ntree, n_samples, batch_size, N_sim)
-    log_likelihood = torch.logsumexp(log_p_q, dim=1) - torch.log(torch.tensor(n_samples, dtype=log_p_q.dtype, device=device))  # (ntree, batch_size, N_sim)
-    log_likelihood = log_likelihood.mean(dim=0)  # (batch_size, N_sim)
+    # sum log across trees, then log_sum_exp over samples
+    log_p_q = torch.stack(log_p_q, dim=0).sum(dim=0)  # (n_samples, batch_size, N_sim)
+    log_likelihood = torch.logsumexp(log_p_q, dim=0) - torch.log(torch.tensor(n_samples, dtype=log_p_q.dtype, device=device))  # (batch_size, N_sim)
 
     return -log_likelihood
