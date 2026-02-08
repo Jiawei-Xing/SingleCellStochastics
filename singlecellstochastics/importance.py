@@ -37,7 +37,7 @@ def importance_sampling(
     Returns:
         negative log_likelihood: (batch_size, N_sim)
     """
-    log_r = params[-2]
+    log_r = params[-2].unsqueeze(0) # add dim for samples
     ou_params = params[-1]
     ntree = len(x_tensor)
 
@@ -113,6 +113,7 @@ def importance_sampling(
             dist = torch.distributions.Poisson(rate=torch.nn.functional.softplus(samples) * lib[i])
         else:            
             mu = torch.nn.functional.softplus(samples) * lib[i]
+            log_r = log_r.unsqueeze(-1) # add dim for cells
             dist = torch.distributions.NegativeBinomial(
                 total_count = torch.exp(log_r), 
                 logits = torch.log(mu) - log_r
