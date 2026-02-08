@@ -29,7 +29,7 @@ which run-ou-poisson
 The model requires three input data: a lineage tree, a gene expression read count file matching the tree leaves, and a regime file with cell labels on the tree. 
 The model tests for the significance of gene expression changes for the regime labels compared to the null label. In the bash terminal, run the following as an example:
 ```
-run-ou-poisson --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts.tsv --regime examples/input_data/regime.csv --null 0 --output examples/output_results/
+run-ou-poisson --tree examples/input_data/tree.nwk --expr examples/input_data/readcounts.tsv --regime examples/input_data/regime.csv --null 0 --outdir examples/output_results/
 ```
 The result contains a hypothesis test for each gene, including the estimated model parameters and a negative log-likelihood for the null (h0) and alternative (h1) hypotheses, respectively. 
 The p-values are converted to q-values with the FDR control through the Benjamini-Hochberg procedure. The significance is determined by a threshold of 0.05 for the q-values.
