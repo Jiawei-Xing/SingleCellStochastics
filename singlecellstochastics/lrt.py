@@ -335,9 +335,6 @@ def likelihood_ratio_test(
             epochs_list_torch, 
             beta_list_torch, 
             device, 
-            approx,
-            prior,
-            kkt,
             nb,
             library_list_tensor,
             importance
@@ -352,9 +349,6 @@ def likelihood_ratio_test(
             epochs_list_torch, 
             beta_list_torch, 
             device, 
-            approx,
-            prior,
-            kkt,
             nb,
             library_list_tensor,
             importance

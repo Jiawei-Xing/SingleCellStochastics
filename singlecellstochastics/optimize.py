@@ -172,9 +172,10 @@ def ou_optimize_torch(
             loss_matrix[active_batch, :, i] = loss
 
         # average loss across trees (use torch.logsumexp for better numerical stability)
-        average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
-            torch.tensor(n_trees, device=device, dtype=loss.dtype)
-        )  # (batch_size, N_sim)
+        #average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
+        #    torch.tensor(n_trees, device=device, dtype=loss.dtype)
+        #)  # (batch_size, N_sim)
+        average_loss = loss_matrix.sum(dim=2) # (batch_size, N_sim)
 
         # update best params for not yet converged genes
         with torch.no_grad():
@@ -409,9 +410,10 @@ def Lq_optimize_torch(
             loss_matrix[active_batch, :, i] = loss
 
         # average loss across trees (use torch.logsumexp for better numerical stability)
-        average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
-            torch.tensor(n_trees, device=device, dtype=loss.dtype)
-        )  # (batch_size, N_sim)
+        #average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
+        #    torch.tensor(n_trees, device=device, dtype=loss.dtype)
+        #)  # (batch_size, N_sim)
+        average_loss = loss_matrix.sum(dim=2) # (batch_size, N_sim)
 
         # update best params for not yet converged genes
         with torch.no_grad():
