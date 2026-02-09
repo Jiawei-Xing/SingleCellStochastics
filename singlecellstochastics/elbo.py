@@ -20,7 +20,8 @@ def Lq_neg_log_lik_torch(
     prior, 
     kkt,
     nb,
-    lib
+    lib,
+    const
 ):
     """
     ELBO for approximating model evidence.
@@ -38,6 +39,8 @@ def Lq_neg_log_lik_torch(
     kkt: whether to use KKT condition for OU likelihood
     nb: whether to use negative binomial likelihood
     lib: library size normalization
+    const: whether to include constant terms in likelihood
+    
     Returns: (batch_size, N_sim) tensor of losses
     """
     n_cells = x_tensor.shape[-1]
@@ -49,10 +52,17 @@ def Lq_neg_log_lik_torch(
         term1, sigma, theta = ou_neg_log_lik_torch_kkt(
             ou_params, s2, mode, m, diverge, share, epochs, beta, device
         )  # (batch_size, N_sim)
+        
+        if const:
+            term1 += n_cells/2 * (1 + torch.log(2 * torch.tensor(torch.pi, device=device)))
+
     else:
         term1 = ou_neg_log_lik_torch(
             ou_params, s2, mode, m, diverge, share, epochs, beta, device
         )  # (batch_size, N_sim)
+
+        if const:
+            term1 += n_cells/2 * torch.log(2 * torch.tensor(torch.pi, device=device))
 
     # Poisson -log lik
     if not nb:
@@ -68,7 +78,6 @@ def Lq_neg_log_lik_torch(
         else:
             raise ValueError(f"Invalid approximation method: {approx}")
 
-        #const= - torch.lgamma(x_tensor + 1)
         term2 = -torch.sum(x_tensor * E_log_approx - lib * E_approx, dim=-1) # (batch_size, N_sim)
     
     # Negative binomial -log lik
@@ -89,9 +98,14 @@ def Lq_neg_log_lik_torch(
             dim=-1
         )  # (batch_size, N_sim)
 
+    if const:
+        term2 += -torch.sum(x_tensor * torch.log(lib) - torch.lgamma(x_tensor + 1), dim=-1) # x!
+
     # -entropy
-    #const = torch.log(torch.tensor(2 * torch.pi * torch.e, device=device))
     term3 = -0.5 * torch.sum(torch.log(s2), dim=-1)  # (batch_size, N_sim)
+
+    if const:
+        term3 += -n_cells/2 * (1 + torch.log(2 * torch.tensor(torch.pi, device=device)))
 
     reg = 0.5 * prior *  (ou_params[0][:, :, 0] ** 2)  # (batch_size, N_sim)
     loss = term1 + term2 + term3 + reg  # (batch_size, N_sim)

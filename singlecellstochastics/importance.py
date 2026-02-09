@@ -37,7 +37,7 @@ def importance_sampling(
     ou_params = [params[-1][..., :1], params[-1][..., 1:]] # split alpha and others for ou likelihood
     ntree = len(x_tensor)
 
-    # Compute log p(x,z_i) and elbo, looping over trees
+    # Compute log p(x,z_i) - log q(z_i|x_i), looping over trees
     log_p_q = []
     for i in range(ntree):
         # sample z_i ~ q(z|x) for each tree

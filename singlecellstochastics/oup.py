@@ -146,6 +146,9 @@ def run_ou_poisson():
     parser.add_argument(
         "--importance", type=int, default=100, help="Number of importance samples for likelihood estimates (default: 100)"
     )
+    parser.add_argument(
+        "--const", action="store_true", help="Use constant terms in likelihood (default: False)"
+    )
     args = parser.parse_args()
 
     tree_files = args.tree.split(",")
@@ -174,6 +177,7 @@ def run_ou_poisson():
     resume = args.resume
     library_files = args.library.split(",") if args.library is not None else [None] * len(tree_files)
     importance = args.importance
+    const = args.const
 
     if args.dtype == "float32":
         dtype = torch.float32  
@@ -288,7 +292,8 @@ def run_ou_poisson():
             grid,
             nb,
             library_list,
-            importance
+            importance,
+            const
         )  # (batch_size, 1, ...)
 
         # save result
@@ -334,7 +339,8 @@ def run_ou_poisson():
                 grid,
                 nb,
                 library_list,
-                importance
+                importance,
+                const
             )  # (batch_size, N_sim, ...)
             null_LRs = h0_loss_sim - h1_loss_sim  # (batch_size, N_sim)
 
@@ -431,7 +437,8 @@ def run_ou_poisson():
                 grid,
                 nb,
                 library_list,
-                importance
+                importance,
+                const
             )  # (N_sim_all, 1, ...)
             null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
 

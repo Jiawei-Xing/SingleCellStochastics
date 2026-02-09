@@ -106,6 +106,10 @@ These parameters are for model developers and changes on them are generally not 
 
 `--dtype`: data type for tensors. Set to float32 under limited memory. Default uses float64.
 
+`--importance`: number of samples for importance sampling to improve likelihood estimates from ELBO. Default is 100.
+
+`--const`: flag of adding constant terms to ELBO. Could be used to compare ELBO with importance sampling estimates. Default is False.
+
 ## Simulations
 
 ### Cancer cell lineage simulation
