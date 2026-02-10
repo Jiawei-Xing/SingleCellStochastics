@@ -4,6 +4,7 @@ import csv
 import argparse
 import math
 from Bio import Phylo
+import os
 
 
 def read_tree(
@@ -380,7 +381,8 @@ def plot(plots, n_genes, output_dir, label):
         ax.set_visible(False)
 
     plt.tight_layout(pad=0.5)
-    plt.savefig(f"{output_dir}/sim_{label}.png", dpi=300, bbox_inches="tight")
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(os.path.join(output_dir, f"sim_{label}.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -408,7 +410,8 @@ def write_read_counts(
     Output:
         Creates a TSV file named 'readcounts_{label}.tsv' in the specified output directory.
     """
-    with open(f"{output_dir}/readcounts_{label}.tsv", 'w') as f:
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, f"readcounts_{label}.tsv"), 'w') as f:
         # Write header for all gene names
         f.write("\t" + "\t".join(str(i) for i in range(1, n_genes + 1)) + "\n")
         # Write read counts for each cell for all genes

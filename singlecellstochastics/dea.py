@@ -3,6 +3,7 @@ import pandas as pd
 import anndata as ad
 import argparse
 import csv
+import os
 
 def run_dea():
     """
@@ -13,13 +14,15 @@ def run_dea():
     parser.add_argument("--regime", type=str, required=True, help="Path to the regime file")
     parser.add_argument("--test", type=str, required=True, help="Regime to test against primary")
     parser.add_argument("--expr", type=str, required=True, help="Path to the expression file")
-    parser.add_argument("--outdir", type=str, required=True, help="Path to the output directory")
+    parser.add_argument("--outdir", type=str, required=False, default="./", help="Path to the output directory")
+    parser.add_argument("--outfile", type=str, required=False, default="DEA_results.tsv", help="Output file name for DEA results")
     args = parser.parse_args()
 
     regime_file = args.regime
     test = args.test
     expr_file = args.expr
     outdir = args.outdir
+    outfile = args.outfile
 
     # cells in metastatic regime
     met = []
@@ -66,7 +69,8 @@ def run_dea():
     })
 
     # Save the results to a file
-    df_de.to_csv(outdir + "DEA_" + expr_file.split("/")[-1], sep="\t", index=False)
+    os.makedirs(outdir, exist_ok=True)
+    df_de.to_csv(os.path.join(outdir, outfile), sep="\t", index=False)
 
 
 if __name__ == "__main__":

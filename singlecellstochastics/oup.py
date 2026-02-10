@@ -144,7 +144,7 @@ def run_ou_poisson():
         "--library", type=str, default=None, help="Library size file per cell (optional)"
     )
     parser.add_argument(
-        "--importance", type=int, default=100, help="Number of importance samples for likelihood estimates (default: 100)"
+        "--importance", type=int, default=0, help="Number of importance samples for likelihood estimates (default: 0, no importance sampling)"
     )
     parser.add_argument(
         "--const", action="store_true", help="Use constant terms in likelihood (default: False)"

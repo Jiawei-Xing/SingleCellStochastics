@@ -335,6 +335,7 @@ def likelihood_ratio_test(
     
     # importance sampling using elbo as a proposal for more accurate likelihood estimation
     if importance > 0:
+        print(f"\nPerforming importance sampling x{importance}...\n")
         h0_loss = importance_sampling(
             h0_params, 
             1, 
