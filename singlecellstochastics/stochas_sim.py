@@ -291,6 +291,7 @@ def simulate(
     read_counts_latent = {}
     plots = []
     for i in range(n_genes):
+        print(f"Simulating gene {i+1}/{n_genes}...", flush=True)
         plot = []
         
         # Clean the tree from any previous genes

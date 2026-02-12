@@ -1,4 +1,5 @@
 import torch
+import pandas as pd
 
 from .weights import theta_weight_W_torch
 
@@ -13,7 +14,8 @@ def importance_sampling(
     device,
     nb,
     lib,
-    n_samples
+    n_samples,
+    mix
 ):
     """
     Estimate the real log-likelihood using importance sampling.
@@ -29,6 +31,8 @@ def importance_sampling(
         approx, prior, kkt: ELBO parameters
         nb: whether to use negative binomial
         lib: library size normalization
+        n_samples: importance sampling sample number
+        mix: weight for q(z) in the mixture proposal q(z) and p(z)
     
     Returns:
         negative log_likelihood: (batch_size, N_sim)
@@ -43,11 +47,11 @@ def importance_sampling(
         # sample z_i ~ q(z|x) for each tree
         n_cells = x_tensor[i].shape[-1]
         q_mean, q_std = params[i][:, :, :n_cells], params[i][:, :, n_cells:2*n_cells] # (batch_size, N_sim, n_cells)
-        dist = torch.distributions.Normal(q_mean, q_std)
-        samples = dist.sample((n_samples,)) # (n_samples, batch_size, N_sim, n_cells)
+        dist_q = torch.distributions.Normal(q_mean, q_std)
+        samples_q = dist_q.sample((n_samples,)) # (n_samples, batch_size, N_sim, n_cells)
 
         # log q(z_i|x_i)
-        log_q_z = dist.log_prob(samples).sum(dim=-1) # (n_samples, batch_size, N_sim)
+        log_q_z = dist_q.log_prob(samples_q).sum(dim=-1) # (n_samples, batch_size, N_sim)
 
         # OU params
         batch_size, N_sim, n_cells = x_tensor[i].shape
@@ -82,32 +86,64 @@ def importance_sampling(
             ).squeeze(-1) # (batch_size, N_sim, n_cells)
 
         # OU log-likelihood: log p(z_i)
-        dist = torch.distributions.MultivariateNormal(
+        dist_ou = torch.distributions.MultivariateNormal(
             loc=mean,
             covariance_matrix=V
         )
-        log_p_z = dist.log_prob(samples)   # (n_samples, batch_size, N_sim)
+        log_p_z = dist_ou.log_prob(samples_q)   # (n_samples, batch_size, N_sim)
 
         # log p(x_i|z_i)
         if not nb:
-            dist = torch.distributions.Poisson(rate=torch.nn.functional.softplus(samples) * lib[i])
+            dist_nb = torch.distributions.Poisson(rate=torch.nn.functional.softplus(samples_q) * lib[i])
         else:            
-            mu = torch.nn.functional.softplus(samples) * lib[i]
-            dist = torch.distributions.NegativeBinomial(
+            mu = torch.nn.functional.softplus(samples_q) * lib[i]
+            dist_nb = torch.distributions.NegativeBinomial(
                 total_count = torch.exp(log_r), 
                 logits = torch.log(mu) - log_r
             )
-        log_p_x_given_z = dist.log_prob(x_tensor[i].unsqueeze(0))  # (n_samples, batch_size, N_sim, n_cells)
+        log_p_x_given_z = dist_nb.log_prob(x_tensor[i].unsqueeze(0))  # (n_samples, batch_size, N_sim, n_cells)
         log_p_x_given_z = log_p_x_given_z.sum(dim=-1)  # (n_samples, batch_size, N_sim)
 
         # log p(x,z_i) = log p(z_i) + log p(x_i|z_i)
         log_p_xz = log_p_z + log_p_x_given_z  # (n_samples, batch_size, N_sim)
 
-        # log p(x,z_i) - log q(z_i|x_i)
-        log_p_q.append(log_p_xz - log_q_z)  # (n_samples, batch_size, N_sim)
+        if mix == 1:
+            # log p(x,z_i) - log q(z_i|x_i)
+            log_p_q.append(log_p_xz - log_q_z)  # (n_samples, batch_size, N_sim)
+        else:
+            # mixture weights
+            mix = torch.as_tensor(mix, device=device, dtype=log_q_z.dtype)
+            log_mix = torch.log(mix)
+            log_1m  = torch.log1p(-mix)  # log(1-mix)
+
+            # sample from p(z) or q(z)
+            samples_p = dist_ou.sample((n_samples,))  # (S,B,N,C)
+            mask = (torch.rand(n_samples, batch_size, N_sim, device=device) < mix).to(log_q_z.dtype)
+            mask = mask[..., None]  # (S,B,N,1)
+            samples = mask * samples_q + (1 - mask) * samples_p  # (S,B,N,C)
+
+            # mixture proposal
+            log_q_z = dist_q.log_prob(samples).sum(dim=-1)  # (S,B,N)
+            log_p_z = dist_ou.log_prob(samples)  # (S,B,N)
+            denominator = torch.logsumexp(
+                torch.stack([log_mix + log_q_z, log_1m + log_p_z], dim=0),  # (2,S,B,N)
+                dim=0
+            )  # (S,B,N)
+            log_p_q.append(log_p_xz - denominator)  # (S,B,N)
 
     # sum log across trees, then log_sum_exp over samples
     log_p_q = torch.stack(log_p_q, dim=0).sum(dim=0)  # (n_samples, batch_size, N_sim)
     log_likelihood = torch.logsumexp(log_p_q, dim=0) - torch.log(torch.tensor(n_samples, dtype=log_p_q.dtype, device=device))  # (batch_size, N_sim)
+
+    # output weights distribution to check ESS
+    w = torch.softmax(log_p_q[..., 0], dim=0) # (n_samples, batch_size)
+    ESS = 1 / (w**2).sum(dim=0) # (batch_size,)
+    print(f"ESS: {ESS}")
+    df = pd.DataFrame(
+        log_p_q[..., 0].detach().cpu().numpy(),
+        index=[f"sample_{i}" for i in range(log_p_q.shape[0])],
+        columns=[f"batch_{j}" for j in range(log_p_q.shape[1])]
+    )
+    df.to_csv(f"IS{n_samples}_mix{mix.item()}_weights.tsv", sep="\t", mode="a")
 
     return -log_likelihood

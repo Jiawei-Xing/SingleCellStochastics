@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import pandas as pd
+import os
 
 from .optimize import ou_optimize_scipy, ou_optimize_torch, Lq_optimize_torch
 from .em import run_em
@@ -37,7 +39,8 @@ def likelihood_ratio_test(
     nb,
     library_list,
     importance,
-    const
+    const,
+    mix
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -60,6 +63,7 @@ def likelihood_ratio_test(
     library_list: list of library size normalization factors
     importance: number of importance samples for likelihood
     const: whether to use constant terms in likelihood
+    mix: weight for q(z) in the mixture proposal p(z) & q(z) for importance sampling
 
     Returns: (batch_size, N_sim) numpy array of params and losses for null and alternative models
     """
@@ -347,7 +351,8 @@ def likelihood_ratio_test(
             device, 
             nb,
             library_list_tensor,
-            importance
+            importance,
+            mix
         )
 
         h1_loss = importance_sampling(
@@ -361,16 +366,26 @@ def likelihood_ratio_test(
             device, 
             nb,
             library_list_tensor,
-            importance
+            importance,
+            mix
         )
 
     # combine logr and ou params
-    h0_params = torch.cat((h0_params[-2], h0_params[-1]), dim=-1)
-    h1_params = torch.cat((h1_params[-2], h1_params[-1]), dim=-1)
+    h0_model_params = torch.cat((h0_params[-2], h0_params[-1]), dim=-1)
+    h1_model_params = torch.cat((h1_params[-2], h1_params[-1]), dim=-1)
 
-    return h0_params.clone().detach().cpu().numpy(), \
+    # output variational parameters
+    h0_q_params = [
+        n.clone().detach().cpu().numpy() for n in h0_params[:-2]
+    ]
+    h1_q_params = [
+        n.clone().detach().cpu().numpy() for n in h1_params[:-2]
+    ]
+
+    return h0_model_params.clone().detach().cpu().numpy(), \
         h0_loss.clone().detach().cpu().numpy(), \
-        h1_params.clone().detach().cpu().numpy(), \
-        h1_loss.clone().detach().cpu().numpy()
+        h1_model_params.clone().detach().cpu().numpy(), \
+        h1_loss.clone().detach().cpu().numpy(), \
+        h0_q_params, h1_q_params
 
     

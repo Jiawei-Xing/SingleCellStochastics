@@ -149,6 +149,9 @@ def run_ou_poisson():
     parser.add_argument(
         "--const", action="store_true", help="Use constant terms in likelihood (default: False)"
     )
+    parser.add_argument(
+        "--mix", type=float, default="1", help="Weight for q(z) in the mixture proposal q(z) & p(z) for importance sampling (default: 1, q(z) only)"
+    )
     args = parser.parse_args()
 
     tree_files = args.tree.split(",")
@@ -178,6 +181,7 @@ def run_ou_poisson():
     library_files = args.library.split(",") if args.library is not None else [None] * len(tree_files)
     importance = args.importance
     const = args.const
+    mix = args.mix
 
     if args.dtype == "float32":
         dtype = torch.float32  
@@ -238,6 +242,8 @@ def run_ou_poisson():
 
     # loop over gene batches
     gene_idx_start = max(results.keys()) + 1 if results else 0
+    h0_q_params = []
+    h1_q_params = []
     
     for batch_start in range(gene_idx_start, len(df_list[0].columns), batch_size):
         # gene expression in tissues (batch)
@@ -263,7 +269,7 @@ def run_ou_poisson():
         ]  # list of (batch_size, 1, n_cells)
 
         # likelihood ratio test (default)
-        h0_params, h0_loss, h1_params, h1_loss = likelihood_ratio_test(
+        h0_params, h0_loss, h1_params, h1_loss, h0_q, h1_q = likelihood_ratio_test(
             x_original,
             n_regimes,
             diverge_list,
@@ -293,12 +299,24 @@ def run_ou_poisson():
             nb,
             library_list,
             importance,
-            const
+            const,
+            mix
         )  # (batch_size, 1, ...)
 
         # save result
         results = save_result(batch_start, batch_size, batch_genes, \
             h0_params, h1_params, h0_loss, h1_loss, results, approx)
+        
+        # save variational parameters
+        if h0_q_params:
+            h0_q_params = [np.concatenate([h0_q_params[i], h0_q[i]], axis=0) for i in len(h0_q)]
+        else:
+            h0_q_params = [n for n in h0_q]
+
+        if h1_q_params:
+            h1_q_params = [np.concatenate([h1_q_params[i], h1_q[i]], axis=0) for i in len(h1_q)]
+        else:
+            h1_q_params = [n for n in h1_q]
 
         # collect all ou params and lr
         ou_params_all.append(h0_params[:, 0, :])  # (batch_size, ...)
@@ -310,7 +328,7 @@ def run_ou_poisson():
             x_original = simulate_null_each(
                 tree_list, h0_params, N_sim_each, cells_list
             )  # list of (batch_size, N_sim, n_cells)
-            _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
+            _, h0_loss_sim, _, h1_loss_sim, _, _ = likelihood_ratio_test(
                 x_original,
                 n_regimes,
                 diverge_list,
@@ -340,7 +358,8 @@ def run_ou_poisson():
                 nb,
                 library_list,
                 importance,
-                const
+                const,
+                mix
             )  # (batch_size, N_sim, ...)
             null_LRs = h0_loss_sim - h1_loss_sim  # (batch_size, N_sim)
 
@@ -370,6 +389,25 @@ def run_ou_poisson():
     # output results
     output_file = os.path.join(output_dir, f"{prefix}_chi-squared.tsv")
     output_results(results, output_file, regimes)
+
+    # output variational parameters
+    for i in range(len(h0_q_params)):
+        df = pd.DataFrame(
+            h0_q_params[i][:,0,:], #(batch_size, n_cells*2)
+            index=df_list[i].columns,
+            columns=cells_list[i]*2
+        )
+        output_file = os.path.join(output_dir, f"{prefix}_h0_q-means-var_{i}.tsv")
+        df.to_csv(output_file, sep="\t")
+    
+    for i in range(len(h1_q_params)):
+        df = pd.DataFrame(
+            h1_q_params[i][:,0,:], #(batch_size, n_cells*2)
+            index=df_list[i].columns,
+            columns=cells_list[i]*2
+        )
+        output_file = os.path.join(output_dir, f"{prefix}_h1_q-means-var_{i}.tsv")
+        df.to_csv(output_file, sep="\t")
     
     # using empirical for each gene
     if N_sim_each:
@@ -408,7 +446,7 @@ def run_ou_poisson():
             # empirical null distribution for all genes
             x_original = [np.expand_dims(x, axis=1) for x in x_original]  # list of (N_sim_all, 1, n_cells)
             gene_names = ["sim_all"] * N_sim_all  # (N_sim_all,)
-            _, h0_loss_sim, _, h1_loss_sim = likelihood_ratio_test(
+            _, h0_loss_sim, _, h1_loss_sim, _, _ = likelihood_ratio_test(
                 x_original,
                 n_regimes,
                 diverge_list,
@@ -438,7 +476,8 @@ def run_ou_poisson():
                 nb,
                 library_list,
                 importance,
-                const
+                const,
+                mix
             )  # (N_sim_all, 1, ...)
             null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]  # (N_sim_all,)
 
