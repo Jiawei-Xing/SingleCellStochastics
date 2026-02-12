@@ -106,9 +106,11 @@ These parameters are for model developers and changes on them are generally not 
 
 `--dtype`: data type for tensors. Set to float32 under limited memory. Default uses float64.
 
-`--importance`: number of samples for importance sampling to improve likelihood estimates from ELBO. Default is 100.
+`--importance`: number of samples for importance sampling to improve likelihood estimates from ELBO. Default is 0, no importance sampling.
 
 `--const`: flag of adding constant terms to ELBO. Could be used to compare ELBO with importance sampling estimates. Default is False.
+
+`--mix`: weight for q(z) in the mixture importance sampling proposal p(z)&q(z). Default is 1, q(z) only.
 
 ## Simulations
 
