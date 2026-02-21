@@ -397,7 +397,7 @@ def run_ou_poisson():
             index=df_list[i].columns,
             columns=cells_list[i]*2
         )
-        output_file = os.path.join(output_dir, f"{prefix}_h0_q-means-var_{i}.tsv")
+        output_file = os.path.join(output_dir, f"{prefix}_h0_q-mean-std_{i}.tsv")
         df.to_csv(output_file, sep="\t")
     
     for i in range(len(h1_q_params)):
@@ -406,7 +406,7 @@ def run_ou_poisson():
             index=df_list[i].columns,
             columns=cells_list[i]*2
         )
-        output_file = os.path.join(output_dir, f"{prefix}_h1_q-means-var_{i}.tsv")
+        output_file = os.path.join(output_dir, f"{prefix}_h1_q-mean-std_{i}.tsv")
         df.to_csv(output_file, sep="\t")
     
     # using empirical for each gene

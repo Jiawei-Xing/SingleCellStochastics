@@ -374,12 +374,15 @@ def likelihood_ratio_test(
     h0_model_params = torch.cat((h0_params[-2], h0_params[-1]), dim=-1)
     h1_model_params = torch.cat((h1_params[-2], h1_params[-1]), dim=-1)
 
-    # output variational parameters
+    # output variational parameters (std > 0)
+    half = len(h0_params[:-2]) // 2
     h0_q_params = [
-        n.clone().detach().cpu().numpy() for n in h0_params[:-2]
+        (n.abs() if i >= half else n).clone().detach().cpu().numpy()
+        for i, n in enumerate(h0_params[:-2])
     ]
     h1_q_params = [
-        n.clone().detach().cpu().numpy() for n in h1_params[:-2]
+        (n.abs() if i >= half else n).clone().detach().cpu().numpy()
+        for i, n in enumerate(h1_params[:-2])
     ]
 
     return h0_model_params.clone().detach().cpu().numpy(), \
