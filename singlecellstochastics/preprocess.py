@@ -271,14 +271,17 @@ def process_data_BM(tree_files, gene_files, library_files, device):
         node_names = list(paths.keys())
         node_idx = {name: i for i, name in enumerate(node_names)}
 
+        cell_paths = [set(a.name for a in paths[cell]) for cell in cells]
+        cell_lineages = [[a.name for a in paths[cell]][::-1] for cell in cells]
+
         # Build MRCA index matrix for all cell pairs
         mrca_idx = np.zeros((len(cells), len(cells)), dtype=int)
         for i in range(len(cells)):
             for j in range(len(cells)):
                 # Fast set intersection
-                common_ancestors = set(paths[cells[i]]) & set(paths[cells[j]])
+                common_ancestors = cell_paths[i] & cell_paths[j]
                 # Find the deepest (last in path) ancestor
-                for ancestor in reversed(paths[cells[i]]):
+                for ancestor in reversed(cell_lineages[i]):
                     if ancestor in common_ancestors:
                         mrca_idx[i, j] = node_idx[ancestor]
                         break

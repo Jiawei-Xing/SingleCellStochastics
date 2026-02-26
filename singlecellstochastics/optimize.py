@@ -540,7 +540,7 @@ def Lq_optimize_torch_BM(
 
     params: List of (batch_size, all_param_dim)
             [Lq_params tree1, Lq_params tree2, ..., Lq_params treeN, logr, BM_params]
-    mode: 0 for star tree, 1 for original tree, 3 for optimizing pagel's lambda
+    mode: 0 for star tree, 1 for original tree, 2 for optimizing pagel's lambda
     x_tensor: list of (batch_size, n_cells)
     gene_names: list of gene names
     share_list_torch: list of tensors
@@ -581,7 +581,7 @@ def Lq_optimize_torch_BM(
     # optimize both ELBO and BM parameters
     for i in range(len(params_tensor)-2):
         params_tensor[i] = params_tensor[i].requires_grad_(True)
-    if mode == 3:
+    if mode == 2:
         params_tensor[-2] = params_tensor[-2].requires_grad_(True) # pagel_lambda
     
     # Track best parameters for all parameter types
@@ -604,7 +604,7 @@ def Lq_optimize_torch_BM(
         loss_matrix = torch.zeros(
             (batch_size, n_trees), dtype=params[0].dtype, device=device
         )
-        active_batch = (~converged_mask).any(dim=1)
+        active_batch = ~converged_mask
 
         # get loss for each tree for not yet converged genes
         for i in range(n_trees):
@@ -613,7 +613,7 @@ def Lq_optimize_torch_BM(
             r_param = params_tensor[-4][active_batch, 0:1]
 
             # Map lambda to strict (0, 1) bound safely
-            if mode == 3:
+            if mode == 2:
                 safe_lambda = torch.sigmoid(params_tensor[-2][active_batch, 0])
             else:
                 safe_lambda = params_tensor[-2][active_batch, 0]
@@ -666,7 +666,7 @@ def Lq_optimize_torch_BM(
 
             for i, param in enumerate(params_tensor):
                 # pagel's lambda
-                if i == (len(params_tensor) - 2) and mode == 3:
+                if i == (len(params_tensor) - 2) and mode == 2:
                     target_param = torch.sigmoid(param)
                 else:
                     target_param = param

@@ -412,25 +412,25 @@ def bm_neg_log_lik_torch_kkt(
 
     # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V), dim1=-2, dim2=-1), dim=-1)
     # cholesky: trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
-    # S_half = torch.diag_embed(
-    #     torch.sqrt(sigma2_q)
-    # )  # Σ^{1/2} = diag(σ_i), shape (..., n, n)
-    # Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Σ^{1/2}
-    # tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch_size, N_sim)
+    S_half = torch.diag_embed(
+        torch.sqrt(sigma2_q)
+    )  # Σ^{1/2} = diag(σ_i), shape (..., n, n)
+    Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Σ^{1/2}
+    tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch_size, N_sim)
 
-    # --- OPTIMIZED TRACE TERM ---
-    # We want tr(V^{-1} Σ). Since Σ is diagonal (sigma2_q), 
-    # this equals sum(diag(V^{-1}) * sigma2_q).
-    # Z = L^{-1}, obtained by solving L * Z = I
-    # Using expand() avoids allocating memory for the identity matrices.
-    I = torch.eye(n_cells, device=device, dtype=V.dtype).expand_as(V)
-    Z = torch.linalg.solve_triangular(L, I, upper=False) # (batch_size, n_cells, n_cells)
+    # # --- OPTIMIZED TRACE TERM ---
+    # # We want tr(V^{-1} Σ). Since Σ is diagonal (sigma2_q), 
+    # # this equals sum(diag(V^{-1}) * sigma2_q).
+    # # Z = L^{-1}, obtained by solving L * Z = I
+    # # Using expand() avoids allocating memory for the identity matrices.
+    # I = torch.eye(n_cells, device=device, dtype=V.dtype).expand_as(V)
+    # Z = torch.linalg.solve_triangular(L, I, upper=False) # (batch_size, n_cells, n_cells)
     
-    # diag(V^{-1}) is the sum of squares of the columns of Z
-    V_inv_diag = (Z ** 2).sum(dim=-2) # (batch_size, n_cells)
+    # # diag(V^{-1}) is the sum of squares of the columns of Z
+    # V_inv_diag = (Z ** 2).sum(dim=-2) # (batch_size, n_cells)
     
-    # tr_term = sum_i (V^{-1})_{ii} * sigma^2_{q, i}
-    tr_term = (V_inv_diag * sigma2_q).sum(dim=-1)  # (batch_size,)
+    # # tr_term = sum_i (V^{-1})_{ii} * sigma^2_{q, i}
+    # tr_term = (V_inv_diag * sigma2_q).sum(dim=-1)  # (batch_size,)
 
     sigma2 = exp / n_cells + tr_term / n_cells # (batch_size,)
     sigma = sigma2.sqrt()  # (batch_size,)
