@@ -44,8 +44,8 @@ def Lq_neg_log_lik_torch(
     Returns: (batch_size, N_sim) tensor of losses
     """
     n_cells = x_tensor.shape[-1]
-    m = Lq_params[:, :, :n_cells]  # (batch_size, N_sim, n_cells)
-    s2 = Lq_params[:, :, n_cells:2*n_cells]**2  # (batch_size, N_sim, n_cells)
+    m = Lq_params[..., :n_cells]  # (batch_size, ..., n_cells)
+    s2 = Lq_params[..., n_cells:2*n_cells]**2  # (batch_size, ..., n_cells)
     
     # term1: -log likelihood of OU or BM
     if mode == 0:  # BM -log lik

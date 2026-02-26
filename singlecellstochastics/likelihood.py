@@ -364,26 +364,26 @@ def bm_neg_log_lik_torch_kkt(
     Brownian motion likelihood with torch. Used for ELBO with torch.
 
     params: [root_mean, pagel_lambda]
-        root_mean: (batch_size, N_sim) tensor of root means
-        pagel_lambda: (batch_size, N_sim) tensor of Pagel's lambda for covariance 
+        root_mean: (batch_size, ) tensor of root means
+        pagel_lambda: (batch_size, ) tensor of Pagel's lambda for covariance 
                     0 for star tree, 1 for original tree
-    sigma2_q: (batch_size, N_sim, n_cells) tensor of q variances
-    expr_batch: (batch_size, N_sim, n_cells) tensor of expression data
+    sigma2_q: (batch_size, n_cells) tensor of q variances
+    expr_batch: (batch_size, n_cells) tensor of expression data
     share: (n_cells, n_cells) tensor of shared branch lengths
 
-    Returns: (batch_size, N_sim) tensor of losses
+    Returns: (batch_size,) tensor of losses
     """
-    batch_size, N_sim, n_cells = expr_batch.shape
-    root_mean, pagel_lambda = params  # (batch_size, N_sim)
-    pagel_lambda = pagel_lambda[:, :, None, None]  # (batch_size, N_sim, 1, 1)
+    batch_size, n_cells = expr_batch.shape
+    root_mean, pagel_lambda = params  # (batch_size,)
+    pagel_lambda = pagel_lambda[:, None, None]  # (batch_size, 1, 1)
 
     # V: covariance matrix from trees (excluding variance sigma2)
     diag_share = torch.diag(torch.diagonal(share, dim1=-2, dim2=-1))  # (n_cells, n_cells)
-    V = (pagel_lambda * share + (1 - pagel_lambda) * diag_share)  # (batch_size, N_sim, n_cells, n_cells)
+    V = (pagel_lambda * share + (1 - pagel_lambda) * diag_share)  # (batch_size, n_cells, n_cells)
     
     # cholesky decomposition for det and inv of matrix
     try:
-        L = torch.linalg.cholesky(V)  # (batch_size, N_sim, n_cells, n_cells)
+        L = torch.linalg.cholesky(V)  # (batch_size, n_cells, n_cells)
     except RuntimeError:
         # Add regularization to prevent singular matrix
         print("warning: singular matrix")
@@ -398,17 +398,17 @@ def bm_neg_log_lik_torch_kkt(
     # cholesky: log|V| = 2 * sum(log diag(L))
     log_det = 2 * torch.sum(
         torch.log(torch.diagonal(L, dim1=-2, dim2=-1)), dim=-1
-    )  # (batch_size, N_sim)
+    )  # (batch_size,)
 
-    diff = expr_batch - root_mean.unsqueeze(-1)  # (batch_size, N_sim, n_cells)
-    d = diff.unsqueeze(-1)  # (batch_size, N_sim, n_cells, 1)
+    diff = expr_batch - root_mean.unsqueeze(-1)  # (batch_size, n_cells)
+    d = diff.unsqueeze(-1)  # (batch_size, n_cells, 1)
 
     # exp = (d.transpose(-2, -1) @ torch.linalg.solve(V, d)).squeeze(-1).squeeze(-1)  # (batch_size, N_sim)
     # cholesky: d^T V^{-1} d = ||L^{-1} d||^2
     y = torch.linalg.solve_triangular(
         L, d, upper=False
-    )  # y = L^{-1} d (batch_size, N_sim, n_cells, 1)
-    exp = (y.squeeze(-1) ** 2).sum(dim=-1)  # (batch_size, N_sim)
+    )  # y = L^{-1} d (batch_size, n_cells, 1)
+    exp = (y.squeeze(-1) ** 2).sum(dim=-1)  # (batch_size,)
 
     # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V), dim1=-2, dim2=-1), dim=-1)
     # cholesky: trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
@@ -424,17 +424,17 @@ def bm_neg_log_lik_torch_kkt(
     # Z = L^{-1}, obtained by solving L * Z = I
     # Using expand() avoids allocating memory for the identity matrices.
     I = torch.eye(n_cells, device=device, dtype=V.dtype).expand_as(V)
-    Z = torch.linalg.solve_triangular(L, I, upper=False) # (batch_size, N_sim, n_cells, n_cells)
+    Z = torch.linalg.solve_triangular(L, I, upper=False) # (batch_size, n_cells, n_cells)
     
     # diag(V^{-1}) is the sum of squares of the columns of Z
-    V_inv_diag = (Z ** 2).sum(dim=-2) # (batch_size, N_sim, n_cells)
+    V_inv_diag = (Z ** 2).sum(dim=-2) # (batch_size, n_cells)
     
     # tr_term = sum_i (V^{-1})_{ii} * sigma^2_{q, i}
-    tr_term = (V_inv_diag * sigma2_q).sum(dim=-1)  # (batch_size, N_sim)
+    tr_term = (V_inv_diag * sigma2_q).sum(dim=-1)  # (batch_size,)
 
-    sigma2 = exp / n_cells + tr_term / n_cells # (batch_size, N_sim)
-    sigma = sigma2.sqrt()  # (batch_size, N_sim)
+    sigma2 = exp / n_cells + tr_term / n_cells # (batch_size,)
+    sigma = sigma2.sqrt()  # (batch_size,)
 
     loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood (w/o constant)
-    return loss, sigma  # (batch_size, N_sim)
+    return loss, sigma  # (batch_size,)
 

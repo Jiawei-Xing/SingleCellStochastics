@@ -538,10 +538,10 @@ def Lq_optimize_torch_BM(
     """
     Optimize ELBO with PyTorch Adam.
 
-    params: List of (batch_size, N_sim, all_param_dim)
+    params: List of (batch_size, all_param_dim)
             [Lq_params tree1, Lq_params tree2, ..., Lq_params treeN, logr, BM_params]
     mode: 0 for star tree, 1 for original tree, 3 for optimizing pagel's lambda
-    x_tensor: list of (batch_size, N_sim, n_cells)
+    x_tensor: list of (batch_size, n_cells)
     gene_names: list of gene names
     share_list_torch: list of tensors
     max_iter: maximum number of iterations
@@ -555,18 +555,18 @@ def Lq_optimize_torch_BM(
     lib: library size normalization
     const: whether to include constant terms in likelihood
     
-    Returns: (batch_size, N_sim) numpy array of params and losses
+    Returns: (batch_size, ) numpy array of params and losses
     """
-    batch_size, N_sim, _ = params[0].shape
+    batch_size, _ = params[0].shape
     n_trees = len(x_tensor_list)
 
     # Initialize parameters for optimization
     params_tensor = [
         p.clone().detach() for p in params[:-1]
     ] + [
-        params[-1][:, :, 0:1].clone().detach(), # (batch_size, N_sim, 1)
-        params[-1][:, :, 1:2].clone().detach(), # (batch_size, N_sim, 1)
-        params[-1][:, :, 2:].clone().detach()  # (batch_size, N_sim, 1)
+        params[-1][:, 0:1].clone().detach(), # (batch_size, 1)
+        params[-1][:, 1:2].clone().detach(), # (batch_size, 1)
+        params[-1][:, 2:].clone().detach()  # (batch_size, 1)
     ] # [Lq tree1, Lq tree2, ..., Lq treeN, logr, root_mean, pagel_lambda, sigma]
 
     # Set pagel's lambda
@@ -587,14 +587,14 @@ def Lq_optimize_torch_BM(
     # Track best parameters for all parameter types
     best_params = [p.clone().detach() for p in params_tensor]
     best_loss = torch.full(
-        (batch_size, N_sim), float("inf"), dtype=params[0].dtype, device=device
+        (batch_size, ), float("inf"), dtype=params[0].dtype, device=device
     )
     optimizer = torch.optim.Adam(params_tensor, lr=learning_rate)
 
     # Track loss history for convergence checking
     loss_history = []
     converged_mask = torch.zeros(
-        (batch_size, N_sim), dtype=torch.bool, device=device
+        (batch_size, ), dtype=torch.bool, device=device
     )
 
     for n in range(max_iter):
@@ -602,24 +602,24 @@ def Lq_optimize_torch_BM(
 
         # initialize loss matrix and store indices of not yet converged genes
         loss_matrix = torch.zeros(
-            (batch_size, N_sim, n_trees), dtype=params[0].dtype, device=device
+            (batch_size, n_trees), dtype=params[0].dtype, device=device
         )
         active_batch = (~converged_mask).any(dim=1)
 
         # get loss for each tree for not yet converged genes
         for i in range(n_trees):
-            x_tensor = x_tensor_list[i][active_batch, :, :]
-            Lq_params = params_tensor[i][active_batch, :, :]
-            r_param = params_tensor[-4][active_batch, :, 0:1]
+            x_tensor = x_tensor_list[i][active_batch, :]
+            Lq_params = params_tensor[i][active_batch, :]
+            r_param = params_tensor[-4][active_batch, 0:1]
 
             # Map lambda to strict (0, 1) bound safely
             if mode == 3:
-                safe_lambda = torch.sigmoid(params_tensor[-2][active_batch, :, 0])
+                safe_lambda = torch.sigmoid(params_tensor[-2][active_batch, 0])
             else:
-                safe_lambda = params_tensor[-2][active_batch, :, 0]
+                safe_lambda = params_tensor[-2][active_batch, 0]
 
             bm_params = [
-                params_tensor[-3][active_batch, :, 0],
+                params_tensor[-3][active_batch, 0],
                 safe_lambda
             ] # [root_mean, pagel_lambda]
 
@@ -644,13 +644,13 @@ def Lq_optimize_torch_BM(
                 lib,
                 const
             )
-            loss_matrix[active_batch, :, i] = loss
+            loss_matrix[active_batch, i] = loss
 
         # average loss across trees (use torch.logsumexp for better numerical stability)
         #average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
         #    torch.tensor(n_trees, device=device, dtype=loss.dtype)
         #)  # (batch_size, N_sim)
-        joint_loss = loss_matrix.sum(dim=2) # (batch_size, N_sim)
+        joint_loss = loss_matrix.sum(dim=-1) # (batch_size,)
 
         # update best params for not yet converged genes
         with torch.no_grad():
@@ -662,7 +662,7 @@ def Lq_optimize_torch_BM(
             ) # update best loss
 
             # update sigma from kkt
-            params_tensor[-1][active_batch, :, :] = sigma.unsqueeze(-1).clone().detach()
+            params_tensor[-1][active_batch, :] = sigma.unsqueeze(-1).clone().detach()
 
             for i, param in enumerate(params_tensor):
                 # pagel's lambda
@@ -681,7 +681,7 @@ def Lq_optimize_torch_BM(
                 # plot loss of first gene in batch
                 wandb.log({
                         "iter": n,
-                        f"{gene_names[0]}_bm{mode}_elbo_loss": best_loss[0, 0], 
+                        f"{gene_names[0]}_bm{mode}_elbo_loss": best_loss[0].item(), 
                 })
         
         # Store loss history
@@ -717,12 +717,11 @@ def Lq_optimize_torch_BM(
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")
         for i in range(batch_size):
-            for j in range(N_sim):
-                if not converged_mask[i, j]:
-                    print(
-                        f"   {gene_names[i]}: {relative_decrease[i, j].item():.2e} | " +
-                        f"{best_loss[i, j].item():.2e}"
-                    )
+            if not converged_mask[i]:
+                print(
+                    f"   {gene_names[i]}: {relative_decrease[i].item():.2e} | " +
+                    f"{best_loss[i].item():.2e}"
+                )
         print(f"\n💡 Recommendations for non-converged genes:")
         print(f"   - Increase max_iter (current: {max_iter})")
         print(f"   - Increase learning_rate (current: {learning_rate})")
@@ -732,7 +731,7 @@ def Lq_optimize_torch_BM(
     
     best_params = [p for p in best_params[:-3]] + [
         torch.cat((best_params[-3], best_params[-2], best_params[-1]), dim=-1)
-    ] # [Lq tree1, Lq tree2, ..., Lq treeN, logr, all OU]
+    ] # [Lq tree1, Lq tree2, ..., Lq treeN, logr, all BM params]
 
     return best_params, best_loss
 

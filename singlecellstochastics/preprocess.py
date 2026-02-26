@@ -6,7 +6,7 @@ import torch
 
 
 # precompute and store input data for later usage
-def process_data(tree_files, gene_files, regime_files, library_files, rnull, device):
+def process_data_OU(tree_files, gene_files, regime_files, library_files, rnull, device):
     """
     Precompute input data and store for optimization.
 
@@ -204,3 +204,92 @@ def process_data(tree_files, gene_files, regime_files, library_files, rnull, dev
         regime_list,
         library_list
     )
+
+
+def process_data_BM(tree_files, gene_files, library_files, device):
+    """
+    Precompute input data and store for optimization.
+
+    Returns:
+    tree_list: list of trees
+    cells_list: list of cells
+    df_list: list of expression data
+    share_list_torch: list of share matrices (torch)
+    library_list: list of library size dataframes
+    """
+    tree_list = []
+    cells_list = []
+    df_list = []
+    share_list_torch = []
+    library_list = []
+
+    for tree_file, gene_file, library_file in zip(tree_files, gene_files, library_files):
+        # Read the phylogenetic tree
+        tree = Phylo.read(tree_file, "newick")
+        cells = sorted([n.name for n in tree.get_terminals()])
+        tree_list.append(tree)
+        cells_list.append(cells)
+
+        # Read the gene read count matrix, reorder cells as tree leaves
+        df = pd.read_csv(gene_file, sep="\t", index_col=0, header=0)
+        df.index = df.index.astype(str)  # cell names
+        df = df.loc[cells]  # important to match cell orders!
+        df_list.append(df)
+
+        # Read library sizes if provided, reorder cells as tree leaves
+        if library_file:
+            lib_df = pd.read_csv(library_file, sep="\t", index_col=0, header=None)
+            lib_df.index = lib_df.index.astype(str)
+            lib_df = lib_df.loc[cells]
+            library_list.append(lib_df)
+
+        # if no library sizes provided, use ones
+        else:
+            lib_df = pd.DataFrame(np.ones((len(cells), 1)), index=cells)
+            library_list.append(lib_df)
+
+        # Edit tree
+        total_length = max(tree.depths().values())
+        clades = [n for n in tree.find_clades()]  # sort by depth-first search
+        i = 0
+        for clade in clades:
+            # Re-scale branch lengths to [0, 1]
+            if clade.branch_length is None:
+                clade.branch_length = 0
+            else:
+                clade.branch_length = clade.branch_length / total_length
+
+            # Fix internal node names
+            if clade.name is None:
+                clade.name = "add_internal_node" + str(i)
+                i = i + 1
+
+        # Store paths from each node to root
+        paths = {clade.name: tree.get_path(clade) for clade in clades}
+
+        # Precompute node index mapping for all nodes and cells
+        node_names = list(paths.keys())
+        node_idx = {name: i for i, name in enumerate(node_names)}
+
+        # Build MRCA index matrix for all cell pairs
+        mrca_idx = np.zeros((len(cells), len(cells)), dtype=int)
+        for i in range(len(cells)):
+            for j in range(len(cells)):
+                # Fast set intersection
+                common_ancestors = set(paths[cells[i]]) & set(paths[cells[j]])
+                # Find the deepest (last in path) ancestor
+                for ancestor in reversed(paths[cells[i]]):
+                    if ancestor in common_ancestors:
+                        mrca_idx[i, j] = node_idx[ancestor]
+                        break
+                    
+        # depths (time intervals) for all nodes
+        depth = np.array(
+            [sum(x.branch_length for x in paths[name]) for name in node_names],
+            dtype=np.float32,
+        )
+        share_mat = depth[mrca_idx]  # depth of MRCA
+        share_torch = torch.tensor(share_mat, dtype=torch.float32, device=device)
+        share_list_torch.append(share_torch)
+
+    return tree_list, cells_list, df_list, share_list_torch, library_list
