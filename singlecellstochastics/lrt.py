@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import os
 
-from .optimize import ou_optimize_scipy, ou_optimize_torch, Lq_optimize_torch
+from .optimize import ou_optimize_scipy, ou_optimize_torch, Lq_optimize_torch_OU
 from .em import run_em
 from .importance import importance_sampling
 
@@ -170,7 +170,7 @@ def likelihood_ratio_test(
 
     # optimize Lq for null model
     if em_iter == 0: # optimize all params
-        h0_params, h0_loss = Lq_optimize_torch(
+        h0_params, h0_loss = Lq_optimize_torch_OU(
             init_params,
             1,
             x_tensor,
@@ -220,7 +220,7 @@ def likelihood_ratio_test(
     
     # optimize Lq for alternative model
     if em_iter == 0: # optimize all params
-        h1_params, h1_loss = Lq_optimize_torch(
+        h1_params, h1_loss = Lq_optimize_torch_OU(
             h0_params,
             2,
             x_tensor,
@@ -275,7 +275,7 @@ def likelihood_ratio_test(
         h1_elbos = []
         for alpha in alphas: # try different initial alpha
             init_params[-1][0, 0, 0] = np.log(alpha)
-            h0_params_grid, h0_loss_grid = Lq_optimize_torch(
+            h0_params_grid, h0_loss_grid = Lq_optimize_torch_OU(
                 init_params,
                 1,
                 x_tensor,
@@ -298,7 +298,7 @@ def likelihood_ratio_test(
                 library_list_tensor,
                 const
             )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
-            h1_params_grid, h1_loss_grid = Lq_optimize_torch(
+            h1_params_grid, h1_loss_grid = Lq_optimize_torch_OU(
                 init_params,
                 2,
                 x_tensor,

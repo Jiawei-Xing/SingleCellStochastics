@@ -8,7 +8,7 @@ import pickle
 import time
 import gc
 
-from .preprocess import process_data
+from .preprocess import process_data_OU
 from .lrt import likelihood_ratio_test
 from .simulate import simulate_null_all, simulate_null_each
 from .output import save_result, output_results
@@ -215,7 +215,7 @@ def run_ou_poisson():
         beta_list_torch,
         regime_list,
         library_list
-    ) = process_data(tree_files, gene_files, regime_files, library_files, rnull, device)
+    ) = process_data_OU(tree_files, gene_files, regime_files, library_files, rnull, device)
 
     regimes = list(
         dict.fromkeys(x for sub in regime_list for x in sub)

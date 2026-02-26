@@ -1,4 +1,4 @@
-from .optimize import Lq_optimize_torch
+from .optimize import Lq_optimize_torch_OU
 
 def run_em(
     init_params,
@@ -47,7 +47,7 @@ def run_em(
     """
     for i in range(em_iter):
         # E-step
-        h0_params, h0_loss = Lq_optimize_torch(
+        h0_params, h0_loss = Lq_optimize_torch_OU(
             init_params,
             mode,
             x_tensor_list,
@@ -71,7 +71,7 @@ def run_em(
         )  # (batch_size, N_sim, all_param_dim)
 
         # M-step
-        h0_params, h0_loss = Lq_optimize_torch(
+        h0_params, h0_loss = Lq_optimize_torch_OU(
             h0_params,
             mode,
             x_tensor_list,
@@ -98,7 +98,7 @@ def run_em(
         init_params = h0_params
 
     # run last E-step
-    h0_params, h0_loss = Lq_optimize_torch(
+    h0_params, h0_loss = Lq_optimize_torch_OU(
         init_params,
         mode,
         x_tensor_list,

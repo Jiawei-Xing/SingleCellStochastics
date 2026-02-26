@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from .likelihood import ou_neg_log_lik_torch, ou_neg_log_lik_torch_kkt
+from .likelihood import ou_neg_log_lik_torch, ou_neg_log_lik_torch_kkt, bm_neg_log_lik_torch_kkt
 from .approx import E_log_softplus_taylor, E_softplus_taylor, E_log_softplus_MC, E_softplus_MC, E_log_exp, E_exp, E_log_r_softplus_MC, E_log_r_exp
     
 # calculate negative log likelihood of ELBO with torch
@@ -28,8 +28,8 @@ def Lq_neg_log_lik_torch(
 
     Lq_params: (batch_size, N_sim, 2*n_cells)
     log_r: (batch_size, N_sim, 1) log dispersion parameter for negative binomial
-    ou_params: [alpha, other OU params]
-    mode: 1 for H0, 2 for H1
+    ou_params: [alpha, other OU params] (OU) or [root_mean, pagel_lambda] (BM)
+    mode: 0 for BM, 1 for OU-H0, 2 for OU-H1
     x_tensor: (batch_size, N_sim, n_cells)
     diverge, share: (n_cells, n_cells)
     epochs, beta: list as before
@@ -47,8 +47,16 @@ def Lq_neg_log_lik_torch(
     m = Lq_params[:, :, :n_cells]  # (batch_size, N_sim, n_cells)
     s2 = Lq_params[:, :, n_cells:2*n_cells]**2  # (batch_size, N_sim, n_cells)
     
-    # OU -log lik
-    if kkt:
+    # term1: -log likelihood of OU or BM
+    if mode == 0:  # BM -log lik
+        term1, sigma = bm_neg_log_lik_torch_kkt(
+            ou_params, s2, m, share, device
+        )  # (batch_size, N_sim)
+        
+        if const:
+            term1 += n_cells/2 * (1 + torch.log(2 * torch.tensor(torch.pi, device=device)))
+    
+    elif kkt: # OU -log lik
         term1, sigma, theta = ou_neg_log_lik_torch_kkt(
             ou_params, s2, mode, m, diverge, share, epochs, beta, device
         )  # (batch_size, N_sim)
@@ -56,7 +64,7 @@ def Lq_neg_log_lik_torch(
         if const:
             term1 += n_cells/2 * (1 + torch.log(2 * torch.tensor(torch.pi, device=device)))
 
-    else:
+    else: # OU -log lik without KKT
         term1 = ou_neg_log_lik_torch(
             ou_params, s2, mode, m, diverge, share, epochs, beta, device
         )  # (batch_size, N_sim)
@@ -64,7 +72,7 @@ def Lq_neg_log_lik_torch(
         if const:
             term1 += n_cells/2 * torch.log(2 * torch.tensor(torch.pi, device=device))
 
-    # Poisson -log lik
+    # term2: Poisson -log lik
     if not nb:
         if approx == "softplus_taylor":
             E_log_approx = E_log_softplus_taylor(m, s2)
@@ -80,7 +88,7 @@ def Lq_neg_log_lik_torch(
 
         term2 = -torch.sum(x_tensor * E_log_approx - lib * E_approx, dim=-1) # (batch_size, N_sim)
     
-    # Negative binomial -log lik
+    # term2: Negative binomial -log lik
     else:
         r = torch.exp(log_r)  # dispersion parameter (batch_size, N_sim, 1)
         if approx == "softplus_MC":
@@ -101,17 +109,23 @@ def Lq_neg_log_lik_torch(
     if const:
         term2 += -torch.sum(x_tensor * torch.log(lib) - torch.lgamma(x_tensor + 1), dim=-1) # x!
 
-    # -entropy
+    # term3: -entropy
     term3 = -0.5 * torch.sum(torch.log(s2), dim=-1)  # (batch_size, N_sim)
 
     if const:
         term3 += -n_cells/2 * (1 + torch.log(2 * torch.tensor(torch.pi, device=device)))
 
-    reg = 0.5 * prior *  (ou_params[0][:, :, 0] ** 2)  # (batch_size, N_sim)
+    # optional: regulation for OU alpha
+    if mode == 0:  # no regularization for BM
+        reg = 0
+    else:  # L2 regularization for OU alpha
+        reg = 0.5 * prior *  (ou_params[0][:, :, 0] ** 2)  # (batch_size, N_sim)
     loss = term1 + term2 + term3 + reg  # (batch_size, N_sim)
 
-    if kkt:
+    if mode == 0: # BM
+        return loss, sigma  # (batch_size, N_sim)
+    elif kkt: # OU with KKT
         return loss, sigma, theta  # (batch_size, N_sim)
-    else:
+    else: # OU without KKT
         return loss  # (batch_size, N_sim)
 
