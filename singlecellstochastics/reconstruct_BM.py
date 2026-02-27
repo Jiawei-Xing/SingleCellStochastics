@@ -14,7 +14,6 @@ class TreeNode:
         self.name = name
         self.dist = dist           
         self.children = []
-        self.regime = 'default'    
         
         # MFVI Leaf Inputs
         self.is_leaf = False
@@ -36,18 +35,13 @@ class TreeNode:
         self.r = 0.0
         self.theta = 0.0
 
-def get_ou_params(alpha, sigma_sq, theta, t):
-    F = np.exp(-alpha * t)
-    c = theta * (1 - F)
-    if alpha > 1e-8 and t > 0:
-        Q = (sigma_sq / (2 * alpha)) * (1 - np.exp(-2 * alpha * t))
-    else:
-        Q = sigma_sq * t
-    return F, c, Q
+def get_bm_params(sigma_sq, t):
+    """BM transition: Mean stays same (F=1, c=0), variance grows by sig2*t."""
+    return 1.0, 0.0, sigma_sq * t
 
-def upward_pass(node, ou_params):
+def upward_pass(node, sigma_sq):
     for child in node.children:
-        upward_pass(child, ou_params)
+        upward_pass(child, sigma_sq)
         node.up_lam += child.msg_to_p_lam
         node.up_eta += child.msg_to_p_eta
 
@@ -56,21 +50,16 @@ def upward_pass(node, ou_params):
         node.up_eta += node.q_mu / node.q_var
 
     if node.dist > 0:
-        alpha, sig2, theta = ou_params[node.regime]
-        F, c, Q = get_ou_params(alpha, sig2, theta, node.dist)
-        
+        F, c, Q = get_bm_params(sigma_sq, node.dist)
         denom = Q * node.up_lam + 1.0
         node.msg_to_p_lam = (F**2 * node.up_lam) / denom
         node.msg_to_p_eta = F * (node.up_eta - node.up_lam * c) / denom
 
-def downward_pass(node, ou_params, root_prior=None):
+def downward_pass(node, sigma_sq, root_prior):
     if root_prior is not None:
         prior_mu, prior_var = root_prior
-        prior_lam = 1.0 / prior_var
-        prior_eta = prior_mu / prior_var
-        
-        node.true_lam = node.up_lam + prior_lam
-        node.true_eta = node.up_eta + prior_eta
+        node.true_lam = node.up_lam + (1.0 / prior_var)
+        node.true_eta = node.up_eta + (prior_mu / prior_var)
     
     node.true_var = 1.0 / node.true_lam
     node.true_mu = node.true_eta / node.true_lam
@@ -82,20 +71,15 @@ def downward_pass(node, ou_params, root_prior=None):
         cav_var = 1.0 / cav_lam if cav_lam > 1e-12 else 1e8
         cav_mu = cav_eta / cav_lam if cav_lam > 1e-12 else 0.0
         
-        alpha, sig2, theta = ou_params[child.regime]
-        F, c, Q = get_ou_params(alpha, sig2, theta, child.dist)
+        F, c, Q = get_bm_params(sigma_sq, child.dist)
         
         down_mu = F * cav_mu + c
         down_var = F**2 * cav_var + Q
         
-        down_lam = 1.0 / down_var
-        down_eta = down_mu / down_var
+        child.true_lam = child.up_lam + (1.0 / down_var)
+        child.true_eta = child.up_eta + (down_mu / down_var)
+        downward_pass(child, sigma_sq, root_prior=None)
         
-        child.true_lam = child.up_lam + down_lam
-        child.true_eta = child.up_eta + down_eta
-        
-        downward_pass(child, ou_params)
-
 # ==========================================
 # Parsers
 # ==========================================
@@ -121,13 +105,6 @@ def load_tree_from_newick(newick_path):
         
     return convert_clade(phylo_tree.root)
 
-def apply_regimes(root, regime_tsv_path):
-    df_regimes = pd.read_csv(regime_tsv_path, index_col=0)
-    all_nodes = {n.name: n for n in get_all_nodes(root)}
-    for node_name, row in df_regimes.iterrows():
-        if str(node_name) in all_nodes:
-            all_nodes[str(node_name)].regime = str(row['regime'])
-
 def apply_expression_data(root, expr_tsv_path):
     df_expr = pd.read_csv(expr_tsv_path, sep='\t', index_col=0)
     leaves = {n.name: n for n in get_leaves(root)}
@@ -138,12 +115,20 @@ def apply_expression_data(root, expr_tsv_path):
             leaf.q_var = row['q_std']**2
             leaf.read_count = row['read_count']
 
-def load_ou_params(ou_tsv_path):
-    df_ou = pd.read_csv(ou_tsv_path, sep='\t', index_col=0)
-    ou_params = {}
-    for regime, row in df_ou.iterrows():
-        ou_params[str(regime)] = (row['alpha'], row['sigma']**2, row['theta'])
-    return ou_params
+def load_simple_bm_params(tsv_path):
+    """
+    Reads TSV with header: mu  sigma
+    Example: 5.744412  2903.189
+    """
+    # Using sep=None to catch both tabs and multiple spaces
+    df = pd.read_csv(tsv_path, sep=None, engine='python')
+    mu_val = df['mu'].iloc[0]
+    sigma_val = df['sigma'].iloc[0]
+    
+    sigma_sq = sigma_val**2
+    root_prior = (mu_val, sigma_sq)
+    
+    return sigma_sq, root_prior
 
 # ==========================================
 # Data Export & Visualization
@@ -168,7 +153,6 @@ def save_inferred_history(root, output_tsv_path):
         data.append({
             'node_name': node.name,
             'is_leaf': node.is_leaf,
-            'regime': node.regime,
             'infer_mu': node.true_mu,
             'infer_var': node.true_var
         })
@@ -284,9 +268,8 @@ def plot_circular_tree(root, outer, output_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="1D Ancestral State Reconstruction via Belief Propagation")
     parser.add_argument("--tree", required=True, help="Path to Newick tree file (.nwk)")
-    parser.add_argument("--regime", required=True, help="Path to node regime mapping (TSV)")
     parser.add_argument("--expression", required=True, help="Path to leaf expression data (TSV)")
-    parser.add_argument("--ou", required=True, help="Path to OU parameters table (TSV)")
+    parser.add_argument("--bm", required=True, help="Path to BM parameters table (TSV)")
     parser.add_argument("--no_outer", action='store_false', help="Whether to plot read counts as bars outside the tree")
     parser.add_argument("--out_fig", required=False, default="history.png", help="Path to save the output figure (e.g., plot.png)")
     parser.add_argument("--out_tsv", required=False, default="history.tsv", help="Path to save the inferred true means and vars (TSV)")
@@ -295,26 +278,21 @@ if __name__ == "__main__":
     
     plt.close('all')
 
-    print("Loading data...")
     root = load_tree_from_newick(args.tree)
-    apply_regimes(root, args.regime)
     apply_expression_data(root, args.expression)
-    ou_params = load_ou_params(args.ou)
-    
     root.dist = 0.0 
 
-    print("Running upward pass (leaves -> root)...")
-    upward_pass(root, ou_params)
-
-    r_alpha, r_sig2, r_theta = ou_params[root.regime]
-    stationary_prior = (r_theta, r_sig2 / (2 * r_alpha))
+    # 1. Load the single mu and sigma
+    sigma_sq, root_prior = load_simple_bm_params(args.bm)
     
-    print("Running downward pass (root -> leaves)...")
-    downward_pass(root, ou_params, root_prior=stationary_prior)
+    # 2. Upward Pass (uniform sigma_sq)
+    upward_pass(root, sigma_sq)
 
-    print("Exporting data...")
+    # 3. Downward Pass (with root prior)
+    downward_pass(root, sigma_sq, root_prior=root_prior)
+
+    # 4. Save and Plot
     save_inferred_history(root, args.out_tsv)
-
-    print("Generating plot...")
+    # The plotting function needs a minor tweak to ignore regimes
     plot_circular_tree(root, args.no_outer, args.out_fig)
 

@@ -1,4 +1,5 @@
 import argparse
+from sys import prefix
 import pandas as pd
 import numpy as np
 import torch
@@ -31,6 +32,7 @@ def gene_expression_plasticity(
         batch_size = len(df_list[0].columns)
 
     results_list = []
+    q_list = []
     genes = []
     # process gene expression data in batches
     for batch_start in range(0, len(df_list[0].columns), batch_size):
@@ -67,7 +69,7 @@ def gene_expression_plasticity(
         # optimize star tree
         star_params, star_loss = Lq_optimize_torch_BM(    
             init_params,
-            0,  # lambda = 0 for star tree
+            1,  # lambda = 1 for BM
             x_tensor_list,
             gene_names,
             share_list_torch,
@@ -82,61 +84,39 @@ def gene_expression_plasticity(
             library_list_tensor,
             const
         )
-
-        # optimize lambda tree
-        lambda_params, lambda_loss = Lq_optimize_torch_BM(    
-            star_params,
-            2,  # mode = 2 for lambda tree
-            x_tensor_list,
-            gene_names,
-            share_list_torch,
-            max_iter,
-            learning_rate,
-            device,
-            wandb_flag,
-            window,
-            tol,
-            approx,
-            nb,
-            library_list_tensor,
-            const
-        )
-
-        # compute LRT statistic and p-value
-        lr_stat = 2 * (star_loss - lambda_loss)  # likelihood ratio statistic
-        chi2_dist = Chi2(torch.tensor([1.0], device=device))
-        p_value = 1.0 - chi2_dist.cdf(lr_stat.clamp(min=0))
         
         # save results for this batch
         result = torch.cat((
             torch.cat((star_params[-2].exp(), star_params[-1]), dim=-1),
-            torch.cat((lambda_params[-2].exp(), lambda_params[-1]), dim=-1),
             star_loss.unsqueeze(-1),
-            lambda_loss.unsqueeze(-1),
-            lr_stat.unsqueeze(-1),
-            p_value.unsqueeze(-1)
         ), dim=-1) # (batch, cols)
         results_list.append(result.detach().cpu())
 
+        q_list.append(star_params[:-2])  # list of (batch, cells) for q parameters
+
     # concatenate all batch results
     results = torch.cat(results_list, dim=0)
+    q_params = [torch.cat(q_batch, dim=0) for q_batch in zip(*q_list)]  # list of (n_genes, cells) for q parameters
 
     # save results    
     results_df = pd.DataFrame(
         results.cpu().numpy(),
         columns=[
-            "h0_r", "h0_mu", "h0_lambda", "h0_sigma",
-            "h1_r", "h1_mu", "h1_lambda", "h1_sigma",
-            "h0", "h1", "lr", "p"
+            "h0_r", "h0_mu", "h0_lambda", "h0_sigma", "h0"
         ]
     )
     results_df.insert(0, "gene", genes)
     results_df.insert(0, "ID", range(1, len(results_df) + 1))
 
-    # Benjamini-Hochberg FDR correction
-    results_df["signif"], results_df["q"] = multipletests(results_df["p"], alpha=0.05, method="fdr_bh")[:2]
-    results_df = results_df.sort_values("q")  # sort by adjusted p-value
-
+    # output variational parameters
+    for i in range(len(q_params)):
+        df = pd.DataFrame(
+            q_params[i].cpu().numpy(), #(batch_size, n_cells*2)
+            index=df_list[i].columns,
+            columns=cells_list[i]*2
+        )
+        df.to_csv(f"bm_q_params_{i}.tsv", sep="\t")
+    
     os.makedirs(os.path.dirname(outfile), exist_ok=True)
     results_df.to_csv(outfile, sep="\t", index=False)
 
@@ -146,7 +126,7 @@ if __name__ == "__main__":
     parser.add_argument("--tree", required=True, type=str, help="Path to Newick tree file (.nwk)")
     parser.add_argument("--expression", required=True, type=str, help="Path to cell by gene expression data (TSV)")
     parser.add_argument("--library", required=False, type=str, default=None, help="Path to library file (TSV)")
-    parser.add_argument("--outfile", required=False, type=str, default="./plasticity.tsv", help="Path to save the results (TSV)")
+    parser.add_argument("--outfile", required=False, type=str, default="./BM.tsv", help="Path to save the results (TSV)")
     parser.add_argument("--batch_size", required=False, type=int, default=1000, help="Batch size for processing")
     parser.add_argument("--max_iter", required=False, type=int, default=10000, help="Maximum number of optimization iterations")
     parser.add_argument("--learning_rate", required=False, type=float, default=1e-1, help="Learning rate for optimization")
