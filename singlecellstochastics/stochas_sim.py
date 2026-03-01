@@ -267,7 +267,8 @@ def simulate(
     optim: float = None,
     alpha: float = None,
     sigma: float = None,
-    dispersion: float = None
+    dispersion: float = None,
+    bg_model: str = "OU"
 ) -> tuple[list[str], dict[int, dict[str, int]]]:
     """
     Simulate gene expression data for multiple genes along a phylogenetic tree.
@@ -280,6 +281,8 @@ def simulate(
         optim (float, optional): Optimal expression value (theta) for the OU process.
         alpha (float, optional): Selective strength parameter for the OU process.
         sigma (float, optional): Variance parameter for the OU/BM process.
+        dispersion (float, optional): Dispersion for NB.
+        bg_model (str, default OU): background model for null.
         
     Returns:
         tuple: A tuple containing:
@@ -298,9 +301,12 @@ def simulate(
         reset_all_nodes_expr(tree)
         reset_all_nodes_read_counts(tree)
         
-        get_latent_gene_expression_at_tips(tree=tree, test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma=sigma, background_model="OU")
+        get_latent_gene_expression_at_tips(tree=tree, test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma=sigma, background_model=bg_model)
         clamp_latent_gene_expression_at_tips(tree)
-        if dispersion == 0:
+        if not dispersion:
+            for node in tree.get_terminals():
+                node.read_count = node.expr
+        elif dispersion == 0:
             get_poisson_sampled_read_counts(tree)
         else:
             get_NB_sampled_read_counts(tree, dispersion)
@@ -425,23 +431,24 @@ def run_stochas_sim():
     parser = argparse.ArgumentParser("Stochastic simulation of gene expression evolution along lineage")
     parser.add_argument("--tree", type=str, required=True, help="File path of input tree")
     parser.add_argument("--regime", type=str, required=True, help="File path of input regime")
-    parser.add_argument("--test", type=str, required=True, help="Regime for testing (OU)")
+    parser.add_argument("--test", type=str, required=False, help="Regime for testing (OU)")
     parser.add_argument("--root", type=int, required=True, help="Starting expression at the root")
     parser.add_argument("--n_genes", type=int, default=500, help="Number of genes to simulate")
     parser.add_argument("--sigma", type=float, required=True, help="Variance for BM or OU")
     parser.add_argument("--optim", type=int, default=None, help="Optimal expression for OU")
-    parser.add_argument("--alpha", type=float, required=True, help="Selective strength for OU")
+    parser.add_argument("--alpha", type=float, required=False, help="Selective strength for OU")
     parser.add_argument("--out", type=str, default=".", help="Output directory")
     parser.add_argument("--label", type=str, default="", help="Label for output")
-    parser.add_argument("--dispersion", type=float, default="0", help="Dispersion for negative binomial sampling (default: Poisson, no dispersion)")
+    parser.add_argument("--dispersion", type=float, default=None, help="Dispersion for negative binomial sampling (default: no sampling; 0: Poisson)")
     parser.add_argument("--plot", action="store_true", help="Whether to plot the gene expression evolution (default: False)")
+    parser.add_argument("--bg", type=str, default="OU", help="OU or BM for background simulation")
     args = parser.parse_args()
 
     
     tree = read_tree(args.tree)
     tree = assign_nodes_to_regimes(tree, args.regime)
 
-    plots, cells, read_counts = simulate(tree, args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma, args.dispersion)
+    plots, cells, read_counts = simulate(tree, args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma, args.dispersion, args.bg)
     if args.plot:
         plot(plots, args.n_genes, args.out, args.label)
     write_read_counts(read_counts, cells, args.n_genes, args.out, args.label)

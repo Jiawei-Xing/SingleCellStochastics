@@ -12,7 +12,7 @@ from .optimize import Lq_optimize_torch_BM
 
 def gene_expression_plasticity(
     tree_files, gene_files, library_files, outfile, device, batch_size,
-    max_iter, learning_rate, wandb_flag, window, tol, approx, nb, const
+    max_iter, learning_rate, wandb_flag, window, tol, approx, nb, const, elbo
 ):
     if wandb_flag:
         wandb.login()
@@ -80,7 +80,8 @@ def gene_expression_plasticity(
             approx,
             nb,
             library_list_tensor,
-            const
+            const,
+            elbo
         )
 
         # optimize lambda tree
@@ -99,7 +100,8 @@ def gene_expression_plasticity(
             approx,
             nb,
             library_list_tensor,
-            const
+            const,
+            elbo
         )
 
         # compute LRT statistic and p-value
@@ -156,6 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--approx", required=False, type=str, default="softplus_MC", help="How to approximate likelihood computation")
     parser.add_argument("--no_nb", required=False, action="store_false", help="Use poisson instead of negative binomial (default: use negative binomial)")
     parser.add_argument("--const", required=False, action="store_true", help="Whether to keep BM parameters constant during optimization")
+    parser.add_argument("--no_elbo", required=False, action="store_false", help="Not using elbo. Default uses elbo.")
     args = parser.parse_args()
 
     torch.manual_seed(42)
@@ -170,5 +173,6 @@ if __name__ == "__main__":
     
     gene_expression_plasticity(
         tree, expression, library, args.outfile, device=device, batch_size=args.batch_size,
-        max_iter=args.max_iter, learning_rate=args.learning_rate, wandb_flag=args.wandb_flag, window=args.window, tol=args.tol, approx=args.approx, nb=args.no_nb, const=args.const
+        max_iter=args.max_iter, learning_rate=args.learning_rate, wandb_flag=args.wandb_flag, 
+        window=args.window, tol=args.tol, approx=args.approx, nb=args.no_nb, const=args.const, elbo=args.no_elbo
     )

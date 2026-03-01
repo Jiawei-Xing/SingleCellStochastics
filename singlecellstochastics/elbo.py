@@ -21,7 +21,8 @@ def Lq_neg_log_lik_torch(
     kkt,
     nb,
     lib,
-    const
+    const,
+    elbo=True
 ):
     """
     ELBO for approximating model evidence.
@@ -71,6 +72,9 @@ def Lq_neg_log_lik_torch(
 
         if const:
             term1 += n_cells/2 * torch.log(2 * torch.tensor(torch.pi, device=device))
+
+    if not elbo: # testing BM only
+        return term1, sigma
 
     # term2: Poisson -log lik
     if not nb:

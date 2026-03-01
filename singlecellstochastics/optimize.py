@@ -533,7 +533,8 @@ def Lq_optimize_torch_BM(
     approx,
     nb,
     library_list_tensor,
-    const
+    const,
+    elbo
 ):
     """
     Optimize ELBO with PyTorch Adam.
@@ -554,6 +555,7 @@ def Lq_optimize_torch_BM(
     nb: whether to use negative binomial likelihood
     lib: library size normalization
     const: whether to include constant terms in likelihood
+    elbo: Whether to use elbo
     
     Returns: (batch_size, ) numpy array of params and losses
     """
@@ -576,7 +578,7 @@ def Lq_optimize_torch_BM(
         params_tensor[-2] *= 0.0 
         params_tensor[-2] += 1.0 # set lambda to 1
     else: # optimize lambda
-        params_tensor[-2] *= 0.0 # initialize lambda to sigmoid(1.0)=0.5
+        params_tensor[-2] *= -10.0 # initialize lambda to sigmoid(-10)=4e-5
 
     # optimize both ELBO and BM parameters
     for i in range(len(params_tensor)-2):
@@ -642,7 +644,8 @@ def Lq_optimize_torch_BM(
                 None,
                 nb,
                 lib,
-                const
+                const,
+                elbo
             )
             loss_matrix[active_batch, i] = loss
 
