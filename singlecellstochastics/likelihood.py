@@ -358,15 +358,12 @@ def ou_neg_log_lik_torch_kkt(
 
 
 def bm_neg_log_lik_torch_kkt(
-    params, sigma2_q, expr_batch, share, device
+    pagel_lambda, sigma2_q, expr_batch, share, device
 ):
     """
     Brownian motion likelihood with torch. Used for ELBO with torch.
 
-    params: [root_mean, pagel_lambda]
-        root_mean: (batch_size, ) tensor of root means
-        pagel_lambda: (batch_size, ) tensor of Pagel's lambda for covariance 
-                    0 for star tree, 1 for original tree
+    pagel_lambda: (batch_size, ) 0 for star tree, 1 for original tree
     sigma2_q: (batch_size, n_cells) tensor of q variances
     expr_batch: (batch_size, n_cells) tensor of expression data
     share: (n_cells, n_cells) tensor of shared branch lengths
@@ -374,7 +371,6 @@ def bm_neg_log_lik_torch_kkt(
     Returns: (batch_size,) tensor of losses
     """
     batch_size, n_cells = expr_batch.shape
-    root_mean, pagel_lambda = params  # (batch_size,)
     pagel_lambda = pagel_lambda[:, None, None]  # (batch_size, 1, 1)
 
     # V: covariance matrix from trees (excluding variance sigma2)
@@ -394,12 +390,34 @@ def bm_neg_log_lik_torch_kkt(
         except RuntimeError:
             L = psd_safe_cholesky(V)
 
+    # 1. Setup vectors
+    Y_vec = expr_batch.unsqueeze(-1)  # (batch_size, n_cells, 1)
+    ones = torch.ones_like(Y_vec)
+    
+    # 2. Solve for L^{-1} Y and L^{-1} 1
+    # This replaces your original solve_triangular call
+    L_inv_Y = torch.linalg.solve_triangular(L, Y_vec, upper=False)
+    L_inv_ones = torch.linalg.solve_triangular(L, ones, upper=False)
+    
+    # 3. Calculate 1^T V^{-1} 1 and 1^T V^{-1} Y
+    one_V_inv_one = (L_inv_ones.squeeze(-1) ** 2).sum(dim=-1)  # (batch_size,)
+    one_V_inv_Y = (L_inv_ones.squeeze(-1) * L_inv_Y.squeeze(-1)).sum(dim=-1)  # (batch_size,)
+    
+    # 4. Analytically compute the exact GLS mean
+    root_mean_gls = one_V_inv_Y / one_V_inv_one  # (batch_size,)
+    
+    # 5. Compute the proper residual d^T V^{-1} d using linearity:
+    # L^{-1}(Y - mu*1) = L^{-1}Y - mu * L^{-1}1
+    y = L_inv_Y - root_mean_gls.unsqueeze(-1).unsqueeze(-1) * L_inv_ones
+    exp = (y.squeeze(-1) ** 2).sum(dim=-1)  # (batch_size,)
+
     # log_det = torch.linalg.slogdet(V_reg)[1]
     # cholesky: log|V| = 2 * sum(log diag(L))
     log_det = 2 * torch.sum(
         torch.log(torch.diagonal(L, dim1=-2, dim2=-1)), dim=-1
     )  # (batch_size,)
 
+    '''
     diff = expr_batch - root_mean.unsqueeze(-1)  # (batch_size, n_cells)
     d = diff.unsqueeze(-1)  # (batch_size, n_cells, 1)
 
@@ -431,10 +449,11 @@ def bm_neg_log_lik_torch_kkt(
     
     # # tr_term = sum_i (V^{-1})_{ii} * sigma^2_{q, i}
     # tr_term = (V_inv_diag * sigma2_q).sum(dim=-1)  # (batch_size,)
+    '''
 
-    sigma2 = exp / n_cells + tr_term / n_cells # (batch_size,)
+    sigma2 = exp / n_cells #+ tr_term / n_cells # (batch_size,)
     sigma = sigma2.sqrt()  # (batch_size,)
 
     loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood (w/o constant)
-    return loss, sigma  # (batch_size,)
+    return loss, root_mean_gls, sigma  # (batch_size,)
 

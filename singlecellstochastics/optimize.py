@@ -5,7 +5,7 @@ from scipy.optimize import minimize
 import wandb
 
 from .likelihood import ou_neg_log_lik_numpy, ou_neg_log_lik_numpy_kkt
-from .likelihood import ou_neg_log_lik_torch, ou_neg_log_lik_torch_kkt
+from .likelihood import ou_neg_log_lik_torch, ou_neg_log_lik_torch_kkt, bm_neg_log_lik_torch_kkt
 from .elbo import Lq_neg_log_lik_torch
 
 
@@ -534,7 +534,6 @@ def Lq_optimize_torch_BM(
     nb,
     library_list_tensor,
     const,
-    elbo
 ):
     """
     Optimize ELBO with PyTorch Adam.
@@ -555,7 +554,6 @@ def Lq_optimize_torch_BM(
     nb: whether to use negative binomial likelihood
     lib: library size normalization
     const: whether to include constant terms in likelihood
-    elbo: Whether to use elbo
     
     Returns: (batch_size, ) numpy array of params and losses
     """
@@ -738,3 +736,154 @@ def Lq_optimize_torch_BM(
 
     return best_params, best_loss
 
+
+# optimize BM with Adam
+def optimize_torch_BM(
+    params,
+    mode,
+    x_tensor_list,
+    gene_names,
+    share_list_torch,
+    max_iter,
+    learning_rate,
+    device,
+    wandb_flag,
+    window,
+    tol,
+    const,
+):
+    """
+    Optimize BM with PyTorch Adam.
+
+    params: pagel_lambda (batch_size, )
+    mode: 0 for star tree, 1 for original tree, 2 for optimizing pagel's lambda
+    x_tensor: list of (batch_size, n_cells)
+    gene_names: list of gene names
+    share_list_torch: list of tensors
+    max_iter: maximum number of iterations
+    learning_rate: learning rate for Adam
+    device: device to use
+    wandb_flag: whether to use wandb
+    window: number of recent iterations to check for convergence
+    tol: convergence tolerance
+    const: whether to include constant terms in likelihood
+    
+    Returns: (batch_size, ) numpy array of params and losses
+    """
+    batch_size = params.shape[0]
+    n_trees = len(x_tensor_list)
+
+    # Fix pagel's lambda
+    if mode == 0 or mode == 1: # star tree
+        params *= 0.0 # set lambda to 0
+        if mode == 1: # original tree
+            params += 1.0 # set lambda to 1
+    
+        # analytical solution with fixed lambda
+        joint_loss = torch.zeros_like(params)
+
+        for i in range(n_trees):
+            x_tensor = x_tensor_list[i]
+            n_cells = x_tensor.shape[-1]
+
+            loss, mu, sigma = bm_neg_log_lik_torch_kkt(
+                params, torch.zeros_like(x_tensor), x_tensor, share_list_torch[i], device
+            )  
+            if const:
+                loss = loss + n_cells/2 * (1 + torch.log(2 * torch.tensor(torch.pi, device=device)))
+            joint_loss = joint_loss + loss
+
+        params = torch.stack((params, mu, sigma), dim=-1)
+        return params, joint_loss
+
+    # optimize lambda
+    params *= -2.0 # initialize lambda to sigmoid(-2)=0.1
+    params.requires_grad_(True) # pagel_lambda
+    optimizer = torch.optim.Adam([params], lr=learning_rate)
+
+    # Track best parameters for all parameter types
+    best_results = torch.zeros((batch_size, 3), dtype=params.dtype, device=device)
+    best_loss = torch.full((batch_size, ), float("inf"), dtype=params.dtype, device=device)
+
+    # Track loss history for convergence checking
+    loss_history = []
+    converged_mask = torch.zeros((batch_size, ), dtype=torch.bool, device=device)
+
+    for n in range(max_iter):
+        optimizer.zero_grad()
+        active_batch = ~converged_mask
+        active_loss_list = []
+
+        for i in range(n_trees):
+            x_tensor = x_tensor_list[i][active_batch, :]
+            n_cells = x_tensor.shape[-1]
+            bm_params = torch.sigmoid(params[active_batch])
+
+            loss, mu, sigma = bm_neg_log_lik_torch_kkt(
+                bm_params, torch.zeros_like(x_tensor), x_tensor, share_list_torch[i], device
+            )  
+            if const:
+                loss = loss + n_cells/2 * (1 + torch.log(2 * torch.tensor(torch.pi, device=device)))
+            active_loss_list.append(loss)
+
+        active_joint_loss = torch.stack(active_loss_list, dim=-1).sum(dim=-1)
+
+        with torch.no_grad():
+            # Reconstruct the full-batch loss for accurate indexing
+            joint_loss_full = torch.full((batch_size,), float("inf"), dtype=params.dtype, device=device)
+            joint_loss_full[active_batch] = active_joint_loss.clone().detach()
+
+            mask = (joint_loss_full < best_loss) & ~converged_mask
+            best_loss = torch.where(mask, joint_loss_full, best_loss)
+            actual_lambda = torch.sigmoid(params)
+
+            best_results[mask, 0] = actual_lambda[mask].clone().detach()
+            best_results[mask, 1] = mu[mask[active_batch]].clone().detach()
+            best_results[mask, 2] = sigma[mask[active_batch]].clone().detach()
+
+            if wandb_flag:
+                wandb.log({
+                        "iter": n,
+                        f"{gene_names[0]}_bm{mode}_elbo_loss": best_loss[0].item(), 
+                })
+        
+        loss_history.append(joint_loss_full.clone().detach())
+
+        if n >= window:
+            start_loss = loss_history[-window]
+            denom = torch.maximum(
+                start_loss.abs(), torch.tensor(1.0, dtype=joint_loss_full.dtype, device=device)
+            )
+            relative_decrease = torch.abs(start_loss - best_loss) / denom
+            
+            newly_converged = (relative_decrease < tol) & ~converged_mask
+            
+            if newly_converged.any():
+                converged_mask = converged_mask | newly_converged 
+                if converged_mask.all(): 
+                    break
+
+        loss = active_joint_loss.sum()
+        loss.backward()
+        optimizer.step()
+
+    # warning if not all genes have converged
+    print(f"\nChecking convergence for h{mode-1} ELBO...")
+    if not converged_mask.all() and 'relative_decrease' in locals():
+        print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
+        print(f"   Gene Name | Relative Decrease | Final Loss")
+        print(f"   {'-' * 25}")
+        for i in range(batch_size):
+            if not converged_mask[i]:
+                print(
+                    f"   {gene_names[i]}: {relative_decrease[i].item():.2e} | " +
+                    f"{best_loss[i].item():.2e}"
+                )
+        print(f"\n💡 Recommendations for non-converged genes:")
+        print(f"   - Increase max_iter (current: {max_iter})")
+        print(f"   - Increase learning_rate (current: {learning_rate})")
+        print(f"   - Increase tol (current: {tol})")
+        print(f"   - Decrease window (current: {window})")
+        print(f"   - Check data quality for these genes")
+    
+    return best_results, best_loss
