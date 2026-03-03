@@ -281,7 +281,7 @@ def process_data_BM(tree_files, gene_files, library_files, device):
                 # Fast set intersection
                 common_ancestors = cell_paths[i] & cell_paths[j]
                 # Find the deepest (last in path) ancestor
-                for ancestor in reversed(cell_lineages[i]):
+                for ancestor in cell_lineages[i]:
                     if ancestor in common_ancestors:
                         mrca_idx[i, j] = node_idx[ancestor]
                         break
