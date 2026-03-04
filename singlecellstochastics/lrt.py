@@ -152,8 +152,8 @@ def likelihood_ratio_test(
 
     # Initialize dispersion parameter for negative binomial
     log_r = torch.ones(
-        (batch_size, N_sim, 1), dtype=dtype, device=device
-    ) * 5  # (batch_size, N_sim, 1), init from large r=exp(5) ~ 148.4
+        (batch_size, N_sim), dtype=dtype, device=device
+    ) * 5  # (batch_size, N_sim), init from large r=exp(5) ~ 148.4
 
     # Combine all initial parameters
     init_params = pois_params_init + [log_r] + [ou_params_init]  # list of (batch_size, N_sim, param_dim)

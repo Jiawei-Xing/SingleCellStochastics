@@ -27,8 +27,8 @@ def Lq_neg_log_lik_torch(
     ELBO for approximating model evidence.
 
     Lq_params: (batch_size, N_sim, 2*n_cells)
-    log_r: (batch_size, N_sim, 1) log dispersion parameter for negative binomial
-    ou_params: [alpha, other OU params] (OU) or [root_mean, pagel_lambda] (BM)
+    log_r: (batch_size, N_sim) log dispersion parameter for negative binomial
+    ou_params: [alpha, other OU params] (OU) or pagel_lambda (BM)
     mode: 0 for BM, 1 for OU-H0, 2 for OU-H1
     x_tensor: (batch_size, N_sim, n_cells)
     diverge, share: (n_cells, n_cells)
@@ -49,7 +49,7 @@ def Lq_neg_log_lik_torch(
     
     # term1: -log likelihood of OU or BM
     if mode == 0:  # BM -log lik
-        term1, sigma = bm_neg_log_lik_torch_kkt(
+        term1, mu, sigma = bm_neg_log_lik_torch_kkt(
             ou_params, s2, m, share, device
         )  # (batch_size, N_sim)
         
@@ -90,6 +90,7 @@ def Lq_neg_log_lik_torch(
     
     # term2: Negative binomial -log lik
     else:
+        log_r = log_r.unsqueeze(-1)
         r = torch.exp(log_r)  # dispersion parameter (batch_size, N_sim, 1)
         if approx == "softplus_MC":
             E_log_approx = E_log_softplus_MC(m, s2)
@@ -123,7 +124,7 @@ def Lq_neg_log_lik_torch(
     loss = term1 + term2 + term3 + reg  # (batch_size, N_sim)
 
     if mode == 0: # BM
-        return loss, sigma  # (batch_size, N_sim)
+        return loss, mu, sigma  # (batch_size, N_sim)
     elif kkt: # OU with KKT
         return loss, sigma, theta  # (batch_size, N_sim)
     else: # OU without KKT

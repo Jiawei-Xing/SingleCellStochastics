@@ -12,7 +12,7 @@ from .optimize import Lq_optimize_torch_BM
 
 def gene_expression_plasticity(
     tree_files, gene_files, library_files, outfile, device, batch_size,
-    max_iter, learning_rate, wandb_flag, window, tol, approx, nb, const, elbo
+    max_iter, learning_rate, wandb_flag, window, tol, approx, nb, const
 ):
     if wandb_flag:
         wandb.login()
@@ -55,12 +55,12 @@ def gene_expression_plasticity(
         ]
 
         log_r = torch.ones(
-            (batch_size, 1), dtype=torch.float32, device=device
+            (batch_size, ), dtype=torch.float32, device=device
         ) * 5  # (batch_size, 1), init from large r=exp(5) ~ 148.4
 
         bm_params_init = torch.ones(
-            (batch_size, 3), dtype=torch.float32, device=device
-        )  # (root_mean, pagel_lambda, sigma)
+            (batch_size, ), dtype=torch.float32, device=device
+        ) * (-2)  # init pagel_lambda with sigmoid(-2)=0.1
 
         init_params = q_params_init + [log_r] + [bm_params_init]
 
@@ -81,12 +81,12 @@ def gene_expression_plasticity(
             nb,
             library_list_tensor,
             const,
-            elbo
         )
 
         # optimize lambda tree
+        lambda_init_params = star_params[:-1] + [bm_params_init.clone().detach()]
         lambda_params, lambda_loss = Lq_optimize_torch_BM(    
-            star_params,
+            lambda_init_params,
             2,  # mode = 2 for lambda tree
             x_tensor_list,
             gene_names,
@@ -101,7 +101,6 @@ def gene_expression_plasticity(
             nb,
             library_list_tensor,
             const,
-            elbo
         )
 
         # compute LRT statistic and p-value
@@ -111,8 +110,8 @@ def gene_expression_plasticity(
         
         # save results for this batch
         result = torch.cat((
-            torch.cat((star_params[-2].exp(), star_params[-1]), dim=-1),
-            torch.cat((lambda_params[-2].exp(), lambda_params[-1]), dim=-1),
+            torch.cat((star_params[-2].exp().unsqueeze(-1), star_params[-1]), dim=-1),
+            torch.cat((lambda_params[-2].exp().unsqueeze(-1), lambda_params[-1]), dim=-1),
             star_loss.unsqueeze(-1),
             lambda_loss.unsqueeze(-1),
             lr_stat.unsqueeze(-1),
@@ -127,8 +126,8 @@ def gene_expression_plasticity(
     results_df = pd.DataFrame(
         results.cpu().numpy(),
         columns=[
-            "h0_r", "h0_mu", "h0_lambda", "h0_sigma",
-            "h1_r", "h1_mu", "h1_lambda", "h1_sigma",
+            "h0_r", "h0_lambda", "h0_mu", "h0_sigma",
+            "h1_r", "h1_lambda", "h1_mu", "h1_sigma",
             "h0", "h1", "lr", "p"
         ]
     )
@@ -158,7 +157,6 @@ if __name__ == "__main__":
     parser.add_argument("--approx", required=False, type=str, default="softplus_MC", help="How to approximate likelihood computation")
     parser.add_argument("--no_nb", required=False, action="store_false", help="Use poisson instead of negative binomial (default: use negative binomial)")
     parser.add_argument("--const", required=False, action="store_true", help="Whether to keep BM parameters constant during optimization")
-    parser.add_argument("--no_elbo", required=False, action="store_false", help="Not using elbo. Default uses elbo.")
     args = parser.parse_args()
 
     torch.manual_seed(42)
@@ -174,5 +172,5 @@ if __name__ == "__main__":
     gene_expression_plasticity(
         tree, expression, library, args.outfile, device=device, batch_size=args.batch_size,
         max_iter=args.max_iter, learning_rate=args.learning_rate, wandb_flag=args.wandb_flag, 
-        window=args.window, tol=args.tol, approx=args.approx, nb=args.no_nb, const=args.const, elbo=args.no_elbo
+        window=args.window, tol=args.tol, approx=args.approx, nb=args.no_nb, const=args.const
     )

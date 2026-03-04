@@ -357,6 +357,7 @@ def ou_neg_log_lik_torch_kkt(
     return loss, sigma, theta  # (batch_size, N_sim)
 
 
+# calculate expectation of negative BM log likelihood with torch
 def bm_neg_log_lik_torch_kkt(
     pagel_lambda, sigma2_q, expr_batch, share, device
 ):
@@ -427,6 +428,7 @@ def bm_neg_log_lik_torch_kkt(
         L, d, upper=False
     )  # y = L^{-1} d (batch_size, n_cells, 1)
     exp = (y.squeeze(-1) ** 2).sum(dim=-1)  # (batch_size,)
+    '''
 
     # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V), dim1=-2, dim2=-1), dim=-1)
     # cholesky: trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
@@ -449,9 +451,8 @@ def bm_neg_log_lik_torch_kkt(
     
     # # tr_term = sum_i (V^{-1})_{ii} * sigma^2_{q, i}
     # tr_term = (V_inv_diag * sigma2_q).sum(dim=-1)  # (batch_size,)
-    '''
 
-    sigma2 = exp / n_cells #+ tr_term / n_cells # (batch_size,)
+    sigma2 = exp / n_cells + tr_term / n_cells # (batch_size,)
     sigma = sigma2.sqrt()  # (batch_size,)
 
     loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood (w/o constant)
