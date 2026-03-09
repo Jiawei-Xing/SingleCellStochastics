@@ -19,6 +19,7 @@ def gene_expression_plasticity(
         wandb.init(project="SingleCellStochastics", name=wandb_flag)
 
     # process data
+    print("Preprocessing data")
     (
         tree_list, cells_list, df_list, share_list_torch, library_list
     ) = process_data_BM(tree_files, gene_files, library_files, device)
@@ -32,6 +33,7 @@ def gene_expression_plasticity(
 
     results_list = []
     genes = []
+    print("Running model")
     # process gene expression data in batches
     for batch_start in range(0, len(df_list[0].columns), batch_size):
         # gene expression batch

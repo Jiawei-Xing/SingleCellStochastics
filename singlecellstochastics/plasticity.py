@@ -19,6 +19,7 @@ def gene_expression_plasticity(
         wandb.init(project="SingleCellStochastics", name=wandb_flag)
 
     # process data
+    print("Preprocessing data")
     (
         tree_list, cells_list, df_list, share_list_torch, library_list
     ) = process_data_BM(tree_files, gene_files, library_files, device)
@@ -32,6 +33,7 @@ def gene_expression_plasticity(
 
     results_list = []
     genes = []
+    print("Running model")
     # process gene expression data in batches
     for batch_start in range(0, len(df_list[0].columns), batch_size):
         # gene expression batch
@@ -54,9 +56,9 @@ def gene_expression_plasticity(
             for i in range(len(x_tensor_list))
         ]
 
-        log_r = torch.ones(
+        log_r = torch.zeros(
             (batch_size, ), dtype=torch.float32, device=device
-        ) * 5  # (batch_size, 1), init from large r=exp(5) ~ 148.4
+        )  # (batch_size,), init r=exp(0)=1 (moderate overdispersion)
 
         bm_params_init = torch.ones(
             (batch_size, ), dtype=torch.float32, device=device
@@ -106,7 +108,9 @@ def gene_expression_plasticity(
         # compute LRT statistic and p-value
         lr_stat = 2 * (star_loss - lambda_loss)  # likelihood ratio statistic
         chi2_dist = Chi2(torch.tensor([1.0], device=device))
-        p_value = 1.0 - chi2_dist.cdf(lr_stat.clamp(min=0))
+        # Replace nan with 0 so non-converged genes get p-value=1.0
+        lr_stat_safe = torch.nan_to_num(lr_stat, nan=0.0).clamp(min=0)
+        p_value = 1.0 - chi2_dist.cdf(lr_stat_safe)
         
         # save results for this batch
         result = torch.cat((

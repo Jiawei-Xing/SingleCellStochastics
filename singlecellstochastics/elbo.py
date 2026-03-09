@@ -90,8 +90,8 @@ def Lq_neg_log_lik_torch(
     
     # term2: Negative binomial -log lik
     else:
-        log_r = log_r.unsqueeze(-1)
-        r = torch.exp(log_r)  # dispersion parameter (batch_size, N_sim, 1)
+        log_r = torch.clamp(torch.nan_to_num(log_r, nan=0.0), min=-5, max=5).unsqueeze(-1)
+        r = torch.exp(log_r)  # dispersion parameter, clamped to [~0.007, ~148]
         if approx == "softplus_MC":
             E_log_approx = E_log_softplus_MC(m, s2)
             E_log_r_approx = E_log_r_softplus_MC(m, s2, r, lib)

@@ -118,11 +118,16 @@ def E_log_softplus_MC(u, sigma2, n_samples=10000):
     z = u.unsqueeze(0) + torch.sqrt(sigma2).unsqueeze(0) * epsilon
     
     # Apply log(softplus) transformation
-    log_softplus_z = torch.log(torch.nn.functional.softplus(z))
-    
+    # Use log(softplus(z)) = log(log(1+exp(z)))
+    # For numerical stability, use softplus itself for large z: softplus(z) ≈ z, so log(softplus(z)) ≈ log(z)
+    # For small z: softplus(z) ≈ exp(z), so log(softplus(z)) ≈ z
+    # Clamp softplus output to avoid log(0) = -inf when z is very negative
+    softplus_z = torch.nn.functional.softplus(z)
+    log_softplus_z = torch.log(softplus_z.clamp(min=1e-20))
+
     # Take the mean over samples dimension
     result = torch.mean(log_softplus_z, dim=0)
-    
+
     return result
 
 
@@ -198,8 +203,9 @@ def E_log_r_softplus_MC(u, sigma2, r, lib, n_samples=10000):
     epsilon = torch.randn(n_samples, *u.shape, device=u.device, dtype=u.dtype)
     z = u.unsqueeze(0) + torch.sqrt(sigma2).unsqueeze(0) * epsilon
     
-    # Apply log(r + softplus) transformation
-    log_r_softplus_z = torch.log(r + lib * torch.nn.functional.softplus(z))
+    # Apply log(r + lib * softplus) transformation
+    # r > 0 prevents log(0), but clamp for safety against overflow
+    log_r_softplus_z = torch.log((r + lib * torch.nn.functional.softplus(z)).clamp(min=1e-20))
     
     # Take the mean over samples dimension
     result = torch.mean(log_r_softplus_z, dim=0)

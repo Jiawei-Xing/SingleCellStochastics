@@ -303,7 +303,7 @@ def simulate(
         
         get_latent_gene_expression_at_tips(tree=tree, test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma=sigma, background_model=bg_model)
         clamp_latent_gene_expression_at_tips(tree)
-        if not dispersion:
+        if dispersion is None:
             for node in tree.get_terminals():
                 node.read_count = node.expr
         elif dispersion == 0:
@@ -431,7 +431,7 @@ def run_stochas_sim():
     parser = argparse.ArgumentParser("Stochastic simulation of gene expression evolution along lineage")
     parser.add_argument("--tree", type=str, required=True, help="File path of input tree")
     parser.add_argument("--regime", type=str, required=True, help="File path of input regime")
-    parser.add_argument("--test", type=str, required=False, help="Regime for testing (OU)")
+    parser.add_argument("--test", type=str, required=False, default=None, help="Regime for testing (OU)")
     parser.add_argument("--root", type=int, required=True, help="Starting expression at the root")
     parser.add_argument("--n_genes", type=int, default=500, help="Number of genes to simulate")
     parser.add_argument("--sigma", type=float, required=True, help="Variance for BM or OU")

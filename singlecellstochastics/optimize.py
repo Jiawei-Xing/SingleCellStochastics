@@ -489,7 +489,12 @@ def Lq_optimize_torch_OU(
         loss = joint_loss[~converged_mask].sum()
         loss.backward()
         optimizer.step()
-    
+
+        # clamp log_r to prevent NaN/overflow
+        if nb:
+            with torch.no_grad():
+                params_tensor[-3].clamp_(-5, 5)
+
     # warning if not all genes have converged
     print(f"\nChecking convergence for h{mode-1} ELBO...")
     if not converged_mask.all() and 'relative_decrease' in locals():
@@ -672,7 +677,12 @@ def Lq_optimize_torch_BM(
         loss = active_joint_loss.sum()
         loss.backward()
         optimizer.step()
-    
+
+        # clamp log_r to prevent NaN/overflow
+        if nb:
+            with torch.no_grad():
+                params[-2].clamp_(-5, 5)
+
     # warning if not all genes have converged
     print(f"\nChecking convergence for h{mode-1} ELBO...")
     if not converged_mask.all() and 'relative_decrease' in locals():
