@@ -158,7 +158,7 @@ def run_diff_test():
     results_empirical_each = {}
     ou_params_all = []
     lr_all = []
-
+    batch_start = 0
     for batch_start in range(gene_idx_start, len(df_list[0].columns), batch_size):
         batch_genes = df_list[0].columns[batch_start : batch_start + batch_size]
 
@@ -208,11 +208,11 @@ def run_diff_test():
         # Accumulate variational parameters
         if sel_df is None:
             if h0_q_params:
-                h0_q_params = [np.concatenate([h0_q_params[i], h0_q[i]], axis=0) for i in len(h0_q)]
+                h0_q_params = [np.concatenate([h0_q_params[i], h0_q[i]], axis=0) for i in range(len(h0_q))]
             else:
                 h0_q_params = [n for n in h0_q]
         if h1_q_params:
-            h1_q_params = [np.concatenate([h1_q_params[i], h1_q[i]], axis=0) for i in len(h1_q)]
+            h1_q_params = [np.concatenate([h1_q_params[i], h1_q[i]], axis=0) for i in range(len(h1_q))]
         else:
             h1_q_params = [n for n in h1_q]
 
@@ -241,10 +241,6 @@ def run_diff_test():
 
         # Free memory
         del x_original, h0_params, h1_params, h0_loss, h1_loss
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            time.sleep(0.5)
 
     # === Output results ===
 

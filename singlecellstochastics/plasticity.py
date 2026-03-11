@@ -8,11 +8,12 @@ from statsmodels.stats.multitest import multipletests
 import os
 
 from .preprocess import process_data_BM
-from .optimize import Lq_optimize_torch_BM
+from .optimize import Lq_optimize_torch_BM, optimize_torch_BM
 
 def gene_expression_plasticity(
     tree_files, gene_files, library_files, outfile, device, batch_size,
-    max_iter, learning_rate, wandb_flag, window, tol, approx, nb, const
+    max_iter, learning_rate, wandb_flag, window, tol, model="nb",
+    approx="softplus_MC", const=False
 ):
     if wandb_flag:
         wandb.login()
@@ -27,7 +28,7 @@ def gene_expression_plasticity(
     library_list_tensor = [
         torch.tensor(lib.values.squeeze(), dtype=torch.float32, device=device) for lib in library_list
     ]  # list of (n_cells,)
-    
+
     if batch_size > len(df_list[0].columns):
         batch_size = len(df_list[0].columns)
 
@@ -42,99 +43,154 @@ def gene_expression_plasticity(
         genes.extend(gene_names)
         x_list = [df[gene_names].values.T for df in df_list] # (batch, cells)
         x_tensor_list = [
-            torch.tensor(x, dtype=torch.float32, device=device) 
+            torch.tensor(x, dtype=torch.float32, device=device)
             for x in x_list
         ]
 
-        # init parameters for optimization
-        s_init_tensor = [
-            x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
-            for x in x_tensor_list
-        ]  # list of (batch_size, n_cells)
-        q_params_init = [
-            torch.cat((x_tensor_list[i], s_init_tensor[i]), dim=-1) 
-            for i in range(len(x_tensor_list))
-        ]
-
-        log_r = torch.zeros(
-            (batch_size, ), dtype=torch.float32, device=device
-        )  # (batch_size,), init r=exp(0)=1 (moderate overdispersion)
-
         bm_params_init = torch.ones(
             (batch_size, ), dtype=torch.float32, device=device
-        ) * (-2)  # init pagel_lambda with sigmoid(-2)=0.1
+        ) * (-2 if model in ("nb", "pois") else 1)
 
-        init_params = q_params_init + [log_r] + [bm_params_init]
+        if model in ("nb", "pois"):
+            nb = (model == "nb")
 
-        # optimize star tree
-        star_params, star_loss = Lq_optimize_torch_BM(    
-            init_params,
-            0,  # lambda = 0 for star tree
-            x_tensor_list,
-            gene_names,
-            share_list_torch,
-            max_iter,
-            learning_rate,
-            device,
-            wandb_flag,
-            window,
-            tol,
-            approx,
-            nb,
-            library_list_tensor,
-            const,
-        )
+            # init parameters for variational optimization
+            s_init_tensor = [
+                x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
+                for x in x_tensor_list
+            ]  # list of (batch_size, n_cells)
+            q_params_init = [
+                torch.cat((x_tensor_list[i], s_init_tensor[i]), dim=-1)
+                for i in range(len(x_tensor_list))
+            ]
 
-        # optimize lambda tree
-        lambda_init_params = star_params[:-1] + [bm_params_init.clone().detach()]
-        lambda_params, lambda_loss = Lq_optimize_torch_BM(    
-            lambda_init_params,
-            2,  # mode = 2 for lambda tree
-            x_tensor_list,
-            gene_names,
-            share_list_torch,
-            max_iter,
-            learning_rate,
-            device,
-            wandb_flag,
-            window,
-            tol,
-            approx,
-            nb,
-            library_list_tensor,
-            const,
-        )
+            log_r = torch.zeros(
+                (batch_size, ), dtype=torch.float32, device=device
+            )  # (batch_size,), init r=exp(0)=1 (moderate overdispersion)
 
-        # compute LRT statistic and p-value
-        lr_stat = 2 * (star_loss - lambda_loss)  # likelihood ratio statistic
-        chi2_dist = Chi2(torch.tensor([1.0], device=device))
-        # Replace nan with 0 so non-converged genes get p-value=1.0
-        lr_stat_safe = torch.nan_to_num(lr_stat, nan=0.0).clamp(min=0)
-        p_value = 1.0 - chi2_dist.cdf(lr_stat_safe)
-        
-        # save results for this batch
-        result = torch.cat((
-            torch.cat((star_params[-2].exp().unsqueeze(-1), star_params[-1]), dim=-1),
-            torch.cat((lambda_params[-2].exp().unsqueeze(-1), lambda_params[-1]), dim=-1),
-            star_loss.unsqueeze(-1),
-            lambda_loss.unsqueeze(-1),
-            lr_stat.unsqueeze(-1),
-            p_value.unsqueeze(-1)
-        ), dim=-1) # (batch, cols)
+            init_params = q_params_init + [log_r] + [bm_params_init]
+
+            # optimize star tree
+            star_params, star_loss = Lq_optimize_torch_BM(
+                init_params,
+                0,  # lambda = 0 for star tree
+                x_tensor_list,
+                gene_names,
+                share_list_torch,
+                max_iter,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                approx,
+                nb,
+                library_list_tensor,
+                const,
+            )
+
+            # optimize lambda tree
+            lambda_init_params = star_params[:-1] + [bm_params_init.clone().detach()]
+            lambda_params, lambda_loss = Lq_optimize_torch_BM(
+                lambda_init_params,
+                2,  # mode = 2 for lambda tree
+                x_tensor_list,
+                gene_names,
+                share_list_torch,
+                max_iter,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                approx,
+                nb,
+                library_list_tensor,
+                const,
+            )
+
+            # compute LRT statistic and p-value
+            lr_stat = 2 * (star_loss - lambda_loss)
+            chi2_dist = Chi2(torch.tensor([1.0], device=device))
+            lr_stat_safe = torch.nan_to_num(lr_stat, nan=0.0).clamp(min=0)
+            p_value = 1.0 - chi2_dist.cdf(lr_stat_safe)
+
+            result = torch.cat((
+                torch.cat((star_params[-2].exp().unsqueeze(-1), star_params[-1]), dim=-1),
+                torch.cat((lambda_params[-2].exp().unsqueeze(-1), lambda_params[-1]), dim=-1),
+                star_loss.unsqueeze(-1),
+                lambda_loss.unsqueeze(-1),
+                lr_stat.unsqueeze(-1),
+                p_value.unsqueeze(-1)
+            ), dim=-1)
+
+        else:  # model == "bm"
+            # optimize star tree
+            star_params, star_loss = optimize_torch_BM(
+                bm_params_init.clone(),
+                0,  # lambda = 0 for star tree
+                x_tensor_list,
+                gene_names,
+                share_list_torch,
+                max_iter,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                const,
+            )
+
+            # optimize lambda tree
+            lambda_params, lambda_loss = optimize_torch_BM(
+                bm_params_init.clone(),
+                2,  # mode = 2 for lambda tree
+                x_tensor_list,
+                gene_names,
+                share_list_torch,
+                max_iter,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                const,
+            )
+
+            # compute LRT statistic and p-value
+            lr_stat = 2 * (star_loss - lambda_loss)
+            chi2_dist = Chi2(torch.tensor([1.0], device=device))
+            p_value = 1.0 - chi2_dist.cdf(lr_stat.clamp(min=0))
+
+            result = torch.cat((
+                star_params,
+                lambda_params,
+                star_loss.unsqueeze(-1),
+                lambda_loss.unsqueeze(-1),
+                lr_stat.unsqueeze(-1),
+                p_value.unsqueeze(-1)
+            ), dim=-1)
+
         results_list.append(result.detach().cpu())
 
     # concatenate all batch results
     results = torch.cat(results_list, dim=0)
 
-    # save results    
-    results_df = pd.DataFrame(
-        results.cpu().numpy(),
-        columns=[
+    # save results
+    if model in ("nb", "pois"):
+        columns = [
             "h0_r", "h0_lambda", "h0_mu", "h0_sigma",
             "h1_r", "h1_lambda", "h1_mu", "h1_sigma",
             "h0", "h1", "lr", "p"
         ]
-    )
+    else:
+        columns = [
+            "h0_lambda", "h0_mu", "h0_sigma",
+            "h1_lambda", "h1_mu", "h1_sigma",
+            "h0", "h1", "lr", "p"
+        ]
+
+    results_df = pd.DataFrame(results.cpu().numpy(), columns=columns)
     results_df.insert(0, "gene", genes)
     results_df.insert(0, "ID", range(1, len(results_df) + 1))
 
@@ -152,14 +208,14 @@ if __name__ == "__main__":
     parser.add_argument("--expression", required=True, type=str, help="Path to cell by gene expression data (TSV)")
     parser.add_argument("--library", required=False, type=str, default=None, help="Path to library file (TSV)")
     parser.add_argument("--outfile", required=False, type=str, default="./plasticity.tsv", help="Path to save the results (TSV)")
+    parser.add_argument("--model", required=False, type=str, choices=["bm", "pois", "nb"], default="nb", help="Model type: 'bm' (pure Brownian Motion), 'pois' (OU-Poisson), or 'nb' (OU-Negative Binomial, default)")
     parser.add_argument("--batch_size", required=False, type=int, default=1000, help="Batch size for processing")
     parser.add_argument("--max_iter", required=False, type=int, default=10000, help="Maximum number of optimization iterations")
     parser.add_argument("--learning_rate", required=False, type=float, default=1e-1, help="Learning rate for optimization")
     parser.add_argument("--wandb_flag", required=False, type=str, default=None, help="Whether to log optimization process to Weights & Biases (provide a name for the run if True)")
     parser.add_argument("--window", required=False, type=int, default=200, help="Window size for checking convergence")
     parser.add_argument("--tol", required=False, type=float, default=1e-4, help="Tolerance for convergence")
-    parser.add_argument("--approx", required=False, type=str, default="softplus_MC", help="How to approximate likelihood computation")
-    parser.add_argument("--no_nb", required=False, action="store_false", help="Use poisson instead of negative binomial (default: use negative binomial)")
+    parser.add_argument("--approx", required=False, type=str, default="softplus_MC", help="How to approximate likelihood computation (nb/pois models only)")
     parser.add_argument("--const", required=False, action="store_true", help="Whether to keep BM parameters constant during optimization")
     args = parser.parse_args()
 
@@ -170,11 +226,11 @@ if __name__ == "__main__":
     expression = args.expression.split(",")
     if args.library is not None:
         library = args.library.split(",")
-    else:        
+    else:
         library = [None] * len(tree)
-    
+
     gene_expression_plasticity(
         tree, expression, library, args.outfile, device=device, batch_size=args.batch_size,
-        max_iter=args.max_iter, learning_rate=args.learning_rate, wandb_flag=args.wandb_flag, 
-        window=args.window, tol=args.tol, approx=args.approx, nb=args.no_nb, const=args.const
+        max_iter=args.max_iter, learning_rate=args.learning_rate, wandb_flag=args.wandb_flag,
+        window=args.window, tol=args.tol, model=args.model, approx=args.approx, const=args.const
     )

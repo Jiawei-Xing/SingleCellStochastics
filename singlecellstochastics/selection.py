@@ -74,7 +74,7 @@ def gene_expression_selection(
             for i in range(len(x_tensor_list))
         ]
         log_r_bm = torch.zeros((actual_batch,), dtype=torch.float32, device=device)
-        bm_params_init = torch.ones((actual_batch,), dtype=torch.float32, device=device) * (-2)
+        bm_params_init = torch.ones((actual_batch,), dtype=torch.float32, device=device)
         init_params_bm = q_params_init_bm + [log_r_bm] + [bm_params_init]
 
         h0_params, h0_loss = Lq_optimize_torch_BM(
@@ -97,9 +97,6 @@ def gene_expression_selection(
 
         # Save BM variational parameters for reconstruct_BM
         bm_q_list.append(h0_params[:-2])  # list of (batch, 2*n_cells) per clone
-
-        # Save OU variational parameters for ou_diff H0 init
-        ou_q_list.append(h1_params[:-2])  # list of (batch, 1, 2*n_cells) per clone
 
         # --- H1: OU model ---
         # Prepare OU input tensors with (batch, 1, cells) shape
@@ -145,6 +142,9 @@ def gene_expression_selection(
             const,
         )
         h1_loss = h1_loss.squeeze(1)  # (batch,)
+
+        # Save OU variational parameters for ou_diff H0 init
+        ou_q_list.append(h1_params[:-2])  # list of (batch, 1, 2*n_cells) per clone
 
         # LRT: 2 * (H0_nll - H1_nll)
         lr_stat = 2 * (h0_loss - h1_loss)
@@ -233,6 +233,7 @@ def run_selection_test():
     parser.add_argument("--approx", required=False, type=str, default="softplus_MC", help="Approximation method")
     parser.add_argument("--prior", required=False, type=float, default=1.0, help="L2 prior on log alpha")
     parser.add_argument("--no_kkt", action="store_false", dest="kkt", help="Disable KKT constraint")
+    parser.add_argument("--no_nb", required=False, action="store_false", help="Use poisson instead of negative binomial (default: use negative binomial)")
     parser.add_argument("--const", required=False, action="store_true", help="Include constant terms in likelihood")
     args = parser.parse_args()
 
@@ -247,13 +248,11 @@ def run_selection_test():
     else:
         library = [None] * len(tree)
 
-    nb = (args.model == "nb")
-
     gene_expression_selection(
         tree, expression, regime, library, args.outfile, device=device,
         batch_size=args.batch_size, max_iter=args.max_iter, learning_rate=args.learning_rate,
         wandb_flag=args.wandb_flag, window=args.window, tol=args.tol,
-        approx=args.approx, nb=nb, rnull=args.null, prior=args.prior,
+        approx=args.approx, nb=args.no_nb, rnull=args.null, prior=args.prior,
         kkt=args.kkt, const=args.const
     )
 
