@@ -7,36 +7,41 @@ import wandb
 from statsmodels.stats.multitest import multipletests
 import os
 
-from .preprocess import process_data_BM, process_data_OU
-from .optimize import Lq_optimize_torch_BM, Lq_optimize_torch_OU
+from .preprocess import process_data_OU, process_data_BM
+from .optimize import Lq_optimize_torch_OU, Lq_optimize_torch_BM
 
 
 def gene_expression_selection(
     tree_files, gene_files, regime_files, library_files, outfile, device, batch_size,
-    max_iter, learning_rate, wandb_flag, window, tol, approx, nb, rnull, prior, kkt, const
+    max_iter, learning_rate, wandb_flag, window, tol, approx, nb, rnull, kkt, const,
+    null_model="bm"
 ):
     """
-    Selection test: BM (H0, no selection) vs OU (H1, selection) LRT.
+    Selection test: BM or fixed-alpha OU (H0, neutral) vs OU (H1, selection).
     Tests whether gene expression evolves under stabilizing selection (OU)
     or neutrally (BM) along the lineage tree.
+
+    null_model: "bm" uses proper BM code path for H0 (default),
+                "fixed_ou" uses OU with alpha fixed at ~0.
     """
     if wandb_flag:
         wandb.login()
         wandb.init(project="SingleCellStochastics", name=wandb_flag)
 
-    # Process data for BM (H0)
-    print("Preprocessing data (BM)")
-    (
-        tree_list, cells_list, df_list, share_list_torch, library_list
-    ) = process_data_BM(tree_files, gene_files, library_files, device)
-
-    # Process data for OU (H1)
+    # Process data for OU (H1, and H0 if fixed_ou)
     print("Preprocessing data (OU)")
     (
-        _, _, _, diverge_list, share_list, epochs_list, beta_list,
+        tree_list, cells_list, df_list, diverge_list, share_list, epochs_list, beta_list,
         diverge_list_torch, share_list_torch_ou, epochs_list_torch,
-        beta_list_torch, regime_list, _
+        beta_list_torch, regime_list, library_list
     ) = process_data_OU(tree_files, gene_files, regime_files, library_files, rnull, device)
+
+    # Process data for BM (H0) if using BM null
+    if null_model == "bm":
+        print("Preprocessing data (BM)")
+        (
+            _, _, _, share_list_torch_bm, _
+        ) = process_data_BM(tree_files, gene_files, library_files, device)
 
     library_list_tensor = [
         torch.tensor(lib.values.squeeze(), dtype=torch.float32, device=device) for lib in library_list
@@ -52,7 +57,7 @@ def gene_expression_selection(
     bm_q_list = []
     ou_q_list = []
     genes = []
-    print("Running selection test (BM vs OU)")
+    print(f"Running selection test ({null_model} null vs OU)")
     for batch_start in range(0, len(df_list[0].columns), batch_size):
         batch_end = min(batch_start + batch_size, len(df_list[0].columns))
         gene_names = df_list[0].columns[batch_start:batch_end]
@@ -64,51 +69,107 @@ def gene_expression_selection(
             for x in x_list
         ]
 
-        # --- H0: BM model ---
-        s_init_tensor = [
-            x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
-            for x in x_tensor_list
-        ]
-        q_params_init_bm = [
-            torch.cat((x_tensor_list[i], s_init_tensor[i]), dim=-1)
-            for i in range(len(x_tensor_list))
-        ]
-        log_r_bm = torch.zeros((actual_batch,), dtype=torch.float32, device=device)
-        bm_params_init = torch.ones((actual_batch,), dtype=torch.float32, device=device)
-        init_params_bm = q_params_init_bm + [log_r_bm] + [bm_params_init]
+        if null_model == "bm":
+            # --- H0: BM (neutral) ---
+            s_init_bm = [
+                x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
+                for x in x_tensor_list
+            ]
+            q_params_bm = [
+                torch.cat((x_tensor_list[i], s_init_bm[i]), dim=-1)
+                for i in range(len(x_tensor_list))
+            ]
+            log_r_bm = torch.zeros((actual_batch,), dtype=torch.float32, device=device)
+            bm_lambda_init = torch.ones((actual_batch,), dtype=torch.float32, device=device)
+            init_params_h0 = q_params_bm + [log_r_bm] + [bm_lambda_init]
 
-        h0_params, h0_loss = Lq_optimize_torch_BM(
-            init_params_bm,
-            1,  # mode=1: use original tree
-            x_tensor_list,
-            gene_names,
-            share_list_torch,
-            max_iter,
-            learning_rate,
-            device,
-            wandb_flag,
-            window,
-            tol,
-            approx,
-            nb,
-            library_list_tensor,
-            const,
-        )
+            h0_params, h0_loss = Lq_optimize_torch_BM(
+                init_params_h0,
+                1,  # mode=1: original tree (lambda=1)
+                x_tensor_list,
+                gene_names,
+                share_list_torch_bm,
+                max_iter,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                approx,
+                nb,
+                library_list_tensor,
+                const,
+            )
 
-        # Save BM variational parameters for reconstruct_BM
-        bm_q_list.append(h0_params[:-2])  # list of (batch, 2*n_cells) per clone
+            # Save H0 (BM) variational parameters
+            bm_q_list.append(h0_params[:-2])  # list of (batch, 2*n_cells) per clone
 
-        # --- H1: OU model ---
-        # Prepare OU input tensors with (batch, 1, cells) shape
-        x_tensor_ou = [
-            x.unsqueeze(1) for x in x_tensor_list
-        ]  # list of (batch, 1, cells)
+            # H0 result columns: r, mu, sigma
+            h0_r = h0_params[-2].exp().unsqueeze(-1)  # (batch, 1)
+            h0_bm = h0_params[-1]  # (batch, 3): lambda, mu, sigma
+            h0_result = torch.cat((h0_r, h0_bm[:, 1:]), dim=-1)  # (batch, 3)
 
+        else:
+            # --- H0: OU with alpha fixed at ~0 (fixed_ou) ---
+            x_tensor_ou_h0 = [x.unsqueeze(1) for x in x_tensor_list]
+            s_init_h0 = [
+                x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
+                for x in x_tensor_ou_h0
+            ]
+            q_params_h0 = [
+                torch.cat((x_tensor_ou_h0[i], s_init_h0[i]), dim=-1)
+                for i in range(len(x_tensor_ou_h0))
+            ]
+            log_r_h0 = torch.zeros((actual_batch, 1), dtype=torch.float32, device=device)
+            ou_params_h0 = torch.ones(
+                (actual_batch, 1, n_regimes + 2), dtype=torch.float32, device=device
+            )
+            ou_params_h0[:, :, 0] = -20.0  # alpha ≈ 0
+            init_params_h0 = q_params_h0 + [log_r_h0] + [ou_params_h0]
+
+            h0_params, h0_loss = Lq_optimize_torch_OU(
+                init_params_h0,
+                1,
+                x_tensor_ou_h0,
+                gene_names,
+                diverge_list_torch,
+                share_list_torch_ou,
+                epochs_list_torch,
+                beta_list_torch,
+                max_iter,
+                learning_rate,
+                device,
+                wandb_flag,
+                window,
+                tol,
+                approx,
+                None,
+                0,
+                kkt,
+                nb,
+                library_list_tensor,
+                const,
+                fix_alpha=True,
+            )
+            h0_loss = h0_loss.squeeze(1)
+
+            # Save H0 variational parameters
+            bm_q_list.append(h0_params[:-2])
+
+            # H0 result columns: r, alpha(~0), sigma, theta
+            h0_result = torch.cat(
+                (h0_params[-2].exp().unsqueeze(-1),
+                h0_params[-1][..., :1].exp(),
+                h0_params[-1][..., 1:3]), dim=-1
+            ).squeeze(1)
+
+        # --- H1: OU with alpha free ---
+        x_tensor_ou = [x.unsqueeze(1) for x in x_tensor_list]
         s_init_ou = [
             x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
             for x in x_tensor_ou
         ]
-        q_params_init_ou = [
+        q_params_ou = [
             torch.cat((x_tensor_ou[i], s_init_ou[i]), dim=-1)
             for i in range(len(x_tensor_ou))
         ]
@@ -116,11 +177,11 @@ def gene_expression_selection(
         ou_params_init = torch.ones(
             (actual_batch, 1, n_regimes + 2), dtype=torch.float32, device=device
         )
-        init_params_ou = q_params_init_ou + [log_r_ou] + [ou_params_init]
+        init_params_h1 = q_params_ou + [log_r_ou] + [ou_params_init]
 
         h1_params, h1_loss = Lq_optimize_torch_OU(
-            init_params_ou,
-            1,  # mode=1: H0 (shared OU params across regimes)
+            init_params_h1,
+            1,
             x_tensor_ou,
             gene_names,
             diverge_list_torch,
@@ -134,38 +195,34 @@ def gene_expression_selection(
             window,
             tol,
             approx,
-            None,  # em
-            prior,
+            None,
+            0,
             kkt,
             nb,
             library_list_tensor,
             const,
         )
-        h1_loss = h1_loss.squeeze(1)  # (batch,)
+        h1_loss = h1_loss.squeeze(1)
 
-        # Save OU variational parameters for ou_diff H0 init
-        ou_q_list.append(h1_params[:-2])  # list of (batch, 1, 2*n_cells) per clone
+        # Save OU variational parameters
+        ou_q_list.append(h1_params[:-2])
 
         # LRT: 2 * (H0_nll - H1_nll)
         lr_stat = 2 * (h0_loss - h1_loss)
-        # OU has 1 extra param vs BM (alpha; theta replaces mu), df=1
         chi2_dist = Chi2(torch.tensor([1.0], device=device))
         lr_stat_safe = torch.nan_to_num(lr_stat, nan=0.0).clamp(min=0)
         p_value = 1.0 - chi2_dist.cdf(lr_stat_safe)
 
-        # Collect results
-        # BM params: log_r, mu, sigma
-        # OU params: log_r, alpha, sigma, theta0, ...
-        bm_r = h0_params[-2].exp()
-        bm_model = h0_params[-1]  # (batch, 3): lambda, mu, sigma
-        ou_r = h1_params[-2].exp().squeeze(1)
-        ou_model = h1_params[-1].squeeze(1)  # (batch, n_regimes+2): alpha, sigma, theta0, ...
+        # H1 result columns: r, alpha, sigma, theta
+        h1_ou_result = torch.cat(
+            (h1_params[-2].exp().unsqueeze(-1),
+            h1_params[-1][..., :1].exp(),
+            h1_params[-1][..., 1:3]), dim=-1
+        ).squeeze(1)
 
         result = torch.cat((
-            bm_r.unsqueeze(-1),
-            bm_model,
-            ou_r.unsqueeze(-1),
-            ou_model,
+            h0_result,
+            h1_ou_result,
             h0_loss.unsqueeze(-1),
             h1_loss.unsqueeze(-1),
             lr_stat.unsqueeze(-1),
@@ -176,10 +233,13 @@ def gene_expression_selection(
     results = torch.cat(results_list, dim=0)
 
     # Build column names
-    bm_cols = ["h0_r", "h0_lambda", "h0_mu", "h0_sigma"]
-    ou_cols = ["h1_r", "h1_alpha", "h1_sigma"] + [f"h1_theta{i}" for i in range(n_regimes)]
+    if null_model == "bm":
+        h0_cols = ["h0_r", "h0_mu", "h0_sigma"]
+    else:
+        h0_cols = ["h0_r", "h0_alpha", "h0_sigma", "h0_theta"]
+    h1_cols = ["h1_r", "h1_alpha", "h1_sigma", "h1_theta"]
     stat_cols = ["h0", "h1", "lr", "p"]
-    columns = bm_cols + ou_cols + stat_cols
+    columns = h0_cols + h1_cols + stat_cols
 
     results_df = pd.DataFrame(results.cpu().numpy(), columns=columns)
     results_df.insert(0, "gene", genes)
@@ -191,21 +251,23 @@ def gene_expression_selection(
     os.makedirs(os.path.dirname(outfile), exist_ok=True)
     results_df.to_csv(outfile, sep="\t", index=False)
 
-    # Save BM variational parameters (q_mean, q_std) for reconstruct_BM
+    # Save H0 variational parameters (q_mean, q_std)
     bm_q_params = [torch.cat(q_batch, dim=0) for q_batch in zip(*bm_q_list)]
     outdir = os.path.dirname(outfile)
     for i in range(len(bm_q_params)):
+        q_data = bm_q_params[i]
+        if null_model == "fixed_ou":
+            q_data = q_data.squeeze(1)
         df = pd.DataFrame(
-            bm_q_params[i].detach().cpu().numpy(),
+            q_data.detach().cpu().numpy(),
             index=genes,
             columns=cells_list[i] * 2
         )
         df.to_csv(os.path.join(outdir, f"bm_q_params_{i}.tsv"), sep="\t")
 
-    # Save OU variational parameters (q_mean, q_std) for ou_diff H0 init
+    # Save OU variational parameters (q_mean, q_std)
     ou_q_params = [torch.cat(q_batch, dim=0) for q_batch in zip(*ou_q_list)]
     for i in range(len(ou_q_params)):
-        # OU q params have shape (batch, 1, 2*n_cells); squeeze the N_sim=1 dim
         df = pd.DataFrame(
             ou_q_params[i].squeeze(1).detach().cpu().numpy(),
             index=genes,
@@ -222,8 +284,6 @@ def run_selection_test():
     parser.add_argument("--null", required=True, type=str, help="Regime for null hypothesis")
     parser.add_argument("--library", required=False, type=str, default=None, help="Path to library file (TSV)")
     parser.add_argument("--outfile", required=False, type=str, default="./selection.tsv", help="Path to save the results (TSV)")
-    parser.add_argument("--model", required=False, type=str, default="nb", choices=["pois", "nb"],
-                        help="Observation model: pois (Poisson) or nb (Negative Binomial, default)")
     parser.add_argument("--batch_size", required=False, type=int, default=1000, help="Batch size for processing")
     parser.add_argument("--max_iter", required=False, type=int, default=10000, help="Maximum number of optimization iterations")
     parser.add_argument("--learning_rate", required=False, type=float, default=1e-1, help="Learning rate for optimization")
@@ -231,10 +291,11 @@ def run_selection_test():
     parser.add_argument("--window", required=False, type=int, default=200, help="Window size for checking convergence")
     parser.add_argument("--tol", required=False, type=float, default=1e-4, help="Tolerance for convergence")
     parser.add_argument("--approx", required=False, type=str, default="softplus_MC", help="Approximation method")
-    parser.add_argument("--prior", required=False, type=float, default=1.0, help="L2 prior on log alpha")
     parser.add_argument("--no_kkt", action="store_false", dest="kkt", help="Disable KKT constraint")
     parser.add_argument("--no_nb", required=False, action="store_false", help="Use poisson instead of negative binomial (default: use negative binomial)")
     parser.add_argument("--const", required=False, action="store_true", help="Include constant terms in likelihood")
+    parser.add_argument("--null_model", required=False, type=str, default="bm", choices=["bm", "fixed_ou"],
+                        help="Null model: 'bm' (proper BM, default) or 'fixed_ou' (OU with alpha fixed at ~0)")
     args = parser.parse_args()
 
     torch.manual_seed(42)
@@ -252,8 +313,8 @@ def run_selection_test():
         tree, expression, regime, library, args.outfile, device=device,
         batch_size=args.batch_size, max_iter=args.max_iter, learning_rate=args.learning_rate,
         wandb_flag=args.wandb_flag, window=args.window, tol=args.tol,
-        approx=args.approx, nb=args.no_nb, rnull=args.null, prior=args.prior,
-        kkt=args.kkt, const=args.const
+        approx=args.approx, nb=args.no_nb, rnull=args.null, kkt=args.kkt, 
+        const=args.const, null_model=args.null_model
     )
 
 

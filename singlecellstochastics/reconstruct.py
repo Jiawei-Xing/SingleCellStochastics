@@ -310,7 +310,7 @@ def plot_circular_tree(root, outer, output_path):
 # CLI Execution
 # ==========================================
 
-if __name__ == "__main__":
+def run_reconst():
     parser = argparse.ArgumentParser(description="1D Ancestral State Reconstruction via Belief Propagation")
     parser.add_argument("--tree", required=True, help="Path to Newick tree file (.nwk)")
     parser.add_argument("--expression", required=True, help="Path to leaf expression data (TSV)")
@@ -356,3 +356,7 @@ if __name__ == "__main__":
 
     print("Generating plot...")
     plot_circular_tree(root, args.no_outer, args.out_fig)
+
+
+if __name__ == "__main__":
+    run_reconst()

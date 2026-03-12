@@ -202,7 +202,7 @@ def gene_expression_plasticity(
     results_df.to_csv(outfile, sep="\t", index=False)
 
 
-if __name__ == "__main__":
+def run_plasticity_test():
     parser = argparse.ArgumentParser(description="Testing gene expression correlation with tree by Pagel's lambda and LRT")
     parser.add_argument("--tree", required=True, type=str, help="Path to Newick tree file (.nwk)")
     parser.add_argument("--expression", required=True, type=str, help="Path to cell by gene expression data (TSV)")
@@ -234,3 +234,7 @@ if __name__ == "__main__":
         max_iter=args.max_iter, learning_rate=args.learning_rate, wandb_flag=args.wandb_flag,
         window=args.window, tol=args.tol, model=args.model, approx=args.approx, const=args.const
     )
+
+
+if __name__ == "__main__":
+    run_plasticity_test()

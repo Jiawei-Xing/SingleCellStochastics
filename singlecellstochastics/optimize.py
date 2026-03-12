@@ -279,12 +279,13 @@ def Lq_optimize_torch_OU(
     window,
     tol,
     approx,
-    em, 
+    em,
     prior,
     kkt,
     nb,
     library_list_tensor,
-    const
+    const,
+    fix_alpha=False,
 ):
     """
     Optimize ELBO with PyTorch Adam.
@@ -329,13 +330,16 @@ def Lq_optimize_torch_OU(
             params_tensor[i] = params_tensor[i].requires_grad_(True)
     elif em == "m":
         # M-step: optimize OU parameters with fixed ELBO
-        params_tensor[-2] = params_tensor[-2].requires_grad_(True) # alpha
+        if not fix_alpha:
+            params_tensor[-2] = params_tensor[-2].requires_grad_(True) # alpha
         if not kkt:
             params_tensor[-1] = params_tensor[-1].requires_grad_(True) # other OU
     else:
         # optimize both ELBO and OU parameters
         for i in range(len(params_tensor)-1):
             params_tensor[i] = params_tensor[i].requires_grad_(True)
+        if fix_alpha:
+            params_tensor[-2] = params_tensor[-2].requires_grad_(False) # freeze alpha
         if not kkt:
             params_tensor[-1] = params_tensor[-1].requires_grad_(True) # other OU
     
@@ -395,7 +399,8 @@ def Lq_optimize_torch_OU(
                     kkt,
                     nb,
                     lib,
-                    const
+                    const,
+                    fix_alpha=fix_alpha,
                 )
             else:
                 loss = Lq_neg_log_lik_torch(
@@ -414,7 +419,8 @@ def Lq_optimize_torch_OU(
                     kkt,
                     nb,
                     lib,
-                    const
+                    const,
+                    fix_alpha=fix_alpha,
                 )
             loss_matrix[active_batch, :, i] = loss
 
@@ -445,8 +451,9 @@ def Lq_optimize_torch_OU(
                     params_tensor[-1][active_batch, :, :] = other_params
 
             for i, param in enumerate(params_tensor):
+                current_mask = mask.unsqueeze(-1) if param.dim() > 2 else mask
                 best_params[i] = torch.where(
-                    mask.unsqueeze(-1),  # (B,S,1)
+                    current_mask,  # (B,S,1) or (B,S)
                     param.clone().detach(), # (B,S,all_param_dim)
                     best_params[i]
                 ) # update best Lq params
@@ -456,12 +463,12 @@ def Lq_optimize_torch_OU(
                 if em is None:
                     wandb.log({
                             "iter": n,
-                            f"{gene_names[0]}_h{mode-1}_elbo_loss": best_loss[0, 0], 
+                            f"{gene_names[0]}_ou{mode}_elbo_loss": best_loss[0, 0], 
                     })
                 else:
                     wandb.log({
                             "iter": n,
-                            f"{gene_names[0]}_h{mode-1}_{em}_loss": best_loss[0, 0], 
+                            f"{gene_names[0]}_ou{mode}_{em}_loss": best_loss[0, 0], 
                     })
         
         # Store loss history
@@ -496,7 +503,7 @@ def Lq_optimize_torch_OU(
                 params_tensor[-3].clamp_(-5, 5)
 
     # warning if not all genes have converged
-    print(f"\nChecking convergence for h{mode-1} ELBO...")
+    print(f"\nChecking convergence for ou{mode} ELBO...")
     if not converged_mask.all() and 'relative_decrease' in locals():
         print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
@@ -684,7 +691,7 @@ def Lq_optimize_torch_BM(
                 params[-2].clamp_(-5, 5)
 
     # warning if not all genes have converged
-    print(f"\nChecking convergence for h{mode-1} ELBO...")
+    print(f"\nChecking convergence for bm{mode} ELBO...")
     if not converged_mask.all() and 'relative_decrease' in locals():
         print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
@@ -836,7 +843,7 @@ def optimize_torch_BM(
         optimizer.step()
 
     # warning if not all genes have converged
-    print(f"\nChecking convergence for h{mode-1} ELBO...")
+    print(f"\nChecking convergence for bm{mode} ELBO...")
     if not converged_mask.all() and 'relative_decrease' in locals():
         print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")

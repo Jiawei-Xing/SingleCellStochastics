@@ -22,6 +22,7 @@ def Lq_neg_log_lik_torch(
     nb,
     lib,
     const,
+    fix_alpha=False,
 ):
     """
     ELBO for approximating model evidence.
@@ -117,7 +118,7 @@ def Lq_neg_log_lik_torch(
         term3 += -n_cells/2 * (1 + torch.log(2 * torch.tensor(torch.pi, device=device)))
 
     # optional: regulation for OU alpha
-    if mode == 0:  # no regularization for BM
+    if mode == 0 or fix_alpha:  # no regularization for BM or fixed alpha
         reg = 0
     else:  # L2 regularization for OU alpha
         reg = 0.5 * prior *  (ou_params[0][:, :, 0] ** 2)  # (batch_size, N_sim)
