@@ -1,0 +1,357 @@
+"""
+3x3 scenario panels for latent process + softplus + NB/Poisson observation.
+
+Layout:
+    Row 1: A, B, C
+    Row 2: D, F, G
+    Row 3: H, I, J
+
+Design:
+- No letter labels
+- Left: latent trajectories
+- Right: horizontal histogram of observed counts after softplus + NB/Poisson
+- Display y-range fixed to 0–10
+- Trajectories may extend outside the axes range (clip_on=False)
+- A, H, I, J share the same latent simulation
+- H/I/J use A's trajectory color, but keep their own histogram colors
+- Only C uses a darker color for metastatic trajectories / histogram
+
+Usage:
+    python plot_schematic.py
+"""
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgb
+
+# ── Style ────────────────────────────────────────────────────────────
+plt.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["DejaVu Sans", "Arial", "Helvetica"],
+    "font.size": 7,
+    "axes.linewidth": 0.5,
+    "xtick.major.width": 0.5,
+    "ytick.major.width": 0.5,
+    "xtick.major.size": 2,
+    "ytick.major.size": 2,
+    "lines.linewidth": 0.7,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
+
+np.random.seed(42)
+
+# ── Scenario labels and colors ───────────────────────────────────────
+SCENARIO_LABELS = {
+    "A": ("Baseline", True),
+    "B": ("High θ", True),
+    "C": ("Different θ", True),
+    "D": ("High σ", True),
+    "E": ("No α (BM)", True), 
+    "F": ("Weak α", True),
+    "G": ("Strong α", True),
+    "H": ("Strong r⁻¹", True),
+    "I": ("Weak r⁻¹", True),
+    "J": ("No r (Poisson)", True),
+}
+
+COLORS = {
+    "A": "#1f77b4",
+    "B": "#ff7f0e",
+    "C": "#2ca02c",
+    "D": "#d62728",
+    "E": "#7f7f7f",
+    "F": "#9467bd",
+    "G": "#8c564b",
+    "H": "#e377c2",
+    "I": "#17becf",
+    "J": "#bcbd22",
+}
+
+# label, root, sigma, alpha, theta_pri, theta_met, disp, process
+SCENARIO_PARAMS = {
+    "A": ("A", 1.0, 3.0, 1.0, 1.0, 1.0, 5.0, "OU"),
+    "B": ("B", 3.0, 3.0, 1.0, 3.0, 3.0, 5.0, "OU"),
+    "C": ("C", 1.0, 3.0, 1.0, 1.0, 3.0, 5.0, "OU"),
+    "D": ("D", 1.0, 5.0, 1.0, 1.0, 1.0, 5.0, "OU"),
+    "E": ("E", 1.0, 3.0, None, 1.0, None, 5.0, "BM"),
+    "F": ("F", 1.0, 3.0, 0.3, 1.0, 1.0, 5.0, "OU"),
+    "G": ("G", 1.0, 3.0, 5.0, 1.0, 1.0, 5.0, "OU"),
+    "H": ("H", 1.0, 3.0, 1.0, 1.0, 1.0, 0.5, "OU"),
+    "I": ("I", 1.0, 3.0, 1.0, 1.0, 1.0, 50.0, "OU"),
+    "J": ("J", 1.0, 3.0, 1.0, 1.0, 1.0, 0.0, "OU"),
+}
+
+DISPLAY_YMIN = 0.0
+DISPLAY_YMAX = 10.0
+
+SHARED_LATENT_GROUP = {"A", "H", "I", "J"}
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+def darken(hex_color, factor=0.58):
+    r, g, b = to_rgb(hex_color)
+    return (r * factor, g * factor, b * factor)
+
+
+def softplus(x):
+    x = np.asarray(x)
+    return np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0)
+
+
+def sample_observation(mean, dispersion):
+    mean = np.maximum(mean, 1e-8)
+    if dispersion == 0:
+        return np.random.poisson(mean)
+    n = dispersion
+    p = n / (n + mean)
+    return np.random.negative_binomial(n, p)
+
+
+def simulate_group_paths(process, root, sigma, alpha, theta, n_paths=35, n_steps=70, T=1.0):
+    dt = T / n_steps
+    t = np.linspace(0, T, n_steps + 1)
+    paths = np.zeros((n_paths, n_steps + 1))
+    paths[:, 0] = root
+
+    for i in range(n_steps):
+        noise = sigma * np.sqrt(dt) * np.random.randn(n_paths)
+        if process == "BM":
+            drift = 0.0
+        elif process == "OU":
+            drift = alpha * (theta - paths[:, i]) * dt
+        else:
+            raise ValueError(f"Unknown process: {process}")
+        paths[:, i + 1] = paths[:, i] + drift + noise
+
+    return t, paths
+
+
+def counts_to_display_y(counts, y_max=DISPLAY_YMAX, quantile=0.98):
+    counts = np.asarray(counts, dtype=float)
+    upper = max(np.quantile(counts, quantile), 1.0)
+    return (counts / upper) * y_max
+
+
+def build_latent_cache(n_paths_per_group=35, n_steps=70):
+    cache = {}
+
+    t_pri, pri_paths = simulate_group_paths(
+        process="OU", root=1.0, sigma=3.0, alpha=1.0, theta=1.0,
+        n_paths=n_paths_per_group, n_steps=n_steps
+    )
+    _, met_paths = simulate_group_paths(
+        process="OU", root=1.0, sigma=3.0, alpha=1.0, theta=1.0,
+        n_paths=n_paths_per_group, n_steps=n_steps
+    )
+    cache["shared_AHIJ"] = (t_pri, pri_paths, met_paths)
+    return cache
+
+
+def plot_panel(fig, outer_spec, label, root, sigma, alpha, theta_pri, theta_met, disp, process,
+               latent_cache, count_scale=2.5, n_paths_per_group=35, n_steps=70):
+    panel_text, _ = SCENARIO_LABELS[label]
+
+    # trajectory color vs histogram color
+    hist_base_color = COLORS[label]
+    traj_base_color = COLORS["A"] if label in {"H", "I", "J"} else COLORS[label]
+
+    subgs = outer_spec.subgridspec(1, 2, width_ratios=[1.15, 0.30], wspace=0.035)
+    ax_traj = fig.add_subplot(subgs[0, 0])
+    ax_hist = fig.add_subplot(subgs[0, 1], sharey=ax_traj)
+
+    # latent simulation
+    if label in SHARED_LATENT_GROUP:
+        t, pri_paths, met_paths = latent_cache["shared_AHIJ"]
+    else:
+        t, pri_paths = simulate_group_paths(
+            process=process, root=root, sigma=sigma, alpha=alpha, theta=theta_pri,
+            n_paths=n_paths_per_group, n_steps=n_steps
+        )
+        _, met_paths = simulate_group_paths(
+            process=process, root=root, sigma=sigma, alpha=alpha, theta=theta_met,
+            n_paths=n_paths_per_group, n_steps=n_steps
+        )
+
+    # only C distinguishes met
+    pri_traj_color = traj_base_color
+    met_traj_color = darken(traj_base_color) if label == "C" else traj_base_color
+
+    # trajectories
+    common_alpha = 0.28
+    common_lw = 0.85
+
+    for i in range(pri_paths.shape[0]):
+        ax_traj.plot(
+            t, pri_paths[i],
+            color=pri_traj_color,
+            alpha=common_alpha,
+            lw=common_lw,
+            clip_on=False,
+            zorder=2
+        )
+
+    for i in range(met_paths.shape[0]):
+        ax_traj.plot(
+            t, met_paths[i],
+            color=met_traj_color,
+            alpha=0.42 if label == "C" else common_alpha,
+            lw=0.95 if label == "C" else common_lw,
+            clip_on=False,
+            zorder=3 if label == "C" else 2
+        )
+
+    # observations
+    xT_pri = pri_paths[:, -1]
+    xT_met = met_paths[:, -1]
+
+    mean_pri = count_scale * softplus(xT_pri)
+    mean_met = count_scale * softplus(xT_met)
+
+    obs_pri = sample_observation(mean_pri, dispersion=disp)
+    obs_met = sample_observation(mean_met, dispersion=disp)
+
+    y_obs_pri = counts_to_display_y(obs_pri)
+    y_obs_met = counts_to_display_y(obs_met)
+
+    bin_width = 0.5
+    bins = np.arange(DISPLAY_YMIN, DISPLAY_YMAX + bin_width, bin_width)
+    
+    # histogram: only C distinguishes met
+    if label == "C":
+        ax_hist.hist(
+            y_obs_pri,
+            bins=bins,
+            orientation="horizontal",
+            color=hist_base_color,
+            alpha=0.55,
+            edgecolor="none",
+            zorder=1
+        )
+        ax_hist.hist(
+            y_obs_met,
+            bins=bins,
+            orientation="horizontal",
+            color=darken(hist_base_color),
+            alpha=0.95,
+            edgecolor="none",
+            zorder=2
+        )
+    else:
+        ax_hist.hist(
+            np.concatenate([y_obs_pri, y_obs_met]),
+            bins=bins,
+            orientation="horizontal",
+            color=hist_base_color,
+            alpha=0.9,
+            edgecolor="none",
+            zorder=2
+        )
+
+    # style
+    ax_traj.spines["top"].set_visible(False)
+    ax_traj.spines["right"].set_visible(False)
+    ax_hist.spines["top"].set_visible(False)
+    ax_hist.spines["right"].set_visible(False)
+
+    ax_traj.set_xlim(0, 1.0)
+    ax_traj.set_ylim(DISPLAY_YMIN, DISPLAY_YMAX)
+    ax_hist.set_ylim(DISPLAY_YMIN, DISPLAY_YMAX)
+
+    ax_traj.set_xticks([])
+    ax_traj.set_yticks([])
+    ax_hist.set_xticks([])
+    ax_hist.set_yticks([])
+    ax_hist.grid(False)
+
+    # no letter labels; keep scenario text only
+    ax_traj.text(
+        0.02, 0.96, panel_text,
+        transform=ax_traj.transAxes,
+        ha="left", va="top",
+        fontsize=7.5, color="black"
+    )
+
+    return ax_traj, ax_hist
+
+
+# remove BM
+def main():
+    latent_cache = build_latent_cache(n_paths_per_group=35, n_steps=70)
+
+    layout = [
+        ["A", "B", "C"],
+        ["D", "F", "G"],
+        ["H", "I", "J"],
+    ]
+
+    fig = plt.figure(figsize=(6, 6), dpi=300)
+    outer = fig.add_gridspec(
+        3, 3,
+        left=0.035, right=0.995, top=0.992, bottom=0.05,
+        hspace=0.8, wspace=0.16
+    )
+
+    for i in range(3):
+        for j in range(3):
+            label = layout[i][j]
+            plot_panel(
+                fig,
+                outer[i, j],
+                *SCENARIO_PARAMS[label],
+                latent_cache=latent_cache
+            )
+
+    for fmt in ["png"]:
+        out = f"simulation_scenarios.{fmt}"
+        fig.savefig(out, dpi=300, bbox_inches="tight")
+        print(f"Saved {out}")
+
+    plt.close()
+
+
+# all
+def main():
+    latent_cache = build_latent_cache(n_paths_per_group=35, n_steps=70)
+
+    layout = [
+        ["A", None, "B", "C"],
+        ["D", "E", "F", "G"],
+        ["H", "I", "J", None],
+    ]
+
+    fig = plt.figure(figsize=(8.0, 6.0), dpi=300)
+
+    outer = fig.add_gridspec(
+        3, 4,
+        left=0.035, right=0.995, top=0.992, bottom=0.035,
+        hspace=0.8, wspace=0.16
+    )
+
+    for i in range(3):
+        for j in range(4):
+            label = layout[i][j]
+
+            if label is None:
+                ax = fig.add_subplot(outer[i, j])
+                ax.axis("off")
+                continue
+
+            plot_panel(
+                fig,
+                outer[i, j],
+                *SCENARIO_PARAMS[label],
+                latent_cache=latent_cache
+            )
+
+    for fmt in ["png"]:
+        out = f"scenario_panels_all.{fmt}"
+        fig.savefig(out, dpi=300, bbox_inches="tight")
+        print(f"Saved {out}")
+
+    plt.close()
+
+
+if __name__ == "__main__":
+    main()

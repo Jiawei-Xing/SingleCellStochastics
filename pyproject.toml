@@ -33,7 +33,10 @@ license = {text = "MIT"}
 "Homepage" = "https://github.com/Jiawei-Xing/SingleCellStochastics"
 
 [project.scripts]
-run-ou-poisson = "singlecellstochastics.oup:run_ou_poisson"
+run-plasticity-test = "singlecellstochastics.plasticity:run_plasticity_test"
+run-selection-test = "singlecellstochastics.selection:run_selection_test"
+run-diff-test = "singlecellstochastics.ou_diff:run_diff_test"
+run-reconst = "singlecellstochastics.reconstruct:run_reconst"
 run-stochas-sim = "singlecellstochastics.stochas_sim:run_stochas_sim"
 run-dea = "singlecellstochastics.dea:run_dea"
 compare-results = "singlecellstochastics.results:compare_results"

@@ -15,3 +15,5 @@ other
 *.sh
 real_data
 infer_params
+CLAUDE.md
+.*

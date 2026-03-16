@@ -51,7 +51,7 @@ def parse_args():
     parser.add_argument("--grid", type=int, default=0, help="Grid search range for alpha (default: 0)")
     parser.add_argument("--resume", action="store_true", help="Resume from log file")
     parser.add_argument("--wandb", type=str, default=None, help="Wandb run name")
-    parser.add_argument("--selection", type=str, default=None, help="Selection test TSV to reuse OU H1 as diff test H0 (skip H0 optimization)")
+    #parser.add_argument("--selection", type=str, default=None, help="Selection test TSV to reuse OU H1 as diff test H0 (skip H0 optimization)")
 
     # Empirical null / importance sampling
     parser.add_argument("--sim_all", type=int, default=None, help="Simulations for shared empirical null")
@@ -133,6 +133,7 @@ def run_diff_test():
 
     # Load selection test results for H0 reuse
     sel_df = None
+    '''
     sel_q_params = None
     if args.selection:
         sel_df = pd.read_csv(args.selection, sep="\t")
@@ -150,6 +151,7 @@ def run_diff_test():
                 sel_q_params = None
                 print(f"Warning: OU q params file {q_path} not found, using fresh init")
                 break
+    '''
 
     # Process gene batches
     gene_idx_start = max(results.keys()) + 1 if results else 0
@@ -173,6 +175,7 @@ def run_diff_test():
         # Expression data: list of (batch_size, 1, n_cells)
         x_original = [np.expand_dims(df[batch_genes].values.T, axis=1) for df in df_list]
 
+        '''
         # Build h0_override from selection TSV if provided
         h0_override = None
         if sel_df is not None:
@@ -194,11 +197,11 @@ def run_diff_test():
                     sel_q_params[i].loc[batch_gene_names].values[:, np.newaxis, :]
                     for i in range(len(sel_q_params))
                 ]  # list of (batch, 1, 2*n_cells)
+        '''
 
         # LRT (diff test)
         h0_params, h0_loss, h1_params, h1_loss, h0_q, h1_q = likelihood_ratio_test(
-            x_original, gene_names=batch_gene_names, batch_start=batch_start,
-            h0_override=h0_override, **lrt_kwargs
+            x_original, gene_names=batch_gene_names, batch_start=batch_start, **lrt_kwargs
         )
 
         # Save results

@@ -371,8 +371,8 @@ def likelihood_ratio_test(
         )
 
     # combine logr and ou params
-    h0_model_params = torch.cat((h0_params[-2], h0_params[-1]), dim=-1)
-    h1_model_params = torch.cat((h1_params[-2], h1_params[-1]), dim=-1)
+    h0_model_params = torch.cat((h0_params[-2].unsqueeze(-1), h0_params[-1]), dim=-1)
+    h1_model_params = torch.cat((h1_params[-2].unsqueeze(-1), h1_params[-1]), dim=-1)
 
     # output variational parameters (std > 0)
     half = len(h0_params[:-2]) // 2

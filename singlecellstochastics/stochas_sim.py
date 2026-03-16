@@ -1,5 +1,7 @@
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import csv
 import argparse
 import math
@@ -427,6 +429,106 @@ def write_read_counts(
             f.write(f"{cell}\t" + "\t".join(counts) + "\n")
 
 
+def plot_sim_tree(tree, output_path, test_regime=None):
+    """
+    Plot simulated expression on a circular phylogenetic tree,
+    matching the style of reconstruct.plot_circular_tree().
+
+    Args:
+        tree: Biopython Tree with .expr and .read_count set on all nodes.
+        output_path: Path for the output PNG.
+        test_regime: Regime label for the test lineage (highlighted separately).
+    """
+    all_nodes = list(tree.find_clades())
+    leaves = list(tree.get_terminals())
+    depths = tree.depths()
+
+    # Assign polar coordinates
+    angles = list(np.linspace(0, 2 * np.pi, len(leaves), endpoint=False))
+    leaf_idx = [0]
+
+    def assign_coords(node):
+        node.r_coord = depths[node]
+        if node.is_terminal():
+            node.theta_coord = angles[leaf_idx[0]]
+            leaf_idx[0] += 1
+        else:
+            for child in node.clades:
+                assign_coords(child)
+            node.theta_coord = np.mean([c.theta_coord for c in node.clades])
+
+    assign_coords(tree.root)
+
+    max_r = max(n.r_coord for n in all_nodes)
+
+    # Expression color scale
+    exprs = [n.expr for n in all_nodes if n.expr is not None]
+    expr_min, expr_max = min(exprs), max(exprs)
+
+    valid_rcs = [leaf.read_count for leaf in leaves
+                 if hasattr(leaf, 'read_count') and leaf.read_count is not None]
+    rc_max = max(valid_rcs) if valid_rcs else expr_max
+    rc_min = min(valid_rcs) if valid_rcs else expr_min
+
+    global_min = min(expr_min, rc_min)
+    global_max = max(expr_max, rc_max)
+
+    norm = mcolors.Normalize(
+        vmin=global_min - (global_max - global_min) * 0.15,
+        vmax=global_max
+    )
+    cmap = plt.cm.Reds
+
+    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(7, 7))
+
+    def draw_tree(node):
+        if node.clades:
+            thetas = [c.theta_coord for c in node.clades]
+            th_min, th_max = min(thetas), max(thetas)
+            arc_th = np.linspace(th_min, th_max, 100)
+            ax.plot(arc_th, [node.r_coord] * 100,
+                    color=cmap(norm(node.expr)), lw=1.5, zorder=1)
+
+            for child in node.clades:
+                r_vals = np.linspace(node.r_coord, child.r_coord, 20)
+                val_interp = np.linspace(node.expr, child.expr, 20)
+                for k in range(len(r_vals) - 1):
+                    ax.plot([child.theta_coord, child.theta_coord],
+                            [r_vals[k], r_vals[k + 1]],
+                            color=cmap(norm(val_interp[k])),
+                            lw=1.5, zorder=1, solid_capstyle='butt')
+                draw_tree(child)
+
+    draw_tree(tree.root)
+
+    # Outer ring: read counts
+    if valid_rcs:
+        rc_max_val = max(valid_rcs) if valid_rcs else 1.0
+        ax.fill_between(np.linspace(0, 2 * np.pi, 100),
+                         max_r * 1.05, max_r * 1.20, color='#FFF5F0', alpha=0.5)
+        for leaf in leaves:
+            rc = getattr(leaf, 'read_count', None)
+            if rc is not None and rc > 0:
+                bar_len = (rc / rc_max_val) * (max_r * 0.15)
+                ax.plot([leaf.theta_coord, leaf.theta_coord],
+                        [max_r * 1.05, max_r * 1.05 + bar_len],
+                        color=cmap(norm(rc)), lw=2.0, solid_capstyle='butt')
+
+    ax.axis('off')
+    ax.set_title("Simulated Expression", pad=20)
+
+    plt.subplots_adjust(bottom=0.25)
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cbar = fig.colorbar(sm, ax=ax, orientation='horizontal',
+                        fraction=0.046, pad=0.1, shrink=0.7)
+    cbar.ax.set_title("Value", loc='left', fontsize=10)
+
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved simulation tree plot to {output_path}")
+
+
 def run_stochas_sim():
     parser = argparse.ArgumentParser("Stochastic simulation of gene expression evolution along lineage")
     parser.add_argument("--tree", type=str, required=True, help="File path of input tree")
@@ -442,6 +544,7 @@ def run_stochas_sim():
     parser.add_argument("--dispersion", type=float, default=None, help="Dispersion for negative binomial sampling (default: no sampling; 0: Poisson)")
     parser.add_argument("--plot", action="store_true", help="Whether to plot the gene expression evolution (default: False)")
     parser.add_argument("--bg", type=str, default="OU", help="OU or BM for background simulation")
+    parser.add_argument("--tree_plot", action="store_true", help="Plot simulated expression on circular tree (uses last gene)")
     args = parser.parse_args()
 
     
@@ -452,6 +555,22 @@ def run_stochas_sim():
     if args.plot:
         plot(plots, args.n_genes, args.out, args.label)
     write_read_counts(read_counts, cells, args.n_genes, args.out, args.label)
+
+    if args.tree_plot:
+        plot_sim_tree(tree, os.path.join(args.out, f"sim_tree_{args.label}.png"), args.test)
+        # Save all-node expression (internal + leaves) for the last gene
+        sim_data = []
+        for node in tree.find_clades():
+            sim_data.append({
+                'node_name': node.name if node.name else f'_unnamed_{id(node)}',
+                'is_leaf': node.is_terminal(),
+                'sim_expr': node.expr,
+                'read_count': node.read_count if hasattr(node, 'read_count') and node.read_count is not None else np.nan,
+            })
+        pd.DataFrame(sim_data).to_csv(
+            os.path.join(args.out, f"sim_history_{args.label}.tsv"),
+            sep='\t', index=False)
+        print(f"Saved sim_history_{args.label}.tsv")
 
 if __name__ == "__main__":
     run_stochas_sim()
