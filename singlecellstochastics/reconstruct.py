@@ -1,7 +1,10 @@
 import argparse
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
 from Bio import Phylo
 
@@ -206,6 +209,20 @@ def save_inferred_history(root, output_tsv_path, include_regime=True):
     df.to_csv(output_tsv_path, sep='\t', index=False)
     print(f"Successfully saved inferred history table to {output_tsv_path}")
 
+def count_leaves(node):
+    """Count number of leaves in subtree."""
+    if node.is_leaf:
+        return 1
+    return sum(count_leaves(c) for c in node.children)
+
+def ladderize(node, reverse=True):
+    """Sort children by subtree size for clean tree layout."""
+    if node.is_leaf:
+        return
+    for child in node.children:
+        ladderize(child, reverse)
+    node.children.sort(key=count_leaves, reverse=reverse)
+
 def layout_circular_tree(node, r_current=0.0, leaf_angles=None):
     node.r = r_current + node.dist
     if node.is_leaf:
@@ -216,6 +233,9 @@ def layout_circular_tree(node, r_current=0.0, leaf_angles=None):
         node.theta = np.mean([c.theta for c in node.children])
 
 def plot_circular_tree(root, outer, output_path):
+    # Ladderize for clean layout (same as plot_tree_circular.py)
+    ladderize(root, reverse=True)
+
     leaves = get_leaves(root)
     all_nodes = get_all_nodes(root)
 
@@ -233,8 +253,6 @@ def plot_circular_tree(root, outer, output_path):
     rc_max = max(valid_rcs) if valid_rcs else 1.0
     rc_min = min(valid_rcs) if valid_rcs else 0.0
 
-    # --- FIX: Unified Global Scale ---
-    # Find the absolute min and max across BOTH the tree and the read counts
     if outer:
         global_min = min(mu_min, rc_min)
         global_max = max(mu_max, rc_max)
@@ -243,67 +261,100 @@ def plot_circular_tree(root, outer, output_path):
         global_max = mu_max
 
     norm_var = mcolors.Normalize(vmin=v_min - (v_max - v_min)*0.15, vmax=v_max)
-    # Use one shared normalizer for the entire right-hand plot
-    norm_shared = mcolors.Normalize(vmin=global_min - (global_max - global_min)*0.15, vmax=global_max)
+
+    # Diverging colormap centered on root: blue=low, white=root, red=high
+    root_mu = root.true_mu
+    cmap_mu = plt.cm.RdBu_r
+    norm_mu = mcolors.TwoSlopeNorm(vcenter=root_mu, vmin=global_min, vmax=global_max)
 
     cmap_var = plt.cm.Blues
-    cmap_mu = plt.cm.Reds
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, subplot_kw={'projection': 'polar'}, figsize=(14, 7))
+    # Cartesian circular layout (same rendering as plot_tree_circular.py)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10), dpi=200)
+    for ax in (ax1, ax2):
+        ax.set_aspect("equal")
 
     def draw_tree(ax, node, val_func, cmap, norm):
-        if node.children:
-            thetas = [c.theta for c in node.children]
-            th_min, th_max = min(thetas), max(thetas)
-            arc_th = np.linspace(th_min, th_max, 100)
+        if not node.children:
+            return
+        cr = node.r
+        col_parent = cmap(norm(val_func(node)))
 
-            ax.plot(arc_th, [node.r]*100, color=cmap(norm(val_func(node))), lw=1.5, zorder=1)
+        # Arc connecting children at parent's radius
+        child_thetas = sorted([c.theta for c in node.children])
+        if len(child_thetas) >= 2:
+            t_min, t_max = child_thetas[0], child_thetas[-1]
+            if t_max - t_min > np.pi:
+                t_min, t_max = t_max, t_min + 2 * np.pi
+            arc_t = np.linspace(t_min, t_max, max(20, int(abs(t_max - t_min) * 50)))
+            ax.plot(cr * np.cos(arc_t), cr * np.sin(arc_t),
+                    color=col_parent, linewidth=0.8, solid_capstyle='round')
 
-            for child in node.children:
-                r_vals = np.linspace(node.r, child.r, 20)
-                val_start = val_func(node)
-                val_end = val_func(child)
-                val_interp = np.linspace(val_start, val_end, 20)
+        # Radial branches with gradient
+        for child in node.children:
+            col_child = cmap(norm(val_func(child)))
+            n_seg = 20
+            r_vals = np.linspace(cr, child.r, n_seg + 1)
+            c1 = np.array(matplotlib.colors.to_rgba(col_parent))
+            c2 = np.array(matplotlib.colors.to_rgba(col_child))
+            for i in range(n_seg):
+                frac = i / n_seg
+                col = c1 * (1 - frac) + c2 * frac
+                x0 = r_vals[i] * np.cos(child.theta)
+                y0 = r_vals[i] * np.sin(child.theta)
+                x1 = r_vals[i + 1] * np.cos(child.theta)
+                y1 = r_vals[i + 1] * np.sin(child.theta)
+                ax.plot([x0, x1], [y0, y1], color=col, linewidth=0.8,
+                        solid_capstyle='butt')
 
-                for i in range(len(r_vals)-1):
-                    ax.plot([child.theta, child.theta],
-                            [r_vals[i], r_vals[i+1]],
-                            color=cmap(norm(val_interp[i])), lw=1.5, zorder=1, solid_capstyle='butt')
-
-                draw_tree(ax, child, val_func, cmap, norm)
+            draw_tree(ax, child, val_func, cmap, norm)
 
     # 1. Plot Variance
-    ax1.set_title("Variance of Prediction", pad=20)
+    ax1.set_title("Variance of Prediction", fontsize=13, pad=12)
     ax1.axis('off')
     draw_tree(ax1, root, lambda n: n.true_var, cmap_var, norm_var)
-    #ax1.fill_between(np.linspace(0, 2*np.pi, 100), max_r*1.05, max_r*1.20, color='#F0F8FF', alpha=0.5)
 
-    # 2. Plot Expression (Tree uses norm_shared)
-    ax2.set_title("Predicted Expression", pad=20)
+    # 2. Plot Expression (diverging: blue=low, white=root, red=high)
+    ax2.set_title("Predicted Expression", fontsize=13, pad=12)
     ax2.axis('off')
-    draw_tree(ax2, root, lambda n: n.true_mu, cmap_mu, norm_shared)
+    draw_tree(ax2, root, lambda n: n.true_mu, cmap_mu, norm_mu)
 
-    # 3. Plot Read Counts (Bars ALSO use norm_shared)
-    if outer:
-        ax2.fill_between(np.linspace(0, 2*np.pi, 100), max_r*1.05, max_r*1.20, color='#FFF5F0', alpha=0.5)
+    # Read count outer bars (expression panel)
+    # Use separate sequential colormap (raw counts are always >= 0)
+    if outer and valid_rcs:
+        cmap_rc = plt.cm.Oranges
+        norm_rc = mcolors.Normalize(vmin=0, vmax=rc_max)
+        bar_base = max_r * 1.04
         for leaf in leaves:
             if leaf.read_count is not None and leaf.read_count > 0:
                 bar_len = (leaf.read_count / rc_max) * (max_r * 0.15)
-                ax2.plot([leaf.theta, leaf.theta], [max_r*1.05, max_r*1.05 + bar_len],
-                        color=cmap_mu(norm_shared(leaf.read_count)), lw=2.0, solid_capstyle='butt')
+                x0 = bar_base * np.cos(leaf.theta)
+                y0 = bar_base * np.sin(leaf.theta)
+                x1 = (bar_base + bar_len) * np.cos(leaf.theta)
+                y1 = (bar_base + bar_len) * np.sin(leaf.theta)
+                ax2.plot([x0, x1], [y0, y1],
+                         color=cmap_rc(norm_rc(leaf.read_count)), lw=1.5,
+                         solid_capstyle='butt')
 
-    plt.subplots_adjust(bottom=0.25, wspace=0.3)
+    margin = max_r * 1.25 if outer else max_r * 1.10
+    for ax in (ax1, ax2):
+        ax.set_xlim(-margin, margin)
+        ax.set_ylim(-margin, margin)
+
+    plt.subplots_adjust(bottom=0.18, wspace=0.05)
 
     sm_var = plt.cm.ScalarMappable(norm=norm_var, cmap=cmap_var)
-    cbar1 = fig.colorbar(sm_var, ax=ax1, orientation='horizontal', fraction=0.046, pad=0.1, shrink=0.7)
+    cbar1 = fig.colorbar(sm_var, ax=ax1, orientation='horizontal', fraction=0.046, pad=0.08, shrink=0.7)
     cbar1.ax.set_title("Variance", loc='left', fontsize=10)
 
-    # The colorbar now reflects the true global scale (0 to 10+)
-    sm_mu = plt.cm.ScalarMappable(norm=norm_shared, cmap=cmap_mu)
-    cbar2 = fig.colorbar(sm_mu, ax=ax2, orientation='horizontal', fraction=0.046, pad=0.1, shrink=0.7)
+    sm_mu = plt.cm.ScalarMappable(norm=norm_mu, cmap=cmap_mu)
+    cbar2 = fig.colorbar(sm_mu, ax=ax2, orientation='horizontal', fraction=0.046, pad=0.08, shrink=0.7)
     cbar2.ax.set_title("Value", loc='left', fontsize=10)
 
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=200, bbox_inches='tight')
+    if output_path.endswith('.png'):
+        plt.savefig(output_path.replace('.png', '.pdf'), bbox_inches='tight')
+    plt.close()
     print(f"Successfully saved figure to {output_path}")
 
 # ==========================================

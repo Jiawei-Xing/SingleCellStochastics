@@ -124,6 +124,10 @@ def ou_optimize_torch(
     converged_mask = torch.zeros(
         (batch_size, N_sim), dtype=torch.bool, device=device
     )
+    nan_streak = torch.zeros(
+        (batch_size, N_sim), dtype=torch.long, device=device
+    )
+    nan_patience = 50  # mark as failed after this many consecutive NaN iterations
 
     for n in range(max_iter):
         optimizer.zero_grad()
@@ -179,23 +183,26 @@ def ou_optimize_torch(
 
         # update best params for not yet converged genes
         with torch.no_grad():
-            mask = (average_loss < best_loss) & ~converged_mask
+            mask = (average_loss < best_loss) & ~converged_mask & torch.isfinite(average_loss)
             best_loss = torch.where(
                 mask,
                 average_loss.clone().detach(),
                 best_loss
             ) # update best loss
 
-            # update sigma and theta from kkt
+            # update sigma and theta from kkt (guard against NaN from lstsq)
             if kkt:
                 other_params = torch.cat(
                     (sigma.unsqueeze(-1).clone().detach(), # (B,S,1)
                     theta.clone().detach()), dim=-1 # (B,S,n_regimes)
                 )
+                nan_free = ~torch.isnan(other_params).any(dim=-1, keepdim=True)
                 if mode == 1:
-                    ou_params[1][active_batch, :, :2] = other_params
+                    current = ou_params[1][active_batch, :, :2].clone()
+                    ou_params[1][active_batch, :, :2] = torch.where(nan_free, other_params, current)
                 else:
-                    ou_params[1][active_batch, :, :] = other_params
+                    current = ou_params[1][active_batch, :, :].clone()
+                    ou_params[1][active_batch, :, :] = torch.where(nan_free, other_params, current)
 
             best_params = [
                 torch.where(
@@ -213,6 +220,16 @@ def ou_optimize_torch(
 
         # Store loss history
         loss_history.append(average_loss.clone().detach())
+
+        # Early exit for persistent NaN losses
+        with torch.no_grad():
+            is_nan = torch.isnan(average_loss)
+            nan_streak = torch.where(is_nan & ~converged_mask, nan_streak + 1, torch.zeros_like(nan_streak))
+            nan_failed = (nan_streak >= nan_patience) & ~converged_mask
+            if nan_failed.any():
+                converged_mask = converged_mask | nan_failed
+                if converged_mask.all():
+                    break
 
         # Check for convergence
         if n >= window:
@@ -237,15 +254,25 @@ def ou_optimize_torch(
 
     # warning if not all genes have converged
     print(f"\nChecking convergence for h{mode-1} OU init...")
-    if not converged_mask.all():
-        print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
+    nan_failed_genes = (best_loss == float("inf"))
+    non_converged = ~converged_mask
+    slow_genes = non_converged & ~nan_failed_genes
+    if nan_failed_genes.any():
+        print(f"\n⚠️  {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
+        for i in range(batch_size):
+            for j in range(N_sim):
+                if nan_failed_genes[i, j]:
+                    print(f"   {gene_names[i]}: NaN loss (skipped after {nan_patience} iters)")
+    if slow_genes.any():
+        print(f"\n⚠️  {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")
         for i in range(batch_size):
             for j in range(N_sim):
-                if not converged_mask[i, j]:
+                if slow_genes[i, j]:
+                    rd = relative_decrease[i, j].item() if 'relative_decrease' in locals() else float('nan')
                     print(
-                        f"   {gene_names[i]}: {relative_decrease[i, j].item():.2e} | " +
+                        f"   {gene_names[i]}: {rd:.2e} | " +
                         f"{best_loss[i, j].item():.2e}"
                     )
         print(f"\n💡 Recommendations for non-converged genes:")
@@ -355,102 +382,79 @@ def Lq_optimize_torch_OU(
     converged_mask = torch.zeros(
         (batch_size, N_sim), dtype=torch.bool, device=device
     )
+    nan_streak = torch.zeros(
+        (batch_size, N_sim), dtype=torch.long, device=device
+    )
+    nan_patience = 50  # mark as failed after this many consecutive NaN iterations
 
     for n in range(max_iter):
         optimizer.zero_grad()
-
-        # initialize loss matrix and store indices of not yet converged genes
-        loss_matrix = torch.zeros(
-            (batch_size, N_sim, n_trees), dtype=params[0].dtype, device=device
-        )
-        active_batch = (~converged_mask).any(dim=1)
+        active_batch = (~converged_mask).any(dim=1)  # (batch_size,)
 
         # get loss for each tree for not yet converged genes
+        active_loss_list = []
         for i in range(n_trees):
-            x_tensor = x_tensor_list[i][active_batch, :, :]
-            Lq_params = params_tensor[i][active_batch, :, :]
-            r_param = params_tensor[-3][active_batch, :]
-            ou_params = [
-                params_tensor[-2][active_batch, :, :],
-                params_tensor[-1][active_batch, :, :]
-            ] # [alpha, others]
-
-            diverge = diverge_list_torch[i]
-            share = share_list_torch[i]
-            epochs = epochs_list_torch[i]
-            beta = beta_list_torch[i]
-
-            lib = library_list_tensor[i] # (n_cells,)
-
             if kkt:
                 loss, sigma, theta = Lq_neg_log_lik_torch(
-                    Lq_params,
-                    r_param,
-                    ou_params,
+                    params_tensor[i][active_batch],
+                    params_tensor[-3][active_batch],
+                    [params_tensor[-2][active_batch], params_tensor[-1][active_batch]],
                     mode,
-                    x_tensor,
-                    diverge,
-                    share,
-                    epochs,
-                    beta,
+                    x_tensor_list[i][active_batch],
+                    diverge_list_torch[i],
+                    share_list_torch[i],
+                    epochs_list_torch[i],
+                    beta_list_torch[i],
                     device,
                     approx,
                     prior,
                     kkt,
                     nb,
-                    lib,
+                    library_list_tensor[i],
                     const,
                     fix_alpha=fix_alpha,
                 )
             else:
                 loss = Lq_neg_log_lik_torch(
-                    Lq_params,
-                    r_param,
-                    ou_params,
+                    params_tensor[i][active_batch],
+                    params_tensor[-3][active_batch],
+                    [params_tensor[-2][active_batch], params_tensor[-1][active_batch]],
                     mode,
-                    x_tensor,
-                    diverge,
-                    share,
-                    epochs,
-                    beta,
+                    x_tensor_list[i][active_batch],
+                    diverge_list_torch[i],
+                    share_list_torch[i],
+                    epochs_list_torch[i],
+                    beta_list_torch[i],
                     device,
                     approx,
                     prior,
                     kkt,
                     nb,
-                    lib,
+                    library_list_tensor[i],
                     const,
                     fix_alpha=fix_alpha,
                 )
-            loss_matrix[active_batch, :, i] = loss
+            active_loss_list.append(loss)
 
-        # average loss across trees (use torch.logsumexp for better numerical stability)
-        #average_loss = torch.logsumexp(loss_matrix, dim=2) - torch.log(
-        #    torch.tensor(n_trees, device=device, dtype=loss.dtype)
-        #)  # (batch_size, N_sim)
-        joint_loss = loss_matrix.sum(dim=2) # (batch_size, N_sim)
+        active_joint_loss = torch.stack(active_loss_list, dim=-1).sum(dim=-1)  # (num_active, N_sim)
 
         # update best params for not yet converged genes
         with torch.no_grad():
+            joint_loss = torch.full((batch_size, N_sim), float("inf"), dtype=params[0].dtype, device=device)
+            joint_loss[active_batch] = active_joint_loss.clone().detach()
+
             mask = (joint_loss < best_loss) & ~converged_mask
             best_loss = torch.where(
                 mask,
-                joint_loss.clone().detach(),
+                joint_loss,
                 best_loss
             ) # update best loss
 
-            # update sigma and theta from kkt
-            if kkt:
-                other_params = torch.cat(
-                    (sigma.unsqueeze(-1).clone().detach(), # (B,S,1)
-                    theta.clone().detach()), dim=-1 # (B,S,n_regimes)
-                )
-                if mode == 1:
-                    params_tensor[-1][active_batch, :, :2] = other_params
-                else:
-                    params_tensor[-1][active_batch, :, :] = other_params
-
+            # save best params (skip params_tensor[-1] when kkt — sigma/theta
+            # are reconstructed after the loop from the best alpha/Lq params)
             for i, param in enumerate(params_tensor):
+                if kkt and i == len(params_tensor) - 1:
+                    continue  # skip sigma/theta, reconstruct later
                 current_mask = mask.unsqueeze(-1) if param.dim() > 2 else mask
                 best_params[i] = torch.where(
                     current_mask,  # (B,S,1) or (B,S)
@@ -463,37 +467,41 @@ def Lq_optimize_torch_OU(
                 if em is None:
                     wandb.log({
                             "iter": n,
-                            f"{gene_names[0]}_ou{mode}_elbo_loss": best_loss[0, 0], 
+                            f"{gene_names[0]}_ou{mode}_elbo_loss": best_loss[0, 0],
                     })
                 else:
                     wandb.log({
                             "iter": n,
-                            f"{gene_names[0]}_ou{mode}_{em}_loss": best_loss[0, 0], 
+                            f"{gene_names[0]}_ou{mode}_{em}_loss": best_loss[0, 0],
                     })
-        
+
+        # Diagnostic: print params and loss every iteration
+        if kkt:
+            with torch.no_grad():
+                for gi in range(joint_loss.shape[0]):
+                    if not active_batch[gi]:
+                        continue
+                    name = gene_names[gi] if gi < len(gene_names) else f"gene_{gi}"
+                    l = joint_loss[gi, 0].item()
+                    s = sigma[gi, 0].item() if sigma is not None else float('nan')
+                    t = theta[gi, 0].squeeze().tolist() if theta is not None else float('nan')
+                    print(f"iter {n} | {name}: loss={l:.4e}  sigma={s:.4e}  theta={t}", flush=True)
+
         # Store loss history
         loss_history.append(joint_loss.clone().detach())
 
-        # check convergence in window   
-        if n >= window:
-            # Check if loss has stabilized within window
-            start_loss = loss_history[-window]
-            denom = torch.maximum(
-                start_loss.abs(), torch.tensor(1.0, dtype=loss.dtype, device=device)
-            )
-            relative_decrease = torch.abs(start_loss - best_loss) / denom
-            
-            # Mark as newly converged if variance is below tolerance
-            newly_converged = (relative_decrease < tol) & ~converged_mask
-            
-            # update converged mask if found newly converged genes
-            if newly_converged.any():
-                converged_mask = converged_mask | newly_converged # update converged mask
-                if converged_mask.all(): # break if all genes have converged
+        # Early exit for persistent NaN losses
+        with torch.no_grad():
+            is_nan = torch.isnan(joint_loss)
+            nan_streak = torch.where(is_nan & ~converged_mask, nan_streak + 1, torch.zeros_like(nan_streak))
+            nan_failed = (nan_streak >= nan_patience) & ~converged_mask
+            if nan_failed.any():
+                converged_mask = converged_mask | nan_failed
+                if converged_mask.all():
                     break
 
         # backpropagate for not yet converged genes
-        loss = joint_loss[~converged_mask].sum()
+        loss = active_joint_loss[~converged_mask[active_batch]].sum()
         loss.backward()
         optimizer.step()
 
@@ -502,17 +510,45 @@ def Lq_optimize_torch_OU(
             with torch.no_grad():
                 params_tensor[-3].clamp_(-5, 5)
 
+        # check convergence in window
+        if n >= window:
+            # Check if loss has stabilized within window
+            start_loss = loss_history[-window]
+            denom = torch.maximum(
+                start_loss.abs(), torch.tensor(1.0, dtype=loss.dtype, device=device)
+            )
+            relative_decrease = torch.abs(start_loss - best_loss) / denom
+
+            # Mark as newly converged if variance is below tolerance
+            newly_converged = (relative_decrease < tol) & ~converged_mask
+
+            # update converged mask if found newly converged genes
+            if newly_converged.any():
+                converged_mask = converged_mask | newly_converged # update converged mask
+                if converged_mask.all(): # break if all genes have converged
+                    break
+
     # warning if not all genes have converged
     print(f"\nChecking convergence for ou{mode} ELBO...")
-    if not converged_mask.all() and 'relative_decrease' in locals():
-        print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
+    nan_failed_genes = (best_loss == float("inf"))
+    non_converged = ~converged_mask
+    slow_genes = non_converged & ~nan_failed_genes
+    if nan_failed_genes.any():
+        print(f"\n⚠️  {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
+        for i in range(batch_size):
+            for j in range(N_sim):
+                if nan_failed_genes[i, j]:
+                    print(f"   {gene_names[i]}: NaN loss (skipped after {nan_patience} iters)")
+    if slow_genes.any():
+        print(f"\n⚠️  {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")
         for i in range(batch_size):
             for j in range(N_sim):
-                if not converged_mask[i, j]:
+                if slow_genes[i, j]:
+                    rd = relative_decrease[i, j].item() if 'relative_decrease' in locals() else float('nan')
                     print(
-                        f"   {gene_names[i]}: {relative_decrease[i, j].item():.2e} | " +
+                        f"   {gene_names[i]}: {rd:.2e} | " +
                         f"{best_loss[i, j].item():.2e}"
                     )
         print(f"\n💡 Recommendations for non-converged genes:")
@@ -521,7 +557,41 @@ def Lq_optimize_torch_OU(
         print(f"   - Increase tol (current: {tol})")
         print(f"   - Decrease window (current: {window})")
         print(f"   - Check data quality for these genes")
-    
+
+    # Reconstruct sigma/theta from best alpha/Lq params via KKT analytical solution.
+    # During optimization, params_tensor[-1] is never read (sigma/theta are always
+    # recomputed inside ou_neg_log_lik_torch_kkt), so we skip storing it in the loop
+    # and reconstruct here to avoid GPU memory corruption from CUDA backward errors.
+    if kkt:
+        with torch.no_grad():
+            for i in range(n_trees):
+                _, sigma, theta = Lq_neg_log_lik_torch(
+                    best_params[i],
+                    best_params[-3],
+                    [best_params[-2], best_params[-1]],
+                    mode,
+                    x_tensor_list[i],
+                    diverge_list_torch[i],
+                    share_list_torch[i],
+                    epochs_list_torch[i],
+                    beta_list_torch[i],
+                    device,
+                    approx,
+                    prior,
+                    kkt,
+                    nb,
+                    library_list_tensor[i],
+                    const,
+                    fix_alpha=fix_alpha,
+                )
+            other_params = torch.cat(
+                (sigma.unsqueeze(-1), theta), dim=-1
+            )
+            if mode == 1:
+                best_params[-1][:, :, :2] = other_params
+            else:
+                best_params[-1] = other_params
+
     best_params = [p for p in best_params[:-2]] + [
         torch.cat((best_params[-2], best_params[-1]), dim=-1)
     ] # [Lq tree1, Lq tree2, ..., Lq treeN, logr, all OU]
@@ -596,6 +666,8 @@ def Lq_optimize_torch_BM(
     # Track loss history for convergence checking
     loss_history = []
     converged_mask = torch.zeros((batch_size, ), dtype=torch.bool, device=device)
+    nan_streak = torch.zeros((batch_size, ), dtype=torch.long, device=device)
+    nan_patience = 50  # mark as failed after this many consecutive NaN iterations
 
     for n in range(max_iter):
         optimizer.zero_grad()
@@ -662,7 +734,17 @@ def Lq_optimize_torch_BM(
         # Store loss history
         loss_history.append(joint_loss.clone().detach())
 
-        # check convergence in window   
+        # Early exit for persistent NaN losses
+        with torch.no_grad():
+            is_nan = torch.isnan(joint_loss)
+            nan_streak = torch.where(is_nan & ~converged_mask, nan_streak + 1, torch.zeros_like(nan_streak))
+            nan_failed = (nan_streak >= nan_patience) & ~converged_mask
+            if nan_failed.any():
+                converged_mask = converged_mask | nan_failed
+                if converged_mask.all():
+                    break
+
+        # check convergence in window
         if n >= window:
             # Check if loss has stabilized within window
             start_loss = loss_history[-window]
@@ -670,10 +752,10 @@ def Lq_optimize_torch_BM(
                 start_loss.abs(), torch.tensor(1.0, dtype=loss.dtype, device=device)
             )
             relative_decrease = torch.abs(start_loss - best_loss) / denom
-            
+
             # Mark as newly converged if variance is below tolerance
             newly_converged = (relative_decrease < tol) & ~converged_mask
-            
+
             # update converged mask if found newly converged genes
             if newly_converged.any():
                 converged_mask = converged_mask | newly_converged # update converged mask
@@ -681,7 +763,7 @@ def Lq_optimize_torch_BM(
                     break
 
         # backpropagate for not yet converged genes
-        loss = active_joint_loss.sum()
+        loss = active_joint_loss[~converged_mask[active_batch]].sum()
         loss.backward()
         optimizer.step()
 
@@ -692,14 +774,23 @@ def Lq_optimize_torch_BM(
 
     # warning if not all genes have converged
     print(f"\nChecking convergence for bm{mode} ELBO...")
-    if not converged_mask.all() and 'relative_decrease' in locals():
-        print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
+    nan_failed_genes = (best_loss == float("inf"))
+    non_converged = ~converged_mask
+    slow_genes = non_converged & ~nan_failed_genes
+    if nan_failed_genes.any():
+        print(f"\n⚠️  {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
+        for i in range(batch_size):
+            if nan_failed_genes[i]:
+                print(f"   {gene_names[i]}: NaN loss (skipped after {nan_patience} iters)")
+    if slow_genes.any():
+        print(f"\n⚠️  {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")
         for i in range(batch_size):
-            if not converged_mask[i]:
+            if slow_genes[i]:
+                rd = relative_decrease[i].item() if 'relative_decrease' in locals() else float('nan')
                 print(
-                    f"   {gene_names[i]}: {relative_decrease[i].item():.2e} | " +
+                    f"   {gene_names[i]}: {rd:.2e} | " +
                     f"{best_loss[i].item():.2e}"
                 )
         print(f"\n💡 Recommendations for non-converged genes:")
@@ -783,6 +874,8 @@ def optimize_torch_BM(
     # Track loss history for convergence checking
     loss_history = []
     converged_mask = torch.zeros((batch_size, ), dtype=torch.bool, device=device)
+    nan_streak = torch.zeros((batch_size, ), dtype=torch.long, device=device)
+    nan_patience = 50  # mark as failed after this many consecutive NaN iterations
 
     for n in range(max_iter):
         optimizer.zero_grad()
@@ -824,34 +917,53 @@ def optimize_torch_BM(
         
         loss_history.append(joint_loss_full.clone().detach())
 
+        # Early exit for persistent NaN losses
+        with torch.no_grad():
+            is_nan = torch.isnan(joint_loss_full)
+            nan_streak = torch.where(is_nan & ~converged_mask, nan_streak + 1, torch.zeros_like(nan_streak))
+            nan_failed = (nan_streak >= nan_patience) & ~converged_mask
+            if nan_failed.any():
+                converged_mask = converged_mask | nan_failed
+                if converged_mask.all():
+                    break
+
         if n >= window:
             start_loss = loss_history[-window]
             denom = torch.maximum(
                 start_loss.abs(), torch.tensor(1.0, dtype=joint_loss_full.dtype, device=device)
             )
             relative_decrease = torch.abs(start_loss - best_loss) / denom
-            
+
             newly_converged = (relative_decrease < tol) & ~converged_mask
-            
+
             if newly_converged.any():
-                converged_mask = converged_mask | newly_converged 
-                if converged_mask.all(): 
+                converged_mask = converged_mask | newly_converged
+                if converged_mask.all():
                     break
 
-        loss = active_joint_loss.sum()
+        loss = active_joint_loss[~converged_mask[active_batch]].sum()
         loss.backward()
         optimizer.step()
 
     # warning if not all genes have converged
     print(f"\nChecking convergence for bm{mode} ELBO...")
-    if not converged_mask.all() and 'relative_decrease' in locals():
-        print(f"\n⚠️  WARNING: {(~converged_mask).sum().item()}/{batch_size} genes did not converge:")
+    nan_failed_genes = (best_loss == float("inf"))
+    non_converged = ~converged_mask
+    slow_genes = non_converged & ~nan_failed_genes
+    if nan_failed_genes.any():
+        print(f"\n⚠️  {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
+        for i in range(batch_size):
+            if nan_failed_genes[i]:
+                print(f"   {gene_names[i]}: NaN loss (skipped after {nan_patience} iters)")
+    if slow_genes.any():
+        print(f"\n⚠️  {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")
         for i in range(batch_size):
-            if not converged_mask[i]:
+            if slow_genes[i]:
+                rd = relative_decrease[i].item() if 'relative_decrease' in locals() else float('nan')
                 print(
-                    f"   {gene_names[i]}: {relative_decrease[i].item():.2e} | " +
+                    f"   {gene_names[i]}: {rd:.2e} | " +
                     f"{best_loss[i].item():.2e}"
                 )
         print(f"\n💡 Recommendations for non-converged genes:")
@@ -860,5 +972,5 @@ def optimize_torch_BM(
         print(f"   - Increase tol (current: {tol})")
         print(f"   - Decrease window (current: {window})")
         print(f"   - Check data quality for these genes")
-    
+
     return best_results, best_loss

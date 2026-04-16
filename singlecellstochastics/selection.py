@@ -6,6 +6,9 @@ from torch.distributions.chi2 import Chi2
 import wandb
 from statsmodels.stats.multitest import multipletests
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .preprocess import process_data_OU, process_data_BM
 from .optimize import Lq_optimize_torch_OU, Lq_optimize_torch_BM
@@ -14,7 +17,7 @@ from .optimize import Lq_optimize_torch_OU, Lq_optimize_torch_BM
 def gene_expression_selection(
     tree_files, gene_files, regime_files, library_files, outfile, device, batch_size,
     max_iter, learning_rate, wandb_flag, window, tol, approx, nb, rnull, kkt, const,
-    null_model="bm"
+    null_model="bm", prefix="sel", resume=False
 ):
     """
     Selection test: BM or fixed-alpha OU (H0, neutral) vs OU (H1, selection).
@@ -29,7 +32,7 @@ def gene_expression_selection(
         wandb.init(project="SingleCellStochastics", name=wandb_flag)
 
     # Process data for OU (H1, and H0 if fixed_ou)
-    print("Preprocessing data (OU)")
+    logger.info("Preprocessing data (OU)")
     (
         tree_list, cells_list, df_list, diverge_list, share_list, epochs_list, beta_list,
         diverge_list_torch, share_list_torch_ou, epochs_list_torch,
@@ -38,7 +41,7 @@ def gene_expression_selection(
 
     # Process data for BM (H0) if using BM null
     if null_model == "bm":
-        print("Preprocessing data (BM)")
+        logger.info("Preprocessing data (BM)")
         (
             _, _, _, share_list_torch_bm, _
         ) = process_data_BM(tree_files, gene_files, library_files, device)
@@ -53,16 +56,30 @@ def gene_expression_selection(
     if batch_size > len(df_list[0].columns):
         batch_size = len(df_list[0].columns)
 
-    results_list = []
-    bm_q_list = []
-    ou_q_list = []
-    genes = []
-    print(f"Running selection test ({null_model} null vs OU)")
-    for batch_start in range(0, len(df_list[0].columns), batch_size):
-        batch_end = min(batch_start + batch_size, len(df_list[0].columns))
+    n_genes = len(df_list[0].columns)
+    n_batches = (n_genes + batch_size - 1) // batch_size
+
+    # Checkpoint directory for per-batch results + q params
+    ckpt_dir = outfile + ".ckpt"
+    if resume and os.path.isdir(ckpt_dir):
+        logger.info(f"Found checkpoint directory: {ckpt_dir}")
+    elif resume:
+        logger.info(f"No checkpoint directory found, starting from scratch")
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    logger.info(f"Running selection test ({null_model} null vs OU): {n_genes} genes, {n_batches} batches of {batch_size}")
+    for batch_start in range(0, n_genes, batch_size):
+        batch_idx = batch_start // batch_size
+        batch_end = min(batch_start + batch_size, n_genes)
         gene_names = df_list[0].columns[batch_start:batch_end]
         actual_batch = len(gene_names)
-        genes.extend(gene_names)
+
+        # Check if batch already completed
+        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx}.pt")
+        if resume and os.path.exists(ckpt_file):
+            logger.info(f"Batch {batch_idx+1}/{n_batches} already done, skipping")
+            continue
+
         x_list = [df[gene_names].values.T for df in df_list]  # (batch, cells)
         x_tensor_list = [
             torch.tensor(x, dtype=torch.float32, device=device)
@@ -101,8 +118,8 @@ def gene_expression_selection(
                 const,
             )
 
-            # Save H0 (BM) variational parameters
-            bm_q_list.append(h0_params[:-2])  # list of (batch, 2*n_cells) per clone
+            # H0 q params: list of (batch, 2*n_cells) per clone
+            h0_q = [p.detach().cpu() for p in h0_params[:-2]]
 
             # H0 result columns: r, mu, sigma
             h0_r = h0_params[-2].exp().unsqueeze(-1)  # (batch, 1)
@@ -153,8 +170,8 @@ def gene_expression_selection(
             )
             h0_loss = h0_loss.squeeze(1)
 
-            # Save H0 variational parameters
-            bm_q_list.append(h0_params[:-2])
+            # H0 q params
+            h0_q = [p.detach().cpu() for p in h0_params[:-2]]
 
             # H0 result columns: r, alpha(~0), sigma, theta
             h0_result = torch.cat(
@@ -204,8 +221,8 @@ def gene_expression_selection(
         )
         h1_loss = h1_loss.squeeze(1)
 
-        # Save OU variational parameters
-        ou_q_list.append(h1_params[:-2])
+        # H1 q params
+        h1_q = [p.detach().cpu() for p in h1_params[:-2]]
 
         # LRT: 2 * (H0_nll - H1_nll)
         lr_stat = 2 * (h0_loss - h1_loss)
@@ -228,7 +245,29 @@ def gene_expression_selection(
             lr_stat.unsqueeze(-1),
             p_value.unsqueeze(-1),
         ), dim=-1)
-        results_list.append(result.detach().cpu())
+
+        # Save checkpoint: results + q params
+        ckpt_data = {
+            'genes': list(gene_names),
+            'results': result.detach().cpu(),
+            'h0_q': h0_q,
+            'h1_q': h1_q,
+        }
+        torch.save(ckpt_data, ckpt_file)
+        logger.info(f"Batch {batch_idx+1}/{n_batches} done ({batch_end}/{n_genes} genes)")
+
+    # Load all batch checkpoints and combine
+    results_list = []
+    genes = []
+    bm_q_list = []
+    ou_q_list = []
+    for batch_idx in range(n_batches):
+        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx}.pt")
+        ckpt_data = torch.load(ckpt_file, weights_only=False)
+        results_list.append(ckpt_data['results'])
+        genes.extend(ckpt_data['genes'])
+        bm_q_list.append(ckpt_data['h0_q'])
+        ou_q_list.append(ckpt_data['h1_q'])
 
     results = torch.cat(results_list, dim=0)
 
@@ -248,12 +287,13 @@ def gene_expression_selection(
     results_df["signif"], results_df["q"] = multipletests(results_df["p"], alpha=0.05, method="fdr_bh")[:2]
     results_df = results_df.sort_values("q")
 
-    os.makedirs(os.path.dirname(outfile), exist_ok=True)
+    outdir = os.path.dirname(outfile)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
     results_df.to_csv(outfile, sep="\t", index=False)
 
     # Save H0 variational parameters (q_mean, q_std)
     bm_q_params = [torch.cat(q_batch, dim=0) for q_batch in zip(*bm_q_list)]
-    outdir = os.path.dirname(outfile)
     for i in range(len(bm_q_params)):
         q_data = bm_q_params[i]
         if null_model == "fixed_ou":
@@ -263,7 +303,7 @@ def gene_expression_selection(
             index=genes,
             columns=cells_list[i] * 2
         )
-        df.to_csv(os.path.join(outdir, f"bm_q_params_{i}.tsv"), sep="\t")
+        df.to_csv(os.path.join(outdir, f"{prefix}_bm_q_params_{i}.tsv"), sep="\t")
 
     # Save OU variational parameters (q_mean, q_std)
     ou_q_params = [torch.cat(q_batch, dim=0) for q_batch in zip(*ou_q_list)]
@@ -273,7 +313,12 @@ def gene_expression_selection(
             index=genes,
             columns=cells_list[i] * 2
         )
-        df.to_csv(os.path.join(outdir, f"ou_q_params_{i}.tsv"), sep="\t")
+        df.to_csv(os.path.join(outdir, f"{prefix}_ou_q_params_{i}.tsv"), sep="\t")
+
+    # Clean up checkpoint directory
+    import shutil
+    shutil.rmtree(ckpt_dir)
+    logger.info(f"Results saved to {outfile}")
 
 
 def run_selection_test():
@@ -284,10 +329,11 @@ def run_selection_test():
     parser.add_argument("--null", required=True, type=str, help="Regime for null hypothesis")
     parser.add_argument("--library", required=False, type=str, default=None, help="Path to library file (TSV)")
     parser.add_argument("--outfile", required=False, type=str, default="./selection.tsv", help="Path to save the results (TSV)")
-    parser.add_argument("--batch_size", required=False, type=int, default=1000, help="Batch size for processing")
-    parser.add_argument("--max_iter", required=False, type=int, default=10000, help="Maximum number of optimization iterations")
-    parser.add_argument("--learning_rate", required=False, type=float, default=1e-1, help="Learning rate for optimization")
-    parser.add_argument("--wandb_flag", required=False, type=str, default=None, help="Weights & Biases run name")
+    parser.add_argument("--prefix", required=False, type=str, default="sel", help="Prefix for BM/OU parameter output files")
+    parser.add_argument("--batch", required=False, type=int, default=1000, help="Batch size for processing")
+    parser.add_argument("--iter", required=False, type=int, default=10000, help="Max optimization iterations")
+    parser.add_argument("--lr", required=False, type=float, default=1e-1, help="Learning rate for optimization")
+    parser.add_argument("--wandb", required=False, type=str, default=None, help="Wandb run name")
     parser.add_argument("--window", required=False, type=int, default=200, help="Window size for checking convergence")
     parser.add_argument("--tol", required=False, type=float, default=1e-4, help="Tolerance for convergence")
     parser.add_argument("--approx", required=False, type=str, default="softplus_MC", help="Approximation method")
@@ -296,7 +342,14 @@ def run_selection_test():
     parser.add_argument("--const", required=False, action="store_true", help="Include constant terms in likelihood")
     parser.add_argument("--null_model", required=False, type=str, default="bm", choices=["bm", "fixed_ou"],
                         help="Null model: 'bm' (proper BM, default) or 'fixed_ou' (OU with alpha fixed at ~0)")
+    parser.add_argument("--log", type=str, default=None, help="Path to log file")
+    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint if available")
     args = parser.parse_args()
+
+    handlers = [logging.StreamHandler()]
+    if args.log:
+        handlers.append(logging.FileHandler(args.log))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
 
     torch.manual_seed(42)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -311,10 +364,11 @@ def run_selection_test():
 
     gene_expression_selection(
         tree, expression, regime, library, args.outfile, device=device,
-        batch_size=args.batch_size, max_iter=args.max_iter, learning_rate=args.learning_rate,
-        wandb_flag=args.wandb_flag, window=args.window, tol=args.tol,
-        approx=args.approx, nb=args.no_nb, rnull=args.null, kkt=args.kkt, 
-        const=args.const, null_model=args.null_model
+        batch_size=args.batch, max_iter=args.iter, learning_rate=args.lr,
+        wandb_flag=args.wandb, window=args.window, tol=args.tol,
+        approx=args.approx, nb=args.no_nb, rnull=args.null, kkt=args.kkt,
+        const=args.const, null_model=args.null_model, prefix=args.prefix,
+        resume=args.resume
     )
 
 

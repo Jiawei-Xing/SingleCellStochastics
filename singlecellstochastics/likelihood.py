@@ -330,8 +330,11 @@ def ou_neg_log_lik_torch_kkt(
     # cholesky: theta = (S.T @ S)^-1 @ S.T @ y
     S = torch.linalg.solve_triangular(L, W, upper=False) # L^{-1} W
     y = torch.linalg.solve_triangular(L, expr_batch.unsqueeze(-1), upper=False)   # L^{-1} expr
-    #theta = torch.linalg.solve(S.T @ S, S.T @ y)
-    theta = torch.linalg.lstsq(S, y).solution # (batch, N_sim, n_regimes, 1)    
+    # Use magma backend to avoid cusolver SVD failure on large matrices.
+    prev_lib = torch.backends.cuda.preferred_linalg_library()
+    torch.backends.cuda.preferred_linalg_library("magma")
+    theta = torch.linalg.lstsq(S, y).solution  # (batch, N_sim, n_regimes, 1)
+    torch.backends.cuda.preferred_linalg_library(prev_lib)
     
     # sigma2 = (expr - W @ theta)^T @ V^-1 @ (expr - W @ theta) / n_cells
     # sigma2 = (diff @ np.linalg.solve(V, diff)).item() / n_cells
