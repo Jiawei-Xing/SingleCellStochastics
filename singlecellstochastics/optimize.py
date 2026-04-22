@@ -221,10 +221,13 @@ def ou_optimize_torch(
         # Store loss history
         loss_history.append(average_loss.clone().detach())
 
-        # Early exit for persistent NaN losses
+        # Early exit for persistent NaN/inf losses.
+        # Cumulative (not consecutive) so genes with intermittent NaN/inf —
+        # which the old streak logic reset on every finite iteration and
+        # thus never terminated — still fail out before wasting max_iter.
         with torch.no_grad():
-            is_nan = torch.isnan(average_loss)
-            nan_streak = torch.where(is_nan & ~converged_mask, nan_streak + 1, torch.zeros_like(nan_streak))
+            is_bad = ~torch.isfinite(average_loss)
+            nan_streak = torch.where(is_bad & ~converged_mask, nan_streak + 1, nan_streak)
             nan_failed = (nan_streak >= nan_patience) & ~converged_mask
             if nan_failed.any():
                 converged_mask = converged_mask | nan_failed
@@ -247,10 +250,15 @@ def ou_optimize_torch(
                 if converged_mask.all(): # break if all genes have converged
                     break
 
-        # backpropagate for not yet converged genes
-        loss = average_loss[~converged_mask].sum()
-        loss.backward()
-        optimizer.step()
+        # backpropagate for not yet converged genes, skipping non-finite
+        # losses (NaN or inf) so one bad gene can't poison the shared Adam
+        # state for the whole batch
+        active_loss_flat = average_loss[~converged_mask]
+        valid_mask = torch.isfinite(active_loss_flat)
+        if valid_mask.any():
+            loss = active_loss_flat[valid_mask].sum()
+            loss.backward()
+            optimizer.step()
 
     # warning if not all genes have converged
     print(f"\nChecking convergence for h{mode-1} OU init...")
@@ -475,35 +483,29 @@ def Lq_optimize_torch_OU(
                             f"{gene_names[0]}_ou{mode}_{em}_loss": best_loss[0, 0],
                     })
 
-        # Diagnostic: print params and loss every iteration
-        if kkt:
-            with torch.no_grad():
-                for gi in range(joint_loss.shape[0]):
-                    if not active_batch[gi]:
-                        continue
-                    name = gene_names[gi] if gi < len(gene_names) else f"gene_{gi}"
-                    l = joint_loss[gi, 0].item()
-                    s = sigma[gi, 0].item() if sigma is not None else float('nan')
-                    t = theta[gi, 0].squeeze().tolist() if theta is not None else float('nan')
-                    print(f"iter {n} | {name}: loss={l:.4e}  sigma={s:.4e}  theta={t}", flush=True)
-
         # Store loss history
         loss_history.append(joint_loss.clone().detach())
 
-        # Early exit for persistent NaN losses
+        # Early exit for persistent NaN/inf losses (cumulative; see note
+        # in ou_optimize_torch — consecutive streaks miss intermittent bad
+        # genes and let them run to max_iter).
         with torch.no_grad():
-            is_nan = torch.isnan(joint_loss)
-            nan_streak = torch.where(is_nan & ~converged_mask, nan_streak + 1, torch.zeros_like(nan_streak))
+            is_bad = ~torch.isfinite(joint_loss)
+            nan_streak = torch.where(is_bad & ~converged_mask, nan_streak + 1, nan_streak)
             nan_failed = (nan_streak >= nan_patience) & ~converged_mask
             if nan_failed.any():
                 converged_mask = converged_mask | nan_failed
                 if converged_mask.all():
                     break
 
-        # backpropagate for not yet converged genes
-        loss = active_joint_loss[~converged_mask[active_batch]].sum()
-        loss.backward()
-        optimizer.step()
+        # backpropagate for not yet converged genes, skipping non-finite
+        # losses so one bad gene can't poison the shared Adam state
+        active_loss_flat = active_joint_loss[~converged_mask[active_batch]]
+        valid_mask = torch.isfinite(active_loss_flat)
+        if valid_mask.any():
+            loss = active_loss_flat[valid_mask].sum()
+            loss.backward()
+            optimizer.step()
 
         # clamp log_r to prevent NaN/overflow
         if nb:
@@ -734,10 +736,11 @@ def Lq_optimize_torch_BM(
         # Store loss history
         loss_history.append(joint_loss.clone().detach())
 
-        # Early exit for persistent NaN losses
+        # Early exit for persistent NaN/inf losses (cumulative; see note
+        # in ou_optimize_torch).
         with torch.no_grad():
-            is_nan = torch.isnan(joint_loss)
-            nan_streak = torch.where(is_nan & ~converged_mask, nan_streak + 1, torch.zeros_like(nan_streak))
+            is_bad = ~torch.isfinite(joint_loss)
+            nan_streak = torch.where(is_bad & ~converged_mask, nan_streak + 1, nan_streak)
             nan_failed = (nan_streak >= nan_patience) & ~converged_mask
             if nan_failed.any():
                 converged_mask = converged_mask | nan_failed
@@ -762,8 +765,13 @@ def Lq_optimize_torch_BM(
                 if converged_mask.all(): # break if all genes have converged
                     break
 
-        # backpropagate for not yet converged genes
-        loss = active_joint_loss[~converged_mask[active_batch]].sum()
+        # backpropagate for not yet converged genes, skipping non-finite
+        # losses so one bad gene can't poison the shared Adam state
+        active_loss_flat = active_joint_loss[~converged_mask[active_batch]]
+        valid_mask = torch.isfinite(active_loss_flat)
+        if not valid_mask.any():
+            continue
+        loss = active_loss_flat[valid_mask].sum()
         loss.backward()
         optimizer.step()
 
@@ -917,10 +925,11 @@ def optimize_torch_BM(
         
         loss_history.append(joint_loss_full.clone().detach())
 
-        # Early exit for persistent NaN losses
+        # Early exit for persistent NaN/inf losses (cumulative; see note
+        # in ou_optimize_torch).
         with torch.no_grad():
-            is_nan = torch.isnan(joint_loss_full)
-            nan_streak = torch.where(is_nan & ~converged_mask, nan_streak + 1, torch.zeros_like(nan_streak))
+            is_bad = ~torch.isfinite(joint_loss_full)
+            nan_streak = torch.where(is_bad & ~converged_mask, nan_streak + 1, nan_streak)
             nan_failed = (nan_streak >= nan_patience) & ~converged_mask
             if nan_failed.any():
                 converged_mask = converged_mask | nan_failed
@@ -941,7 +950,11 @@ def optimize_torch_BM(
                 if converged_mask.all():
                     break
 
-        loss = active_joint_loss[~converged_mask[active_batch]].sum()
+        active_loss_flat = active_joint_loss[~converged_mask[active_batch]]
+        valid_mask = torch.isfinite(active_loss_flat)
+        if not valid_mask.any():
+            continue
+        loss = active_loss_flat[valid_mask].sum()
         loss.backward()
         optimizer.step()
 

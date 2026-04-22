@@ -42,9 +42,20 @@ def output_results(results, output_file, regimes):
     Output saved results of likelihood ratio test for each gene to a tsv file.
     """
     # FDR by Benjamini-Hochberg procedure
-    results = sorted(list(results.values()), key=lambda x: x[-1])
-    p_values = [r[-1] for r in results]
-    signif, q_values = multipletests(p_values, alpha=0.05, method="fdr_bh")[:2]
+    # Sort by p-value ascending, pushing NaN p (failed optimizations) to the end
+    # so q-values stay monotone with p and NaN rows are grouped at the bottom.
+    results = sorted(
+        list(results.values()),
+        key=lambda x: (np.isnan(x[-1]), x[-1]),
+    )
+    p_values = np.array([r[-1] for r in results], dtype=float)
+    q_values = np.full(p_values.shape, np.nan)
+    signif = np.zeros(p_values.shape, dtype=bool)
+    valid = ~np.isnan(p_values)
+    if valid.any():
+        signif[valid], q_values[valid] = multipletests(
+            p_values[valid], alpha=0.05, method="fdr_bh"
+        )[:2]
 
     # output results
     with open(output_file, "w") as f:
