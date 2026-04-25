@@ -18,7 +18,7 @@ from .qparam import export_mean_std_tensor, log_s2_from_std_tensor
 def gene_expression_selection(
     tree_files, gene_files, regime_files, library_files, outfile, device, batch_size,
     max_iter, learning_rate, wandb_flag, window, tol, approx, nb, rnull, kkt, const,
-    null_model="bm", prefix="sel", resume=False
+    null_model="bm", prefix="sel", resume=False, bm_lambda_mode=2, ou_lambda_mode=2
 ):
     """
     Selection test: BM or fixed-alpha OU (H0, neutral) vs OU (H1, selection).
@@ -68,7 +68,11 @@ def gene_expression_selection(
         logger.info(f"No checkpoint directory found, starting from scratch")
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    logger.info(f"Running selection test ({null_model} null vs OU): {n_genes} genes, {n_batches} batches of {batch_size}")
+    logger.info(
+        f"Running selection test ({null_model} null vs OU): {n_genes} genes, "
+        f"{n_batches} batches of {batch_size}; "
+        f"bm_lambda_mode={bm_lambda_mode}, ou_lambda_mode={ou_lambda_mode}"
+    )
     for batch_start in range(0, n_genes, batch_size):
         batch_idx = batch_start // batch_size
         batch_end = min(batch_start + batch_size, n_genes)
@@ -103,7 +107,7 @@ def gene_expression_selection(
 
             h0_params, h0_loss = Lq_optimize_torch_BM(
                 init_params_h0,
-                1,  # mode=1: original tree (lambda=1)
+                bm_lambda_mode,
                 x_tensor_list,
                 gene_names,
                 share_list_torch_bm,
@@ -125,7 +129,7 @@ def gene_expression_selection(
             # H0 result columns: r, mu, sigma
             h0_r = h0_params[-2].exp().unsqueeze(-1)  # (batch, 1)
             h0_bm = h0_params[-1]  # (batch, 3): lambda, mu, sigma
-            h0_result = torch.cat((h0_r, h0_bm[:, 1:]), dim=-1)  # (batch, 3)
+            h0_result = torch.cat((h0_r, h0_bm), dim=-1)  # (batch, 4)
 
         else:
             # --- H0: OU with alpha fixed at ~0 (fixed_ou) ---
@@ -192,10 +196,11 @@ def gene_expression_selection(
             for i in range(len(x_tensor_ou))
         ]
         log_r_ou = torch.zeros((actual_batch, 1), dtype=torch.float32, device=device)
+        ou_lambda_init = torch.ones((actual_batch, 1), dtype=torch.float32, device=device)
         ou_params_init = torch.ones(
             (actual_batch, 1, n_regimes + 2), dtype=torch.float32, device=device
         )
-        init_params_h1 = q_params_ou + [log_r_ou] + [ou_params_init]
+        init_params_h1 = q_params_ou + [log_r_ou] + [ou_lambda_init] + [ou_params_init]
 
         h1_params, h1_loss = Lq_optimize_torch_OU(
             init_params_h1,
@@ -219,11 +224,12 @@ def gene_expression_selection(
             nb,
             library_list_tensor,
             const,
+            ou_lambda_mode=ou_lambda_mode,
         )
         h1_loss = h1_loss.squeeze(1)
 
         # H1 q params
-        h1_q = [export_mean_std_tensor(p).detach().cpu() for p in h1_params[:-2]]
+        h1_q = [export_mean_std_tensor(p).detach().cpu() for p in h1_params[:len(x_tensor_ou)]]
 
         # LRT: 2 * (H0_nll - H1_nll)
         lr_stat = 2 * (h0_loss - h1_loss)
@@ -232,7 +238,8 @@ def gene_expression_selection(
 
         # H1 result columns: r, alpha, sigma, theta
         h1_ou_result = torch.cat(
-            (h1_params[-2].exp().unsqueeze(-1),
+            (h1_params[-3].exp().unsqueeze(-1),
+            h1_params[-2].unsqueeze(-1),
             h1_params[-1][..., :1].exp(),
             h1_params[-1][..., 1:3]), dim=-1
         ).squeeze(1)
@@ -273,10 +280,10 @@ def gene_expression_selection(
 
     # Build column names
     if null_model == "bm":
-        h0_cols = ["h0_r", "h0_mu", "h0_sigma"]
+        h0_cols = ["h0_r", "h0_lambda", "h0_mu", "h0_sigma"]
     else:
         h0_cols = ["h0_r", "h0_alpha", "h0_sigma", "h0_theta"]
-    h1_cols = ["h1_r", "h1_alpha", "h1_sigma", "h1_theta"]
+    h1_cols = ["h1_r", "h1_lambda", "h1_alpha", "h1_sigma", "h1_theta"]
     stat_cols = ["h0", "h1", "lr", "p"]
     columns = h0_cols + h1_cols + stat_cols
 
@@ -342,6 +349,10 @@ def run_selection_test():
     parser.add_argument("--const", required=False, action="store_true", help="Include constant terms in likelihood")
     parser.add_argument("--null_model", required=False, type=str, default="bm", choices=["bm", "fixed_ou"],
                         help="Null model: 'bm' (proper BM, default) or 'fixed_ou' (OU with alpha fixed at ~0)")
+    parser.add_argument("--bm_lambda_mode", "--bm-lambda-mode", required=False, type=int, default=2, choices=[1, 2],
+                        help="BM null Pagel lambda mode: 1 fixes lambda=1; 2 optimizes lambda (default)")
+    parser.add_argument("--ou_lambda_mode", "--ou-lambda-mode", required=False, type=int, default=2, choices=[0, 1, 2],
+                        help="OU alternative Pagel lambda mode: 0 fixes lambda=0; 1 fixes lambda=1; 2 optimizes lambda (default)")
     parser.add_argument("--log", type=str, default=None, help="Path to log file")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint if available")
     args = parser.parse_args()
@@ -368,7 +379,8 @@ def run_selection_test():
         wandb_flag=args.wandb, window=args.window, tol=args.tol,
         approx=args.approx, nb=args.no_nb, rnull=args.null, kkt=args.kkt,
         const=args.const, null_model=args.null_model, prefix=args.prefix,
-        resume=args.resume
+        resume=args.resume, bm_lambda_mode=args.bm_lambda_mode,
+        ou_lambda_mode=args.ou_lambda_mode,
     )
 
 

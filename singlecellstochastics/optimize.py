@@ -331,6 +331,7 @@ def Lq_optimize_torch_OU(
     seed_per_call=None,
     disable_param_sanitize=False,
     disable_grad_sanitize=True,
+    ou_lambda_mode=1,
 ):
     """
     Optimize ELBO with PyTorch Adam.
@@ -390,33 +391,53 @@ def Lq_optimize_torch_OU(
     batch_size, N_sim, _ = params[0].shape
     n_trees = len(x_tensor_list)
 
-    # Initialize parameters for optimization
+    has_ou_lambda_param = len(params) == n_trees + 3
+    return_ou_lambda = has_ou_lambda_param or ou_lambda_mode != 1
+    base_params = params[:-2] if has_ou_lambda_param else params[:-1]
+    if has_ou_lambda_param:
+        ou_lambda_init = params[-2].clone().detach()
+    else:
+        ou_lambda_init = torch.ones((batch_size, N_sim), dtype=params[0].dtype, device=device)
+
+    # Initialize parameters for optimization.
+    # Layout: [Lq tree1, ..., Lq treeN, logr, Pagel lambda, alpha, other OU]
     params_tensor = [
-        p.clone().detach() for p in params[:-1]
+        p.clone().detach() for p in base_params
     ] + [
+        ou_lambda_init,
         params[-1][:, :, 0:1].clone().detach(),
         params[-1][:, :, 1:].clone().detach()
-    ] # [Lq tree1, Lq tree2, ..., Lq treeN, logr, alpha, other OU]
+    ]
+    log_r_idx = n_trees
+    ou_lambda_idx = n_trees + 1
+    log_alpha_idx = n_trees + 2
+    other_ou_idx = n_trees + 3
 
     # Set requires_grad based on EM mode
     if em == "e":
         # E-step: optimize ELBO with fixed OU parameters
-        for i in range(len(params_tensor)-2):
+        for i in range(log_r_idx + 1):
             params_tensor[i] = params_tensor[i].requires_grad_(True)
     elif em == "m":
         # M-step: optimize OU parameters with fixed ELBO
+        if ou_lambda_mode == 2:
+            params_tensor[ou_lambda_idx] = params_tensor[ou_lambda_idx].requires_grad_(True)
         if not fix_alpha:
-            params_tensor[-2] = params_tensor[-2].requires_grad_(True) # alpha
+            params_tensor[log_alpha_idx] = params_tensor[log_alpha_idx].requires_grad_(True) # alpha
         if not kkt:
-            params_tensor[-1] = params_tensor[-1].requires_grad_(True) # other OU
+            params_tensor[other_ou_idx] = params_tensor[other_ou_idx].requires_grad_(True) # other OU
     else:
         # optimize both ELBO and OU parameters
-        for i in range(len(params_tensor)-1):
+        for i in range(log_r_idx + 1):
             params_tensor[i] = params_tensor[i].requires_grad_(True)
+        if ou_lambda_mode == 2:
+            params_tensor[ou_lambda_idx] = params_tensor[ou_lambda_idx].requires_grad_(True)
+        if not fix_alpha:
+            params_tensor[log_alpha_idx] = params_tensor[log_alpha_idx].requires_grad_(True)
         if fix_alpha:
-            params_tensor[-2] = params_tensor[-2].requires_grad_(False) # freeze alpha
+            params_tensor[log_alpha_idx] = params_tensor[log_alpha_idx].requires_grad_(False) # freeze alpha
         if not kkt:
-            params_tensor[-1] = params_tensor[-1].requires_grad_(True) # other OU
+            params_tensor[other_ou_idx] = params_tensor[other_ou_idx].requires_grad_(True) # other OU
     
     # Resolve log_r clamp: default (-5, 5) for legacy behaviour.
     _log_r_lo, _log_r_hi = (log_r_clamp if log_r_clamp is not None else (-5.0, 5.0))
@@ -431,10 +452,10 @@ def Lq_optimize_torch_OU(
     # becoming plausible values.
     with torch.no_grad():
         if nb:
-            params_tensor[-3].clamp_(_log_r_lo, _log_r_hi)
+            params_tensor[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
         if log_alpha_clamp is not None:
             lo, hi = log_alpha_clamp
-            params_tensor[-2].clamp_(float(lo), float(hi))
+            params_tensor[log_alpha_idx].clamp_(float(lo), float(hi))
     _clamp_lq_log_s2_()
 
     # Track best parameters for all parameter types
@@ -467,7 +488,7 @@ def Lq_optimize_torch_OU(
         # accumulate gradients pushed beyond the clamp window.
         if nb and clamp_log_r_before_forward:
             with torch.no_grad():
-                params_tensor[-3].clamp_(_log_r_lo, _log_r_hi)
+                params_tensor[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
 
         # get loss for each tree for not yet converged genes
         active_loss_list = []
@@ -476,15 +497,15 @@ def Lq_optimize_torch_OU(
         if tracing:
             TRACE.reset()
             TRACE.write("step", n)
-            TRACE.write("log_r_pre_forward", float(params_tensor[-3].reshape(-1)[0].detach().cpu()))
-            TRACE.write("log_alpha_pre_forward", float(params_tensor[-2].reshape(-1)[0].detach().cpu()))
+            TRACE.write("log_r_pre_forward", float(params_tensor[log_r_idx].reshape(-1)[0].detach().cpu()))
+            TRACE.write("log_alpha_pre_forward", float(params_tensor[log_alpha_idx].reshape(-1)[0].detach().cpu()))
 
         for i in range(n_trees):
             if kkt:
                 loss, sigma, theta = Lq_neg_log_lik_torch(
                     params_tensor[i][active_batch],
-                    params_tensor[-3][active_batch],
-                    [params_tensor[-2][active_batch], params_tensor[-1][active_batch]],
+                    params_tensor[log_r_idx][active_batch],
+                    [params_tensor[log_alpha_idx][active_batch], params_tensor[other_ou_idx][active_batch]],
                     mode,
                     x_tensor_list[i][active_batch],
                     diverge_list_torch[i],
@@ -499,12 +520,14 @@ def Lq_optimize_torch_OU(
                     library_list_tensor[i],
                     const,
                     fix_alpha=fix_alpha,
+                    ou_lambda=params_tensor[ou_lambda_idx][active_batch],
+                    ou_lambda_mode=ou_lambda_mode,
                 )
             else:
                 loss = Lq_neg_log_lik_torch(
                     params_tensor[i][active_batch],
-                    params_tensor[-3][active_batch],
-                    [params_tensor[-2][active_batch], params_tensor[-1][active_batch]],
+                    params_tensor[log_r_idx][active_batch],
+                    [params_tensor[log_alpha_idx][active_batch], params_tensor[other_ou_idx][active_batch]],
                     mode,
                     x_tensor_list[i][active_batch],
                     diverge_list_torch[i],
@@ -519,6 +542,8 @@ def Lq_optimize_torch_OU(
                     library_list_tensor[i],
                     const,
                     fix_alpha=fix_alpha,
+                    ou_lambda=params_tensor[ou_lambda_idx][active_batch],
+                    ou_lambda_mode=ou_lambda_mode,
                 )
             active_loss_list.append(loss)
 
@@ -539,7 +564,7 @@ def Lq_optimize_torch_OU(
             # save best params (skip params_tensor[-1] when kkt — sigma/theta
             # are reconstructed after the loop from the best alpha/Lq params)
             for i, param in enumerate(params_tensor):
-                if kkt and i == len(params_tensor) - 1:
+                if kkt and i == other_ou_idx:
                     continue  # skip sigma/theta, reconstruct later
                 current_mask = mask.unsqueeze(-1) if param.dim() > 2 else mask
                 best_params[i] = torch.where(
@@ -592,7 +617,7 @@ def Lq_optimize_torch_OU(
             # step so ablation traces can show whether the sanitize is
             # load-bearing or a no-op in practice.
             if tracing:
-                for pname, pidx in [("log_r", -3), ("log_alpha", -2), ("lq0", 0)]:
+                for pname, pidx in [("log_r", log_r_idx), ("log_alpha", log_alpha_idx), ("lq0", 0)]:
                     pt = params_tensor[pidx]
                     if pt.grad is not None:
                         n_nan = int(torch.isnan(pt.grad).sum().detach().cpu())
@@ -623,8 +648,8 @@ def Lq_optimize_torch_OU(
             if tracing:
                 # capture grads + adam state BEFORE step (Adam mutates m,v
                 # in-place during step). Index 0,0 since trace is single-gene.
-                grad_log_r = params_tensor[-3].grad
-                grad_log_alpha = params_tensor[-2].grad
+                grad_log_r = params_tensor[log_r_idx].grad
+                grad_log_alpha = params_tensor[log_alpha_idx].grad
                 grad_lq0 = params_tensor[0].grad
                 if grad_log_r is not None:
                     TRACE.write("grad_log_r", float(grad_log_r.reshape(-1)[0].detach().cpu()))
@@ -638,8 +663,8 @@ def Lq_optimize_torch_OU(
                     TRACE.write("grad_lq_n_nan", nan_g)
                     TRACE.write("grad_lq_n_inf", inf_g)
 
-                # Adam state for log_r (params_tensor[-3])
-                state = optimizer.state.get(params_tensor[-3], {})
+                # Adam state for log_r
+                state = optimizer.state.get(params_tensor[log_r_idx], {})
                 if "exp_avg" in state:
                     TRACE.write("adam_m_log_r", float(state["exp_avg"].reshape(-1)[0].detach().cpu()))
                 if "exp_avg_sq" in state:
@@ -649,24 +674,24 @@ def Lq_optimize_torch_OU(
 
             if tracing:
                 # capture POST-Adam, PRE-clamp value of log_r
-                TRACE.write("log_r_post_adam_pre_clamp", float(params_tensor[-3].reshape(-1)[0].detach().cpu()))
+                TRACE.write("log_r_post_adam_pre_clamp", float(params_tensor[log_r_idx].reshape(-1)[0].detach().cpu()))
                 # NaN-genesis: log whether each param tensor has any non-finite
                 # entries AFTER the optimizer step (before any clamp / sanitize)
-                for pname, pidx in [("log_r", -3), ("log_alpha", -2), ("lq0", 0)]:
+                for pname, pidx in [("log_r", log_r_idx), ("log_alpha", log_alpha_idx), ("lq0", 0)]:
                     pt = params_tensor[pidx]
                     n_nan = int(torch.isnan(pt).sum().detach().cpu())
                     n_inf = int(torch.isinf(pt).sum().detach().cpu())
                     TRACE.write(f"param_{pname}_n_nan_post_step", n_nan)
                     TRACE.write(f"param_{pname}_n_inf_post_step", n_inf)
                 # Also log post-step log_alpha value for NaN-genesis analysis
-                TRACE.write("log_alpha_post_step", float(params_tensor[-2].reshape(-1)[0].detach().cpu()))
+                TRACE.write("log_alpha_post_step", float(params_tensor[log_alpha_idx].reshape(-1)[0].detach().cpu()))
 
         # clamp log_r to prevent NaN/overflow (default placement: post-step;
         # see clamp_log_r_before_forward for the alternative pre-forward
         # placement used in hypothesis test)
         if nb and not clamp_log_r_before_forward:
             with torch.no_grad():
-                params_tensor[-3].clamp_(_log_r_lo, _log_r_hi)
+                params_tensor[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
 
         # No post-step NaN-to-zero parameter reset: invalid parameters should
         # fail visibly rather than being converted to plausible values.
@@ -678,11 +703,11 @@ def Lq_optimize_torch_OU(
         if log_alpha_clamp is not None:
             lo, hi = log_alpha_clamp
             with torch.no_grad():
-                params_tensor[-2].clamp_(float(lo), float(hi))
+                params_tensor[log_alpha_idx].clamp_(float(lo), float(hi))
         _clamp_lq_log_s2_()
 
         if tracing:
-            TRACE.write("log_r_post_clamp", float(params_tensor[-3].reshape(-1)[0].detach().cpu()))
+            TRACE.write("log_r_post_clamp", float(params_tensor[log_r_idx].reshape(-1)[0].detach().cpu()))
             try:
                 step_callback(n, dict(TRACE.diag))
             except Exception as e:
@@ -739,10 +764,10 @@ def Lq_optimize_torch_OU(
     # Pre-KKT clamps are domain bounds only; no NaN-to-zero parameter repair.
     with torch.no_grad():
         if nb:
-            best_params[-3].clamp_(_log_r_lo, _log_r_hi)
+            best_params[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
         if log_alpha_clamp is not None:
             lo, hi = log_alpha_clamp
-            best_params[-2].clamp_(float(lo), float(hi))
+            best_params[log_alpha_idx].clamp_(float(lo), float(hi))
         for lq in best_params[:n_trees]:
             n_cells = lq.shape[-1] // 2
             lq[..., n_cells:2 * n_cells].clamp_(LOG_S2_MIN, LOG_S2_MAX)
@@ -756,8 +781,8 @@ def Lq_optimize_torch_OU(
             for i in range(n_trees):
                 _, sigma, theta = Lq_neg_log_lik_torch(
                     best_params[i],
-                    best_params[-3],
-                    [best_params[-2], best_params[-1]],
+                    best_params[log_r_idx],
+                    [best_params[log_alpha_idx], best_params[other_ou_idx]],
                     mode,
                     x_tensor_list[i],
                     diverge_list_torch[i],
@@ -772,18 +797,30 @@ def Lq_optimize_torch_OU(
                     library_list_tensor[i],
                     const,
                     fix_alpha=fix_alpha,
+                    ou_lambda=best_params[ou_lambda_idx],
+                    ou_lambda_mode=ou_lambda_mode,
                 )
             other_params = torch.cat(
                 (sigma.unsqueeze(-1), theta), dim=-1
             )
             if mode == 1:
-                best_params[-1][:, :, :2] = other_params
+                best_params[other_ou_idx][:, :, :2] = other_params
             else:
-                best_params[-1] = other_params
+                best_params[other_ou_idx] = other_params
 
-    best_params = [p for p in best_params[:-2]] + [
-        torch.cat((best_params[-2], best_params[-1]), dim=-1)
-    ] # [Lq tree1, Lq tree2, ..., Lq treeN, logr, all OU]
+    all_ou = torch.cat((best_params[log_alpha_idx], best_params[other_ou_idx]), dim=-1)
+    if return_ou_lambda:
+        if ou_lambda_mode == 0:
+            ou_lambda = torch.zeros_like(best_params[ou_lambda_idx])
+        elif ou_lambda_mode == 1:
+            ou_lambda = torch.ones_like(best_params[ou_lambda_idx])
+        elif ou_lambda_mode == 2:
+            ou_lambda = torch.sigmoid(best_params[ou_lambda_idx])
+        else:
+            raise ValueError(f"Invalid Pagel lambda mode: {ou_lambda_mode}")
+        best_params = best_params[:n_trees] + [best_params[log_r_idx], ou_lambda, all_ou]
+    else:
+        best_params = best_params[:n_trees] + [best_params[log_r_idx], all_ou]
 
     if step_callback is not None:
         TRACE.enabled = False

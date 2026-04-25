@@ -6,6 +6,24 @@ from .weights import theta_weight_W_numpy, theta_weight_W_torch
 from .trace import TRACE, cov_diag, nan_inf_count
 
 
+def _bounded_pagel_lambda(raw_lambda, mode, reference):
+    if mode == 0:
+        return torch.zeros_like(reference)
+    if mode == 1 or raw_lambda is None:
+        return torch.ones_like(reference)
+    if mode == 2:
+        return torch.sigmoid(raw_lambda)
+    raise ValueError(f"Invalid Pagel lambda mode: {mode}")
+
+
+def _apply_pagel_lambda_to_cov(V, raw_lambda, mode, reference):
+    lam = _bounded_pagel_lambda(raw_lambda, mode, reference)
+    if mode == 1 and raw_lambda is None:
+        return V
+    diag_v = torch.diag_embed(torch.diagonal(V, dim1=-2, dim2=-1))
+    return lam[..., None, None] * V + (1.0 - lam[..., None, None]) * diag_v
+
+
 # calculate negative log likelihood of OU
 def ou_neg_log_lik_numpy(
     params, mode, expr_list, diverge_list, share_list, epochs_list, beta_list
@@ -155,7 +173,8 @@ def ou_neg_log_lik_numpy_kkt(
 
 # calculate expectation of negative OU log likelihood with torch
 def ou_neg_log_lik_torch(
-    params_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device
+    params_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device,
+    pagel_lambda=None, pagel_lambda_mode=1
 ):
     """
     Same OU likelihood with torch. Used for ELBO with torch.
@@ -184,6 +203,12 @@ def ou_neg_log_lik_torch(
         * torch.exp(-alpha * diverge)
         * (1 - torch.exp(-2 * alpha * share))
     )  # (batch_size, N_sim, n_cells, n_cells)
+    V = _apply_pagel_lambda_to_cov(
+        V,
+        pagel_lambda,
+        pagel_lambda_mode,
+        alpha.squeeze(-1).squeeze(-1),
+    )
     
     # Compute W and diff
     if mode == 1:
@@ -272,7 +297,8 @@ def psd_safe_cholesky(V, base_jitter=1e-6, max_tries=7):
 
 # calculate expectation of negative OU log likelihood with torch
 def ou_neg_log_lik_torch_kkt(
-    param_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device
+    param_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device,
+    pagel_lambda=None, pagel_lambda_mode=1
 ):
     """
     Same OU likelihood with torch. Used for ELBO with torch.
@@ -296,6 +322,12 @@ def ou_neg_log_lik_torch_kkt(
         * torch.exp(-alpha * diverge)
         * (1 - torch.exp(-2 * alpha * share))
     )  # (batch_size, N_sim, n_cells, n_cells)
+    V = _apply_pagel_lambda_to_cov(
+        V,
+        pagel_lambda,
+        pagel_lambda_mode,
+        alpha.squeeze(-1).squeeze(-1),
+    )
     
     # Compute W and diff
     if mode == 1:
@@ -494,4 +526,3 @@ def bm_neg_log_lik_torch_kkt(
 
     loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood (w/o constant)
     return loss, root_mean_gls, sigma  # (batch_size,)
-

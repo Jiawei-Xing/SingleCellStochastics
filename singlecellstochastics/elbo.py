@@ -25,6 +25,8 @@ def Lq_neg_log_lik_torch(
     lib,
     const,
     fix_alpha=False,
+    ou_lambda=None,
+    ou_lambda_mode=1,
 ):
     """
     ELBO for approximating model evidence.
@@ -80,7 +82,9 @@ def Lq_neg_log_lik_torch(
     
     elif kkt: # OU -log lik
         term1, sigma, theta = ou_neg_log_lik_torch_kkt(
-            ou_params, s2, mode, m, diverge, share, epochs, beta, device
+            ou_params, s2, mode, m, diverge, share, epochs, beta, device,
+            pagel_lambda=ou_lambda,
+            pagel_lambda_mode=ou_lambda_mode,
         )  # (batch_size, N_sim)
         
         if const:
@@ -88,7 +92,9 @@ def Lq_neg_log_lik_torch(
 
     else: # OU -log lik without KKT
         term1 = ou_neg_log_lik_torch(
-            ou_params, s2, mode, m, diverge, share, epochs, beta, device
+            ou_params, s2, mode, m, diverge, share, epochs, beta, device,
+            pagel_lambda=ou_lambda,
+            pagel_lambda_mode=ou_lambda_mode,
         )  # (batch_size, N_sim)
 
         if const:

@@ -4,14 +4,13 @@ import pandas as pd
 import argparse
 import wandb
 import os
-import pickle
+import json
 import time
 import gc
 import logging
 import shutil
 from .preprocess import process_data_OU
 from .lrt import likelihood_ratio_test
-from .simulate import simulate_null_all, simulate_null_each
 from .output import save_result, output_results
 
 logger = logging.getLogger(__name__)
@@ -59,9 +58,7 @@ def parse_args():
     parser.add_argument("--wandb", type=str, default=None, help="Wandb run name")
     #parser.add_argument("--selection", type=str, default=None, help="Selection test TSV to reuse OU H1 as diff test H0 (skip H0 optimization)")
 
-    # Empirical null / importance sampling
-    parser.add_argument("--sim_all", type=int, default=None, help="Simulations for shared empirical null")
-    parser.add_argument("--sim_each", type=int, default=None, help="Simulations for per-gene empirical null")
+    # Importance sampling (empirical-null calibration is a separate CLI: run-calibrate)
     parser.add_argument("--importance", type=int, default=0, help="Number of importance samples (default: 0)")
     parser.add_argument("--mix", type=float, default=1, help="Weight for q(z) in importance sampling mixture (default: 1)")
 
@@ -128,10 +125,6 @@ def run_diff_test():
     regimes = list(dict.fromkeys(x for sub in regime_list for x in sub))
     n_regimes = len(regimes)
     batch_size = min(args.batch, len(df_list[0].columns))
-
-    library_list_tensor = [
-        torch.tensor(lib.values.squeeze(), dtype=torch.float32, device=device) for lib in library_list
-    ]
 
     # Parse log_alpha_clamp "lo,hi"
     log_alpha_clamp = None
@@ -216,19 +209,6 @@ def run_diff_test():
         batch_results = save_result(batch_start, batch_size, batch_genes,
             h0_params, h1_params, h0_loss, h1_loss, {}, args.approx)
 
-        # Per-gene empirical null
-        batch_empirical_each = {}
-        if args.sim_each:
-            x_sim = simulate_null_each(tree_list, h0_params, args.sim_each, cells_list)
-            _, h0_loss_sim, _, h1_loss_sim, _, _ = likelihood_ratio_test(
-                x_sim, gene_names=batch_gene_names, batch_start=batch_start, **lrt_kwargs
-            )
-            null_LRs = h0_loss_sim - h1_loss_sim
-            lr = h0_loss - h1_loss
-            for i in range(len(batch_genes)):
-                p_empirical = (sum(null_LRs[i, :] >= lr[i, 0]) + 1) / (len(null_LRs[i, :]) + 1)
-                batch_empirical_each[batch_start + i] = batch_results[batch_start + i][:-1] + [p_empirical]
-
         # Save checkpoint
         ckpt_data = {
             'batch_start': batch_start,
@@ -239,7 +219,6 @@ def run_diff_test():
             'h0_params': h0_params,
             'h0_loss': h0_loss,
             'h1_loss': h1_loss,
-            'empirical_each': batch_empirical_each,
         }
         torch.save(ckpt_data, ckpt_file)
         logger.info(f"Batch {batch_idx+1}/{n_batches} done ({min(batch_start+batch_size, n_genes)}/{n_genes} genes)")
@@ -251,9 +230,6 @@ def run_diff_test():
     results = {}
     h0_q_params = []
     h1_q_params = []
-    results_empirical_each = {}
-    ou_params_all = []
-    lr_all = []
 
     for batch_idx in range(n_batches):
         ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx}.pt")
@@ -272,16 +248,31 @@ def run_diff_test():
         else:
             h1_q_params = [n for n in ckpt_data['h1_q']]
 
-        ou_params_all.append(ckpt_data['h0_params'][:, 0, :])
-        lr = ckpt_data['h0_loss'] - ckpt_data['h1_loss']
-        lr_all.append(lr[:, 0])
-
-        results_empirical_each.update(ckpt_data.get('empirical_each', {}))
-
     # === Output results ===
 
     # Chi-squared results
     output_results(results, os.path.join(output_dir, f"{prefix}_chi-squared.tsv"), regimes)
+
+    # Sidecar meta.json — everything run-calibrate needs to reconstruct lrt_kwargs
+    meta = {
+        "tree": args.tree, "expr": args.expr, "regime": args.regime,
+        "library": args.library, "null": args.null,
+        "iter": args.iter, "lr": args.lr, "window": args.window, "tol": args.tol,
+        "dtype": args.dtype, "approx": args.approx, "nb": args.nb, "kkt": args.kkt,
+        "prior": args.prior, "pseudo": args.pseudo, "const": args.const,
+        "init": args.init, "em_iter": args.em_iter, "grid": args.grid,
+        "importance": args.importance, "mix": args.mix,
+        "clamp_log_r_before_forward": args.clamp_log_r_before_forward,
+        "grad_clip_norm": args.grad_clip_norm,
+        "log_alpha_clamp": args.log_alpha_clamp,
+        "log_r_clamp": args.log_r_clamp,
+        "seed_per_gene": args.seed_per_gene,
+        "s_init_floor": args.s_init_floor,
+        "disable_param_sanitize": args.disable_param_sanitize,
+        "enable_grad_sanitize": args.enable_grad_sanitize,
+    }
+    with open(os.path.join(output_dir, f"{prefix}_meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
 
     # Variational parameters (skip h0_q if reusing from selection)
     if sel_df is None:
@@ -292,52 +283,12 @@ def run_diff_test():
         df = pd.DataFrame(h1_q_params[i][:,0,:], index=df_list[i].columns, columns=cells_list[i]*2)
         df.to_csv(os.path.join(output_dir, f"{prefix}_h1_q-mean-std_{i}.tsv"), sep="\t")
 
-    # Per-gene empirical null results
-    if args.sim_each:
-        output_results(results_empirical_each, os.path.join(output_dir, f"{prefix}_empirical-each.tsv"), regimes)
-
-    # Shared empirical null
-    if args.sim_all:
-        logger.info(f"Using empirical null distribution for all genes ({args.sim_all} simulations)")
-        null_LRs = None
-        os.makedirs(output_dir, exist_ok=True)
-        sim_all_cache_file = os.path.join(output_dir, f"sim_all_null_LRs_{args.sim_all}.pkl")
-
-        # Try cached
-        if os.path.exists(sim_all_cache_file):
-            try:
-                with open(sim_all_cache_file, 'rb') as f:
-                    null_LRs = pickle.load(f)
-                logger.info(f"Loaded cached null LRs from {sim_all_cache_file}")
-            except Exception as e:
-                logger.info(f"Failed to load cached parameters: {e}")
-
-        # Simulate if not cached
-        if null_LRs is None:
-            ou_params_all = np.concatenate(ou_params_all, axis=0)
-            x_sim = simulate_null_all(tree_list, ou_params_all, args.sim_all, cells_list)
-            x_sim = [np.expand_dims(x, axis=1) for x in x_sim]
-            gene_names = ["sim_all"] * args.sim_all
-            _, h0_loss_sim, _, h1_loss_sim, _, _ = likelihood_ratio_test(
-                x_sim, gene_names=gene_names, batch_start=0, **lrt_kwargs
-            )
-            null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]
-            with open(sim_all_cache_file, 'wb') as f:
-                pickle.dump(null_LRs, f)
-
-        # Compute empirical p-values
-        lr_all = np.concatenate(lr_all, axis=0)
-        results_empirical_all = {}
-        for i in range(lr_all.shape[0]):
-            p_empirical_all = (sum(null_LRs >= lr_all[i]) + 1) / (len(null_LRs) + 1)
-            results_empirical_all[i] = results[i][:-1] + [p_empirical_all]
-        output_results(results_empirical_all, os.path.join(output_dir, f"{prefix}_empirical-all.tsv"), regimes)
-
     # Clean up checkpoint directory
     if not args.keep_ckpt:
         shutil.rmtree(ckpt_dir)
     elapsed = time.time() - start_time
     logger.info(f"Results saved to {output_dir}/{prefix}_chi-squared.tsv")
+    logger.info(f"For empirical-null calibration: run-calibrate --chi {output_dir}/{prefix}_chi-squared.tsv --sim_all <N>")
     logger.info(f"Total running time: {elapsed:.1f}s ({elapsed/60:.1f}min)")
 
 
