@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 from .preprocess import process_data_OU, process_data_BM
 from .optimize import Lq_optimize_torch_OU, Lq_optimize_torch_BM
+from .qparam import export_mean_std_tensor, log_s2_from_std_tensor
 
 
 def gene_expression_selection(
@@ -93,7 +94,7 @@ def gene_expression_selection(
                 for x in x_tensor_list
             ]
             q_params_bm = [
-                torch.cat((x_tensor_list[i], s_init_bm[i]), dim=-1)
+                torch.cat((x_tensor_list[i], log_s2_from_std_tensor(s_init_bm[i])), dim=-1)
                 for i in range(len(x_tensor_list))
             ]
             log_r_bm = torch.zeros((actual_batch,), dtype=torch.float32, device=device)
@@ -119,7 +120,7 @@ def gene_expression_selection(
             )
 
             # H0 q params: list of (batch, 2*n_cells) per clone
-            h0_q = [p.detach().cpu() for p in h0_params[:-2]]
+            h0_q = [export_mean_std_tensor(p).detach().cpu() for p in h0_params[:-2]]
 
             # H0 result columns: r, mu, sigma
             h0_r = h0_params[-2].exp().unsqueeze(-1)  # (batch, 1)
@@ -134,7 +135,7 @@ def gene_expression_selection(
                 for x in x_tensor_ou_h0
             ]
             q_params_h0 = [
-                torch.cat((x_tensor_ou_h0[i], s_init_h0[i]), dim=-1)
+                torch.cat((x_tensor_ou_h0[i], log_s2_from_std_tensor(s_init_h0[i])), dim=-1)
                 for i in range(len(x_tensor_ou_h0))
             ]
             log_r_h0 = torch.zeros((actual_batch, 1), dtype=torch.float32, device=device)
@@ -171,7 +172,7 @@ def gene_expression_selection(
             h0_loss = h0_loss.squeeze(1)
 
             # H0 q params
-            h0_q = [p.detach().cpu() for p in h0_params[:-2]]
+            h0_q = [export_mean_std_tensor(p).detach().cpu() for p in h0_params[:-2]]
 
             # H0 result columns: r, alpha(~0), sigma, theta
             h0_result = torch.cat(
@@ -187,7 +188,7 @@ def gene_expression_selection(
             for x in x_tensor_ou
         ]
         q_params_ou = [
-            torch.cat((x_tensor_ou[i], s_init_ou[i]), dim=-1)
+            torch.cat((x_tensor_ou[i], log_s2_from_std_tensor(s_init_ou[i])), dim=-1)
             for i in range(len(x_tensor_ou))
         ]
         log_r_ou = torch.zeros((actual_batch, 1), dtype=torch.float32, device=device)
@@ -222,13 +223,12 @@ def gene_expression_selection(
         h1_loss = h1_loss.squeeze(1)
 
         # H1 q params
-        h1_q = [p.detach().cpu() for p in h1_params[:-2]]
+        h1_q = [export_mean_std_tensor(p).detach().cpu() for p in h1_params[:-2]]
 
         # LRT: 2 * (H0_nll - H1_nll)
         lr_stat = 2 * (h0_loss - h1_loss)
         chi2_dist = Chi2(torch.tensor([1.0], device=device))
-        lr_stat_safe = torch.nan_to_num(lr_stat, nan=0.0).clamp(min=0)
-        p_value = 1.0 - chi2_dist.cdf(lr_stat_safe)
+        p_value = 1.0 - chi2_dist.cdf(lr_stat.clamp(min=0))
 
         # H1 result columns: r, alpha, sigma, theta
         h1_ou_result = torch.cat(

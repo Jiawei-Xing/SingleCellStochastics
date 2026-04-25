@@ -7,6 +7,8 @@ import wandb
 from .likelihood import ou_neg_log_lik_numpy, ou_neg_log_lik_numpy_kkt
 from .likelihood import ou_neg_log_lik_torch, ou_neg_log_lik_torch_kkt, bm_neg_log_lik_torch_kkt
 from .elbo import Lq_neg_log_lik_torch
+from .qparam import LOG_S2_MAX, LOG_S2_MIN
+from .trace import TRACE
 
 
 # optimize OU likelihood with SciPy
@@ -321,9 +323,42 @@ def Lq_optimize_torch_OU(
     library_list_tensor,
     const,
     fix_alpha=False,
+    step_callback=None,
+    clamp_log_r_before_forward=False,
+    grad_clip_norm=None,
+    log_alpha_clamp=None,
+    log_r_clamp=None,
+    seed_per_call=None,
+    disable_param_sanitize=False,
+    disable_grad_sanitize=True,
 ):
     """
     Optimize ELBO with PyTorch Adam.
+
+    Numerical-safety knobs:
+    - clamp_log_r_before_forward: apply the log_r clamp BEFORE the forward
+      pass instead of after the optimiser step. Avoids leaking out-of-range
+      log_r values into the next step's forward (which can yield huge or
+      NaN gradients).
+    - grad_clip_norm: if given, apply torch.nn.utils.clip_grad_norm_ to
+      each parameter tensor with this max norm. Bounds the size of any
+      single bad MC step.
+    - log_alpha_clamp: (lo, hi) tuple. Clamp log_alpha post-step to this
+      range. Prevents alpha → 0 (BM degeneracy → KKT NaN) and alpha → ∞
+      (V → 0 → singular Cholesky).
+    - log_r_clamp: (lo, hi) tuple for NB dispersion log_r clamp. Applied
+      pre-loop, post-step, and pre-KKT. Defaults to (-5, 5) (r ∈ [0.0067, 148]).
+      Raising the upper bound (e.g. (-5, 8) → r ≤ 2981, or (-5, 10) → r ≤ 22k)
+      allows near-Poisson regimes for genes with low biological noise +
+      high counts (ribosomal, housekeeping). log_r has no gradient signal
+      in the Poisson limit, so Adam is self-limiting at high r — but the
+      traversal corridor is wider, so grad_clip_norm is recommended.
+    - seed_per_call: integer seed applied via torch.manual_seed at the
+      start of this call. Stabilises the MC sampling against batch-order
+      effects (a gene then gets the same MC sequence regardless of which
+      batch it lands in).
+    - disable_grad_sanitize: default True. If False, non-finite gradient
+      entries are replaced with 0 before Adam as an explicit backstop.
 
     params: List of (batch_size, N_sim, all_param_dim)
             [Lq_params tree1, Lq_params tree2, ..., Lq_params treeN, logr, shared OU_params]
@@ -347,6 +382,11 @@ def Lq_optimize_torch_OU(
     
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
+    if seed_per_call is not None:
+        torch.manual_seed(int(seed_per_call))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(seed_per_call))
+
     batch_size, N_sim, _ = params[0].shape
     n_trees = len(x_tensor_list)
 
@@ -378,6 +418,25 @@ def Lq_optimize_torch_OU(
         if not kkt:
             params_tensor[-1] = params_tensor[-1].requires_grad_(True) # other OU
     
+    # Resolve log_r clamp: default (-5, 5) for legacy behaviour.
+    _log_r_lo, _log_r_hi = (log_r_clamp if log_r_clamp is not None else (-5.0, 5.0))
+    def _clamp_lq_log_s2_():
+        with torch.no_grad():
+            for lq in params_tensor[:n_trees]:
+                n_cells = lq.shape[-1] // 2
+                lq[..., n_cells:2 * n_cells].clamp_(LOG_S2_MIN, LOG_S2_MAX)
+
+    # Pre-loop clamps are domain bounds, not NaN repair. NaN-to-zero parameter
+    # resets were removed so invalid parameters surface instead of silently
+    # becoming plausible values.
+    with torch.no_grad():
+        if nb:
+            params_tensor[-3].clamp_(_log_r_lo, _log_r_hi)
+        if log_alpha_clamp is not None:
+            lo, hi = log_alpha_clamp
+            params_tensor[-2].clamp_(float(lo), float(hi))
+    _clamp_lq_log_s2_()
+
     # Track best parameters for all parameter types
     best_params = [p.clone().detach() for p in params_tensor]
     best_loss = torch.full(
@@ -395,12 +454,31 @@ def Lq_optimize_torch_OU(
     )
     nan_patience = 50  # mark as failed after this many consecutive NaN iterations
 
+    tracing = step_callback is not None
+    if tracing:
+        TRACE.enabled = True
+
     for n in range(max_iter):
         optimizer.zero_grad()
         active_batch = (~converged_mask).any(dim=1)  # (batch_size,)
 
+        # Optionally clamp log_r BEFORE the forward pass (hypothesis test).
+        # The default placement is post-step, which means Adam state can
+        # accumulate gradients pushed beyond the clamp window.
+        if nb and clamp_log_r_before_forward:
+            with torch.no_grad():
+                params_tensor[-3].clamp_(_log_r_lo, _log_r_hi)
+
         # get loss for each tree for not yet converged genes
         active_loss_list = []
+        # Capture pre-forward param snapshot for trace (post-clamp value used
+        # in this step's forward pass)
+        if tracing:
+            TRACE.reset()
+            TRACE.write("step", n)
+            TRACE.write("log_r_pre_forward", float(params_tensor[-3].reshape(-1)[0].detach().cpu()))
+            TRACE.write("log_alpha_pre_forward", float(params_tensor[-2].reshape(-1)[0].detach().cpu()))
+
         for i in range(n_trees):
             if kkt:
                 loss, sigma, theta = Lq_neg_log_lik_torch(
@@ -505,12 +583,110 @@ def Lq_optimize_torch_OU(
         if valid_mask.any():
             loss = active_loss_flat[valid_mask].sum()
             loss.backward()
+
+            # Sanitise gradients: replace NaN/Inf gradient entries with 0
+            # so a single bad MC sample for one gene cannot pollute the
+            # whole shared Adam state. Then optionally clip the gradient
+            # norm of each parameter tensor.
+            # Also count how many NaN/Inf entries appeared per param per
+            # step so ablation traces can show whether the sanitize is
+            # load-bearing or a no-op in practice.
+            if tracing:
+                for pname, pidx in [("log_r", -3), ("log_alpha", -2), ("lq0", 0)]:
+                    pt = params_tensor[pidx]
+                    if pt.grad is not None:
+                        n_nan = int(torch.isnan(pt.grad).sum().detach().cpu())
+                        n_inf = int(torch.isinf(pt.grad).sum().detach().cpu())
+                        # Largest |grad| among FINITE entries (gives a sense of
+                        # gradient magnitude even when a few entries are non-finite)
+                        finite_mask = torch.isfinite(pt.grad)
+                        if finite_mask.any():
+                            g_abs_max = float(pt.grad[finite_mask].abs().max().detach().cpu())
+                        else:
+                            g_abs_max = float("nan")
+                        TRACE.write(f"grad_{pname}_n_nan_raw", n_nan)
+                        TRACE.write(f"grad_{pname}_n_inf_raw", n_inf)
+                        TRACE.write(f"grad_{pname}_abs_max_finite", g_abs_max)
+            if not disable_grad_sanitize:
+                with torch.no_grad():
+                    for p in params_tensor:
+                        if p.grad is not None:
+                            bad = ~torch.isfinite(p.grad)
+                            if bad.any():
+                                p.grad[bad] = 0.0
+            if grad_clip_norm is not None and grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    [p for p in params_tensor if p.grad is not None],
+                    max_norm=float(grad_clip_norm),
+                )
+
+            if tracing:
+                # capture grads + adam state BEFORE step (Adam mutates m,v
+                # in-place during step). Index 0,0 since trace is single-gene.
+                grad_log_r = params_tensor[-3].grad
+                grad_log_alpha = params_tensor[-2].grad
+                grad_lq0 = params_tensor[0].grad
+                if grad_log_r is not None:
+                    TRACE.write("grad_log_r", float(grad_log_r.reshape(-1)[0].detach().cpu()))
+                    n_nan_g = int(torch.isnan(grad_log_r).sum().detach().cpu())
+                    TRACE.write("grad_log_r_n_nan", n_nan_g)
+                if grad_log_alpha is not None:
+                    TRACE.write("grad_log_alpha", float(grad_log_alpha.reshape(-1)[0].detach().cpu()))
+                if grad_lq0 is not None:
+                    TRACE.write("grad_lq_max_abs", float(grad_lq0.abs().max().detach().cpu()))
+                    nan_g, inf_g = int(torch.isnan(grad_lq0).sum().detach().cpu()), int(torch.isinf(grad_lq0).sum().detach().cpu())
+                    TRACE.write("grad_lq_n_nan", nan_g)
+                    TRACE.write("grad_lq_n_inf", inf_g)
+
+                # Adam state for log_r (params_tensor[-3])
+                state = optimizer.state.get(params_tensor[-3], {})
+                if "exp_avg" in state:
+                    TRACE.write("adam_m_log_r", float(state["exp_avg"].reshape(-1)[0].detach().cpu()))
+                if "exp_avg_sq" in state:
+                    TRACE.write("adam_v_log_r", float(state["exp_avg_sq"].reshape(-1)[0].detach().cpu()))
+
             optimizer.step()
 
-        # clamp log_r to prevent NaN/overflow
-        if nb:
+            if tracing:
+                # capture POST-Adam, PRE-clamp value of log_r
+                TRACE.write("log_r_post_adam_pre_clamp", float(params_tensor[-3].reshape(-1)[0].detach().cpu()))
+                # NaN-genesis: log whether each param tensor has any non-finite
+                # entries AFTER the optimizer step (before any clamp / sanitize)
+                for pname, pidx in [("log_r", -3), ("log_alpha", -2), ("lq0", 0)]:
+                    pt = params_tensor[pidx]
+                    n_nan = int(torch.isnan(pt).sum().detach().cpu())
+                    n_inf = int(torch.isinf(pt).sum().detach().cpu())
+                    TRACE.write(f"param_{pname}_n_nan_post_step", n_nan)
+                    TRACE.write(f"param_{pname}_n_inf_post_step", n_inf)
+                # Also log post-step log_alpha value for NaN-genesis analysis
+                TRACE.write("log_alpha_post_step", float(params_tensor[-2].reshape(-1)[0].detach().cpu()))
+
+        # clamp log_r to prevent NaN/overflow (default placement: post-step;
+        # see clamp_log_r_before_forward for the alternative pre-forward
+        # placement used in hypothesis test)
+        if nb and not clamp_log_r_before_forward:
             with torch.no_grad():
-                params_tensor[-3].clamp_(-5, 5)
+                params_tensor[-3].clamp_(_log_r_lo, _log_r_hi)
+
+        # No post-step NaN-to-zero parameter reset: invalid parameters should
+        # fail visibly rather than being converted to plausible values.
+
+        # Optional: floor + ceiling on log_alpha to keep alpha in a numerically
+        # well-conditioned range. Default range (e.g. [-3, 5]) prevents the
+        # OU/BM degeneracy at α → 0 (where 1/(2α) blows up the KKT solve)
+        # and the V → 0 collapse at α → ∞.
+        if log_alpha_clamp is not None:
+            lo, hi = log_alpha_clamp
+            with torch.no_grad():
+                params_tensor[-2].clamp_(float(lo), float(hi))
+        _clamp_lq_log_s2_()
+
+        if tracing:
+            TRACE.write("log_r_post_clamp", float(params_tensor[-3].reshape(-1)[0].detach().cpu()))
+            try:
+                step_callback(n, dict(TRACE.diag))
+            except Exception as e:
+                print(f"[trace] step_callback raised at step {n}: {e}")
 
         # check convergence in window
         if n >= window:
@@ -560,6 +736,17 @@ def Lq_optimize_torch_OU(
         print(f"   - Decrease window (current: {window})")
         print(f"   - Check data quality for these genes")
 
+    # Pre-KKT clamps are domain bounds only; no NaN-to-zero parameter repair.
+    with torch.no_grad():
+        if nb:
+            best_params[-3].clamp_(_log_r_lo, _log_r_hi)
+        if log_alpha_clamp is not None:
+            lo, hi = log_alpha_clamp
+            best_params[-2].clamp_(float(lo), float(hi))
+        for lq in best_params[:n_trees]:
+            n_cells = lq.shape[-1] // 2
+            lq[..., n_cells:2 * n_cells].clamp_(LOG_S2_MIN, LOG_S2_MAX)
+
     # Reconstruct sigma/theta from best alpha/Lq params via KKT analytical solution.
     # During optimization, params_tensor[-1] is never read (sigma/theta are always
     # recomputed inside ou_neg_log_lik_torch_kkt), so we skip storing it in the loop
@@ -597,6 +784,10 @@ def Lq_optimize_torch_OU(
     best_params = [p for p in best_params[:-2]] + [
         torch.cat((best_params[-2], best_params[-1]), dim=-1)
     ] # [Lq tree1, Lq tree2, ..., Lq treeN, logr, all OU]
+
+    if step_callback is not None:
+        TRACE.enabled = False
+        TRACE.reset()
 
     return best_params, best_loss
 
@@ -645,6 +836,12 @@ def Lq_optimize_torch_BM(
     pagel_lambda = params[-1].clone().detach()
     n_trees = len(x_tensor_list)
 
+    def _clamp_lq_log_s2_bm_():
+        with torch.no_grad():
+            for lq in params[:n_trees]:
+                n_cells = lq.shape[-1] // 2
+                lq[..., n_cells:2 * n_cells].clamp_(LOG_S2_MIN, LOG_S2_MAX)
+
     # optimize q parameters
     for i in range(len(params)-1):
         params[i] = params[i].requires_grad_(True)
@@ -656,6 +853,11 @@ def Lq_optimize_torch_BM(
         params[-1] = torch.ones_like(pagel_lambda, dtype=pagel_lambda.dtype, device=device)
     else: # optimize lambda
         params[-1] = params[-1].requires_grad_(True)
+
+    with torch.no_grad():
+        if nb:
+            params[-2].clamp_(-5, 5)
+    _clamp_lq_log_s2_bm_()
 
     optimizer = torch.optim.Adam([p for p in params if p.requires_grad], lr=learning_rate)
     
@@ -775,10 +977,10 @@ def Lq_optimize_torch_BM(
         loss.backward()
         optimizer.step()
 
-        # clamp log_r to prevent NaN/overflow
-        if nb:
-            with torch.no_grad():
+        with torch.no_grad():
+            if nb:
                 params[-2].clamp_(-5, 5)
+        _clamp_lq_log_s2_bm_()
 
     # warning if not all genes have converged
     print(f"\nChecking convergence for bm{mode} ELBO...")
@@ -807,6 +1009,13 @@ def Lq_optimize_torch_BM(
         print(f"   - Increase tol (current: {tol})")
         print(f"   - Decrease window (current: {window})")
         print(f"   - Check data quality for these genes")
+
+    with torch.no_grad():
+        if nb:
+            best_params[-2].clamp_(-5, 5)
+        for lq in best_params[:n_trees]:
+            n_cells = lq.shape[-1] // 2
+            lq[..., n_cells:2 * n_cells].clamp_(LOG_S2_MIN, LOG_S2_MAX)
 
     return best_params, best_loss
 

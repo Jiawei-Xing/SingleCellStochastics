@@ -2,11 +2,22 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
+import hashlib
 import os
 
 from .optimize import ou_optimize_scipy, ou_optimize_torch, Lq_optimize_torch_OU
 from .em import run_em
 from .importance import importance_sampling
+from .qparam import export_mean_std_tensor, log_s2_from_std_array
+
+
+def _gene_seed(gene_names, mode, base_seed=42):
+    """Return a deterministic seed depending only on the gene_names tuple +
+    mode. The same gene gets the same MC sequence regardless of which batch
+    it was placed in. Differences between H0 and H1 use mode in the hash."""
+    key = "|".join(sorted(str(g) for g in gene_names)) + f"|mode={mode}"
+    h = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    return (int(h[:8], 16) ^ int(base_seed)) & 0x7fffffff
 
 # likelihood ratio test
 def likelihood_ratio_test(
@@ -28,7 +39,7 @@ def likelihood_ratio_test(
     wandb_flag,
     window,
     tol,
-    approx, 
+    approx,
     em_iter,
     pseudo,
     batch_start,
@@ -40,7 +51,17 @@ def likelihood_ratio_test(
     library_list,
     importance,
     const,
-    mix
+    mix,
+    h0_step_callback=None,
+    h1_step_callback=None,
+    clamp_log_r_before_forward=False,
+    grad_clip_norm=None,
+    log_alpha_clamp=None,
+    log_r_clamp=None,
+    seed_per_gene=False,
+    s_init_floor=None,
+    disable_param_sanitize=False,
+    disable_grad_sanitize=True,
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -80,13 +101,19 @@ def likelihood_ratio_test(
     else:
         m_init = expr
 
-    # Initialize q standard deviation with expression data
+    # Initialize q standard deviation with expression data.
+    # Optionally cap the per-cell init at `s_init_floor` (e.g. 1.0) so that
+    # high-variance genes (e.g. ribosomal) don't start with q_s² in the
+    # thousands — which inflates MC noise on log p(x|z) and pushes Adam
+    # toward pathological optima.
     s_init = [
         np.tile(
-            np.maximum(1e-6, np.std(x, axis=-1, keepdims=True)), 
+            np.maximum(1e-6, np.std(x, axis=-1, keepdims=True)),
             (1, 1, x.shape[-1])
         ) for x in m_init
     ]
+    if s_init_floor is not None:
+        s_init = [np.minimum(s, float(s_init_floor)) for s in s_init]
 
     '''
     # use the first gene as the example gene
@@ -140,14 +167,15 @@ def likelihood_ratio_test(
         )
         ou_params_init = ou_params_h0
 
-    # Initialize q std for torch
-    s_init_tensor = [
-        torch.tensor(s, dtype=dtype, device=device) for s in s_init
+    # Initialize q log-variance for torch. The optimizer stores [mean, log_s2]
+    # internally; output conversion below still writes mean + q_std files.
+    log_s2_init_tensor = [
+        torch.tensor(log_s2_from_std_array(s), dtype=dtype, device=device) for s in s_init
     ]
 
     # Initialize all Lq parameters for torch
     pois_params_init = [
-        torch.cat((m_init_tensor[i], s_init_tensor[i]), dim=-1) for i in range(len(m_init))
+        torch.cat((m_init_tensor[i], log_s2_init_tensor[i]), dim=-1) for i in range(len(m_init))
     ]  # list of (batch_size, N_sim, 2*n_cells)
 
     # Initialize dispersion parameter for negative binomial
@@ -191,7 +219,15 @@ def likelihood_ratio_test(
             kkt,
             nb,
             library_list_tensor,
-            const
+            const,
+            step_callback=h0_step_callback,
+            clamp_log_r_before_forward=clamp_log_r_before_forward,
+            grad_clip_norm=grad_clip_norm,
+            log_alpha_clamp=log_alpha_clamp,
+            log_r_clamp=log_r_clamp,
+            seed_per_call=(_gene_seed(gene_names, mode=1) if seed_per_gene else None),
+            disable_param_sanitize=disable_param_sanitize,
+            disable_grad_sanitize=disable_grad_sanitize,
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
         h0_params, h0_loss = run_em(
@@ -241,7 +277,15 @@ def likelihood_ratio_test(
             kkt,
             nb,
             library_list_tensor,
-            const
+            const,
+            step_callback=h1_step_callback,
+            clamp_log_r_before_forward=clamp_log_r_before_forward,
+            grad_clip_norm=grad_clip_norm,
+            log_alpha_clamp=log_alpha_clamp,
+            log_r_clamp=log_r_clamp,
+            seed_per_call=(_gene_seed(gene_names, mode=2) if seed_per_gene else None),
+            disable_param_sanitize=disable_param_sanitize,
+            disable_grad_sanitize=disable_grad_sanitize,
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
         h1_params, h1_loss = run_em(
@@ -374,15 +418,15 @@ def likelihood_ratio_test(
     h0_model_params = torch.cat((h0_params[-2].unsqueeze(-1), h0_params[-1]), dim=-1)
     h1_model_params = torch.cat((h1_params[-2].unsqueeze(-1), h1_params[-1]), dim=-1)
 
-    # output variational parameters (std > 0)
-    half = len(h0_params[:-2]) // 2
+    # Output variational parameters as mean + std for compatibility with
+    # existing q-mean-std files. Internally h*_params store mean + log_s2.
     h0_q_params = [
-        (n.abs() if i >= half else n).clone().detach().cpu().numpy()
-        for i, n in enumerate(h0_params[:-2])
+        export_mean_std_tensor(n).clone().detach().cpu().numpy()
+        for n in h0_params[:-2]
     ]
     h1_q_params = [
-        (n.abs() if i >= half else n).clone().detach().cpu().numpy()
-        for i, n in enumerate(h1_params[:-2])
+        export_mean_std_tensor(n).clone().detach().cpu().numpy()
+        for n in h1_params[:-2]
     ]
 
     return h0_model_params.clone().detach().cpu().numpy(), \

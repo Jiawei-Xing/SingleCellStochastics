@@ -65,6 +65,27 @@ def parse_args():
     parser.add_argument("--importance", type=int, default=0, help="Number of importance samples (default: 0)")
     parser.add_argument("--mix", type=float, default=1, help="Weight for q(z) in importance sampling mixture (default: 1)")
 
+    # Numerical safety knobs (off by default for backward compat)
+    parser.add_argument("--clamp_log_r_before_forward", action="store_true",
+                        help="Clamp log_r BEFORE the forward pass (default: post-step). Avoids leaked out-of-range values.")
+    parser.add_argument("--grad_clip_norm", type=float, default=None,
+                        help="Gradient norm clip per parameter tensor. Bounds bad MC steps. e.g. 10.")
+    parser.add_argument("--log_alpha_clamp", type=str, default=None,
+                        help="Comma-separated 'lo,hi' for log_alpha clamp post-step (e.g. -3,5). Prevents alpha→0/∞.")
+    parser.add_argument("--log_r_clamp", type=str, default=None,
+                        help="Comma-separated 'lo,hi' for log_r clamp (e.g. -5,8). Default = -5,5 (legacy). "
+                             "Raise upper bound for genes that need Poisson-like dispersion (r >> 1).")
+    parser.add_argument("--seed_per_gene", action="store_true",
+                        help="Re-seed RNG per-gene-batch from a hash of gene_names. Removes batch-order dependence.")
+    parser.add_argument("--s_init_floor", type=float, default=None,
+                        help="Cap initial q-std at this value (e.g. 1.0). Reduces MC variance for high-count genes.")
+    parser.add_argument("--disable_param_sanitize", action="store_true",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--enable_grad_sanitize", action="store_true",
+                        help="Opt in to replacing non-finite gradient entries with 0 before Adam. Default: disabled.")
+    parser.add_argument("--disable_grad_sanitize", action="store_true",
+                        help=argparse.SUPPRESS)
+
     return parser.parse_args()
 
 
@@ -112,6 +133,17 @@ def run_diff_test():
         torch.tensor(lib.values.squeeze(), dtype=torch.float32, device=device) for lib in library_list
     ]
 
+    # Parse log_alpha_clamp "lo,hi"
+    log_alpha_clamp = None
+    if args.log_alpha_clamp:
+        lo, hi = args.log_alpha_clamp.split(",")
+        log_alpha_clamp = (float(lo), float(hi))
+
+    log_r_clamp = None
+    if args.log_r_clamp:
+        lo, hi = args.log_r_clamp.split(",")
+        log_r_clamp = (float(lo), float(hi))
+
     # Common kwargs for likelihood_ratio_test
     lrt_kwargs = dict(
         n_regimes=n_regimes,
@@ -125,7 +157,15 @@ def run_diff_test():
         em_iter=args.em_iter, pseudo=args.pseudo,
         prior=args.prior, init=args.init, kkt=args.kkt,
         grid=args.grid, nb=args.nb, library_list=library_list,
-        importance=args.importance, const=args.const, mix=args.mix
+        importance=args.importance, const=args.const, mix=args.mix,
+        clamp_log_r_before_forward=args.clamp_log_r_before_forward,
+        grad_clip_norm=args.grad_clip_norm,
+        log_alpha_clamp=log_alpha_clamp,
+        log_r_clamp=log_r_clamp,
+        seed_per_gene=args.seed_per_gene,
+        s_init_floor=args.s_init_floor,
+        disable_param_sanitize=args.disable_param_sanitize,
+        disable_grad_sanitize=(not args.enable_grad_sanitize) or args.disable_grad_sanitize,
     )
 
     # Load selection test results for H0 reuse

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from .preprocess import process_data_BM
 from .optimize import Lq_optimize_torch_BM, optimize_torch_BM
+from .qparam import log_s2_from_std_tensor
 
 def gene_expression_plasticity(
     tree_files, gene_files, library_files, outfile, device, batch_size,
@@ -80,7 +81,7 @@ def gene_expression_plasticity(
                 for x in x_tensor_list
             ]  # list of (actual_batch, n_cells)
             q_params_init = [
-                torch.cat((x_tensor_list[i], s_init_tensor[i]), dim=-1)
+                torch.cat((x_tensor_list[i], log_s2_from_std_tensor(s_init_tensor[i])), dim=-1)
                 for i in range(len(x_tensor_list))
             ]
 
@@ -132,8 +133,7 @@ def gene_expression_plasticity(
             # compute LRT statistic and p-value
             lr_stat = 2 * (star_loss - lambda_loss)
             chi2_dist = Chi2(torch.tensor([1.0], device=device))
-            lr_stat_safe = torch.nan_to_num(lr_stat, nan=0.0).clamp(min=0)
-            p_value = 1.0 - chi2_dist.cdf(lr_stat_safe)
+            p_value = 1.0 - chi2_dist.cdf(lr_stat.clamp(min=0))
 
             result = torch.cat((
                 torch.cat((star_params[-2].exp().unsqueeze(-1), star_params[-1]), dim=-1),

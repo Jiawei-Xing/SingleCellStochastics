@@ -3,6 +3,7 @@ import torch
 from scipy.special import logsumexp
 
 from .weights import theta_weight_W_numpy, theta_weight_W_torch
+from .trace import TRACE, cov_diag, nan_inf_count
 
 
 # calculate negative log likelihood of OU
@@ -306,7 +307,19 @@ def ou_neg_log_lik_torch_kkt(
             alpha.squeeze(-1).squeeze(-1), epochs, beta
         )  # (batch_size, N_sim, n_cells, n_regimes)
 
+    if TRACE.enabled:
+        TRACE.write("alpha", alpha.reshape(-1)[0])
+        cond, emin, nneg = cov_diag(V)
+        TRACE.write("V_cond", cond)
+        TRACE.write("V_min_eig", emin)
+        TRACE.write("V_n_neg_diag", nneg)
+        nan_v, inf_v = nan_inf_count(V)
+        TRACE.write("V_n_nan", nan_v)
+        TRACE.write("V_n_inf", inf_v)
+        TRACE.write("V_max_abs", float(V.abs().max().detach().cpu()))
+
     # cholesky decomposition for det and inv of matrix
+    chol_jitter_used = 0.0
     try:
         L = torch.linalg.cholesky(V)  # (batch_size, N_sim, n_cells, n_cells)
     except RuntimeError:
@@ -316,15 +329,27 @@ def ou_neg_log_lik_torch_kkt(
             L = torch.linalg.cholesky(
                 V + 1e-6 * torch.eye(n_cells, device=device, dtype=V.dtype)
             )
+            chol_jitter_used = 1e-6
         except RuntimeError:
             L = psd_safe_cholesky(V, base_jitter=1e-6, max_tries=7)
+            chol_jitter_used = -1.0  # fallback path
+
+    if TRACE.enabled:
+        TRACE.write("chol_jitter", chol_jitter_used)
+        nan_l, inf_l = nan_inf_count(L)
+        TRACE.write("L_n_nan", nan_l)
+        TRACE.write("L_n_inf", inf_l)
+        diag_L = torch.diagonal(L, dim1=-2, dim2=-1)
+        TRACE.write("L_min_diag", float(diag_L.min().detach().cpu()))
 
     # log_det = torch.linalg.slogdet(V_reg)[1]
     # cholesky: log|V| = 2 * sum(log diag(L))
     log_det = 2 * torch.sum(
         torch.log(torch.diagonal(L, dim1=2, dim2=3)), dim=2
     )  # (batch_size, N_sim)
-    
+    if TRACE.enabled:
+        TRACE.write("logdet_V", float(log_det.reshape(-1)[0].detach().cpu()))
+
     # theta = (W.T @ V^-1 @ W)^-1 @ W.T @ V^-1 @ expr
     # theta = np.linalg.solve(W.T @ np.linalg.solve(V, W), W.T @ np.linalg.solve(V, expr))
     # cholesky: theta = (S.T @ S)^-1 @ S.T @ y
@@ -335,6 +360,11 @@ def ou_neg_log_lik_torch_kkt(
     torch.backends.cuda.preferred_linalg_library("magma")
     theta = torch.linalg.lstsq(S, y).solution  # (batch, N_sim, n_regimes, 1)
     torch.backends.cuda.preferred_linalg_library(prev_lib)
+    if TRACE.enabled:
+        nan_t, inf_t = nan_inf_count(theta)
+        TRACE.write("theta_n_nan", nan_t)
+        TRACE.write("theta_n_inf", inf_t)
+        TRACE.write("theta_kkt", theta.reshape(-1).detach().cpu().numpy())
     
     # sigma2 = (expr - W @ theta)^T @ V^-1 @ (expr - W @ theta) / n_cells
     # sigma2 = (diff @ np.linalg.solve(V, diff)).item() / n_cells
@@ -350,6 +380,10 @@ def ou_neg_log_lik_torch_kkt(
     Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Σ^{1/2}
     tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch, N_sim)
     sigma2 += tr_term / n_cells
+
+    if TRACE.enabled:
+        TRACE.write("sigma2_kkt", float(sigma2.reshape(-1)[0].detach().cpu()))
+        TRACE.write("ou_loss_n_nan", int(torch.isnan(0.5 * (log_det + n_cells * torch.log(sigma2))).sum().detach().cpu()))
 
     #const = n_cells * torch.log(torch.tensor(2 * torch.pi, device=device))
     loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood

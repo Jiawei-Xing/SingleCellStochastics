@@ -2,6 +2,7 @@ import torch
 import pandas as pd
 
 from .weights import theta_weight_W_torch
+from .qparam import std_from_log_s2_tensor
 
 def importance_sampling(
     params,
@@ -46,7 +47,8 @@ def importance_sampling(
     for i in range(ntree):
         # sample z_i ~ q(z|x) for each tree
         n_cells = x_tensor[i].shape[-1]
-        q_mean, q_std = params[i][:, :, :n_cells], abs(params[i][:, :, n_cells:2*n_cells])  # (batch_size, N_sim, n_cells)
+        q_mean = params[i][:, :, :n_cells]
+        q_std = std_from_log_s2_tensor(params[i][:, :, n_cells:2*n_cells])
         dist_q = torch.distributions.Normal(q_mean, q_std)
         samples_q = dist_q.sample((n_samples,)) # (n_samples, batch_size, N_sim, n_cells)
 
