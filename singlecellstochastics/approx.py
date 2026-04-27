@@ -1,3 +1,11 @@
+"""Moment approximations for the count-observation link.
+
+The ELBO needs expectations under the variational Gaussian leaf beliefs. This
+module contains Taylor and Monte Carlo approximations for softplus-linked
+Poisson/negative-binomial terms, plus the exponential-link alternatives used for
+developer comparisons.
+"""
+
 import torch
 
 # Taylor approximation for E[log(softplus(z))] and E[softplus(z)] 
@@ -119,8 +127,9 @@ def E_log_softplus_MC(u, sigma2, n_samples=1000):
     
     # Apply log(softplus) transformation
     # Use log(softplus(z)) = log(log(1+exp(z)))
-    # For numerical stability, use softplus itself for large z: softplus(z) ≈ z, so log(softplus(z)) ≈ log(z)
-    # For small z: softplus(z) ≈ exp(z), so log(softplus(z)) ≈ z
+    # For numerical stability, use softplus itself for large z:
+    # softplus(z) ~= z, so log(softplus(z)) ~= log(z).
+    # For small z: softplus(z) ~= exp(z), so log(softplus(z)) ~= z.
     # Clamp softplus output to avoid log(0) = -inf when z is very negative
     softplus_z = torch.nn.functional.softplus(z)
     log_softplus_z = torch.log(softplus_z.clamp(min=1e-20))
@@ -247,4 +256,3 @@ def E_log_r_exp(u, sigma2, log_r, lib, n_samples=1000):
     result = torch.mean(log_r_exp_z, dim=0)
     
     return result
-

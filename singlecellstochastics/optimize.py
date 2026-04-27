@@ -1,13 +1,19 @@
+"""Optimization routines for BM/OU likelihoods and variational objectives."""
+
 from joblib import Parallel, delayed
 import numpy as np
 import torch
 from scipy.optimize import minimize
 import wandb
 
+from .defaults import (
+    DEFAULT_LOG_ALPHA_CLAMP,
+    DEFAULT_LOG_R_CLAMP,
+    DEFAULT_LOG_S2_CLAMP,
+)
 from .likelihood import ou_neg_log_lik_numpy, ou_neg_log_lik_numpy_kkt
 from .likelihood import ou_neg_log_lik_torch, ou_neg_log_lik_torch_kkt, bm_neg_log_lik_torch_kkt
 from .elbo import Lq_neg_log_lik_torch
-from .qparam import LOG_S2_MAX, LOG_S2_MIN
 from .trace import TRACE
 
 
@@ -77,7 +83,9 @@ def ou_optimize_torch(
     gene_names,
     window,
     tol,
-    kkt
+    kkt,
+    log_alpha_clamp=None,
+    root_mode="stationary",
 ):
     """
     Optimize the OU-Gaussian likelihood with PyTorch Adam.
@@ -111,14 +119,21 @@ def ou_optimize_torch(
     if not kkt:
         ou_params[1] = ou_params[1].requires_grad_(True) # optimize all
 
+    best_loss = torch.full(
+        (batch_size, N_sim), float("inf"), dtype=params_init.dtype, device=device
+    )
+    _log_alpha_clamp = (
+        log_alpha_clamp if log_alpha_clamp is not None else DEFAULT_LOG_ALPHA_CLAMP
+    )
+    with torch.no_grad():
+        lo, hi = _log_alpha_clamp
+        ou_params[0].clamp_(float(lo), float(hi))
+
     # Track best parameters and loss
     best_params = [
         p.clone().detach() for p in ou_params
     ] # [alpha, others]
 
-    best_loss = torch.full(
-        (batch_size, N_sim), float("inf"), dtype=params_init.dtype, device=device
-    )
     optimizer = torch.optim.Adam(ou_params, lr=learning_rate)
 
     # Track loss history for convergence checking
@@ -161,7 +176,8 @@ def ou_optimize_torch(
                     share,
                     epochs,
                     beta,
-                    device
+                    device,
+                    root_mode=root_mode,
                 )
             else:
                 loss = ou_neg_log_lik_torch(
@@ -173,7 +189,8 @@ def ou_optimize_torch(
                     share,
                     epochs,
                     beta,
-                    device
+                    device,
+                    root_mode=root_mode,
                 )
             loss_matrix[active_batch, :, i] = loss
 
@@ -224,9 +241,9 @@ def ou_optimize_torch(
         loss_history.append(average_loss.clone().detach())
 
         # Early exit for persistent NaN/inf losses.
-        # Cumulative (not consecutive) so genes with intermittent NaN/inf —
+        # Cumulative (not consecutive) so genes with intermittent NaN/inf
         # which the old streak logic reset on every finite iteration and
-        # thus never terminated — still fail out before wasting max_iter.
+        # thus never terminated still fail out before wasting max_iter.
         with torch.no_grad():
             is_bad = ~torch.isfinite(average_loss)
             nan_streak = torch.where(is_bad & ~converged_mask, nan_streak + 1, nan_streak)
@@ -261,6 +278,9 @@ def ou_optimize_torch(
             loss = active_loss_flat[valid_mask].sum()
             loss.backward()
             optimizer.step()
+            with torch.no_grad():
+                lo, hi = _log_alpha_clamp
+                ou_params[0].clamp_(float(lo), float(hi))
 
     # warning if not all genes have converged
     print(f"\nChecking convergence for h{mode-1} OU init...")
@@ -268,13 +288,13 @@ def ou_optimize_torch(
     non_converged = ~converged_mask
     slow_genes = non_converged & ~nan_failed_genes
     if nan_failed_genes.any():
-        print(f"\n⚠️  {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
+        print(f"\nWARNING: {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
         for i in range(batch_size):
             for j in range(N_sim):
                 if nan_failed_genes[i, j]:
                     print(f"   {gene_names[i]}: NaN loss (skipped after {nan_patience} iters)")
     if slow_genes.any():
-        print(f"\n⚠️  {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
+        print(f"\nWARNING: {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")
         for i in range(batch_size):
@@ -285,7 +305,7 @@ def ou_optimize_torch(
                         f"   {gene_names[i]}: {rd:.2e} | " +
                         f"{best_loss[i, j].item():.2e}"
                     )
-        print(f"\n💡 Recommendations for non-converged genes:")
+        print(f"\nRecommendations for non-converged genes:")
         print(f"   - Increase max_iter (current: {max_iter})")
         print(f"   - Increase learning_rate (current: {learning_rate})")
         print(f"   - Increase tol (current: {tol})")
@@ -324,42 +344,37 @@ def Lq_optimize_torch_OU(
     const,
     fix_alpha=False,
     step_callback=None,
-    clamp_log_r_before_forward=False,
     grad_clip_norm=None,
     log_alpha_clamp=None,
     log_r_clamp=None,
+    log_s2_clamp=None,
     seed_per_call=None,
-    disable_param_sanitize=False,
-    disable_grad_sanitize=True,
     ou_lambda_mode=1,
+    root_mode="stationary",
 ):
     """
     Optimize ELBO with PyTorch Adam.
 
     Numerical-safety knobs:
-    - clamp_log_r_before_forward: apply the log_r clamp BEFORE the forward
-      pass instead of after the optimiser step. Avoids leaking out-of-range
-      log_r values into the next step's forward (which can yield huge or
-      NaN gradients).
     - grad_clip_norm: if given, apply torch.nn.utils.clip_grad_norm_ to
       each parameter tensor with this max norm. Bounds the size of any
       single bad MC step.
     - log_alpha_clamp: (lo, hi) tuple. Clamp log_alpha post-step to this
-      range. Prevents alpha → 0 (BM degeneracy → KKT NaN) and alpha → ∞
-      (V → 0 → singular Cholesky).
+      range. Prevents alpha -> 0 (BM degeneracy -> KKT NaN) and alpha -> inf
+      (V -> 0 -> singular Cholesky). Defaults to (-5, 5), except when
+      fix_alpha=True.
     - log_r_clamp: (lo, hi) tuple for NB dispersion log_r clamp. Applied
-      pre-loop, post-step, and pre-KKT. Defaults to (-5, 5) (r ∈ [0.0067, 148]).
-      Raising the upper bound (e.g. (-5, 8) → r ≤ 2981, or (-5, 10) → r ≤ 22k)
-      allows near-Poisson regimes for genes with low biological noise +
-      high counts (ribosomal, housekeeping). log_r has no gradient signal
-      in the Poisson limit, so Adam is self-limiting at high r — but the
-      traversal corridor is wider, so grad_clip_norm is recommended.
+      pre-loop, post-step, and pre-KKT. Defaults to (-5, 10) -> r in
+      [~0.007, ~22026]. Upper end allows near-Poisson regimes for low-noise
+      high-count genes (housekeeping, ribosomal). log_r has no gradient
+      signal in the Poisson limit, so Adam is self-limiting at high r.
+    - log_s2_clamp: (lo, hi) tuple for variational log-variance clamp.
+      Defaults to (-10, 10) -> std in [~0.007, ~148]. Keeps q-variance
+      strictly positive and bounded for the MC expectations.
     - seed_per_call: integer seed applied via torch.manual_seed at the
       start of this call. Stabilises the MC sampling against batch-order
       effects (a gene then gets the same MC sequence regardless of which
       batch it lands in).
-    - disable_grad_sanitize: default True. If False, non-finite gradient
-      entries are replaced with 0 before Adam as an explicit backstop.
 
     params: List of (batch_size, N_sim, all_param_dim)
             [Lq_params tree1, Lq_params tree2, ..., Lq_params treeN, logr, shared OU_params]
@@ -439,13 +454,25 @@ def Lq_optimize_torch_OU(
         if not kkt:
             params_tensor[other_ou_idx] = params_tensor[other_ou_idx].requires_grad_(True) # other OU
     
-    # Resolve log_r clamp: default (-5, 5) for legacy behaviour.
-    _log_r_lo, _log_r_hi = (log_r_clamp if log_r_clamp is not None else (-5.0, 5.0))
+    _log_alpha_clamp = None
+    if not fix_alpha:
+        _log_alpha_clamp = (
+            log_alpha_clamp
+            if log_alpha_clamp is not None
+            else DEFAULT_LOG_ALPHA_CLAMP
+        )
+    _log_r_lo, _log_r_hi = (
+        log_r_clamp if log_r_clamp is not None else DEFAULT_LOG_R_CLAMP
+    )
+    _log_s2_lo, _log_s2_hi = (
+        log_s2_clamp if log_s2_clamp is not None else DEFAULT_LOG_S2_CLAMP
+    )
+
     def _clamp_lq_log_s2_():
         with torch.no_grad():
             for lq in params_tensor[:n_trees]:
                 n_cells = lq.shape[-1] // 2
-                lq[..., n_cells:2 * n_cells].clamp_(LOG_S2_MIN, LOG_S2_MAX)
+                lq[..., n_cells:2 * n_cells].clamp_(_log_s2_lo, _log_s2_hi)
 
     # Pre-loop clamps are domain bounds, not NaN repair. NaN-to-zero parameter
     # resets were removed so invalid parameters surface instead of silently
@@ -453,8 +480,8 @@ def Lq_optimize_torch_OU(
     with torch.no_grad():
         if nb:
             params_tensor[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
-        if log_alpha_clamp is not None:
-            lo, hi = log_alpha_clamp
+        if _log_alpha_clamp is not None:
+            lo, hi = _log_alpha_clamp
             params_tensor[log_alpha_idx].clamp_(float(lo), float(hi))
     _clamp_lq_log_s2_()
 
@@ -482,13 +509,6 @@ def Lq_optimize_torch_OU(
     for n in range(max_iter):
         optimizer.zero_grad()
         active_batch = (~converged_mask).any(dim=1)  # (batch_size,)
-
-        # Optionally clamp log_r BEFORE the forward pass (hypothesis test).
-        # The default placement is post-step, which means Adam state can
-        # accumulate gradients pushed beyond the clamp window.
-        if nb and clamp_log_r_before_forward:
-            with torch.no_grad():
-                params_tensor[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
 
         # get loss for each tree for not yet converged genes
         active_loss_list = []
@@ -522,6 +542,8 @@ def Lq_optimize_torch_OU(
                     fix_alpha=fix_alpha,
                     ou_lambda=params_tensor[ou_lambda_idx][active_batch],
                     ou_lambda_mode=ou_lambda_mode,
+                    log_s2_clamp=(_log_s2_lo, _log_s2_hi),
+                    root_mode=root_mode,
                 )
             else:
                 loss = Lq_neg_log_lik_torch(
@@ -544,6 +566,8 @@ def Lq_optimize_torch_OU(
                     fix_alpha=fix_alpha,
                     ou_lambda=params_tensor[ou_lambda_idx][active_batch],
                     ou_lambda_mode=ou_lambda_mode,
+                    log_s2_clamp=(_log_s2_lo, _log_s2_hi),
+                    root_mode=root_mode,
                 )
             active_loss_list.append(loss)
 
@@ -561,7 +585,7 @@ def Lq_optimize_torch_OU(
                 best_loss
             ) # update best loss
 
-            # save best params (skip params_tensor[-1] when kkt — sigma/theta
+            # save best params (skip params_tensor[-1] when kkt: sigma/theta
             # are reconstructed after the loop from the best alpha/Lq params)
             for i, param in enumerate(params_tensor):
                 if kkt and i == other_ou_idx:
@@ -590,7 +614,7 @@ def Lq_optimize_torch_OU(
         loss_history.append(joint_loss.clone().detach())
 
         # Early exit for persistent NaN/inf losses (cumulative; see note
-        # in ou_optimize_torch — consecutive streaks miss intermittent bad
+        # in ou_optimize_torch; consecutive streaks miss intermittent bad
         # genes and let them run to max_iter).
         with torch.no_grad():
             is_bad = ~torch.isfinite(joint_loss)
@@ -632,13 +656,6 @@ def Lq_optimize_torch_OU(
                         TRACE.write(f"grad_{pname}_n_nan_raw", n_nan)
                         TRACE.write(f"grad_{pname}_n_inf_raw", n_inf)
                         TRACE.write(f"grad_{pname}_abs_max_finite", g_abs_max)
-            if not disable_grad_sanitize:
-                with torch.no_grad():
-                    for p in params_tensor:
-                        if p.grad is not None:
-                            bad = ~torch.isfinite(p.grad)
-                            if bad.any():
-                                p.grad[bad] = 0.0
             if grad_clip_norm is not None and grad_clip_norm > 0:
                 torch.nn.utils.clip_grad_norm_(
                     [p for p in params_tensor if p.grad is not None],
@@ -686,22 +703,18 @@ def Lq_optimize_torch_OU(
                 # Also log post-step log_alpha value for NaN-genesis analysis
                 TRACE.write("log_alpha_post_step", float(params_tensor[log_alpha_idx].reshape(-1)[0].detach().cpu()))
 
-        # clamp log_r to prevent NaN/overflow (default placement: post-step;
-        # see clamp_log_r_before_forward for the alternative pre-forward
-        # placement used in hypothesis test)
-        if nb and not clamp_log_r_before_forward:
+        # clamp log_r post-step to prevent NaN/overflow
+        if nb:
             with torch.no_grad():
                 params_tensor[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
 
         # No post-step NaN-to-zero parameter reset: invalid parameters should
         # fail visibly rather than being converted to plausible values.
 
-        # Optional: floor + ceiling on log_alpha to keep alpha in a numerically
-        # well-conditioned range. Default range (e.g. [-3, 5]) prevents the
-        # OU/BM degeneracy at α → 0 (where 1/(2α) blows up the KKT solve)
-        # and the V → 0 collapse at α → ∞.
-        if log_alpha_clamp is not None:
-            lo, hi = log_alpha_clamp
+        # Keep log_alpha in a numerically well-conditioned range. The clamp is
+        # skipped for fixed-alpha calls so explicit BM-like nulls remain intact.
+        if _log_alpha_clamp is not None:
+            lo, hi = _log_alpha_clamp
             with torch.no_grad():
                 params_tensor[log_alpha_idx].clamp_(float(lo), float(hi))
         _clamp_lq_log_s2_()
@@ -737,13 +750,13 @@ def Lq_optimize_torch_OU(
     non_converged = ~converged_mask
     slow_genes = non_converged & ~nan_failed_genes
     if nan_failed_genes.any():
-        print(f"\n⚠️  {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
+        print(f"\nWARNING: {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
         for i in range(batch_size):
             for j in range(N_sim):
                 if nan_failed_genes[i, j]:
                     print(f"   {gene_names[i]}: NaN loss (skipped after {nan_patience} iters)")
     if slow_genes.any():
-        print(f"\n⚠️  {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
+        print(f"\nWARNING: {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")
         for i in range(batch_size):
@@ -754,7 +767,7 @@ def Lq_optimize_torch_OU(
                         f"   {gene_names[i]}: {rd:.2e} | " +
                         f"{best_loss[i, j].item():.2e}"
                     )
-        print(f"\n💡 Recommendations for non-converged genes:")
+        print(f"\nRecommendations for non-converged genes:")
         print(f"   - Increase max_iter (current: {max_iter})")
         print(f"   - Increase learning_rate (current: {learning_rate})")
         print(f"   - Increase tol (current: {tol})")
@@ -765,12 +778,12 @@ def Lq_optimize_torch_OU(
     with torch.no_grad():
         if nb:
             best_params[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
-        if log_alpha_clamp is not None:
-            lo, hi = log_alpha_clamp
+        if _log_alpha_clamp is not None:
+            lo, hi = _log_alpha_clamp
             best_params[log_alpha_idx].clamp_(float(lo), float(hi))
         for lq in best_params[:n_trees]:
             n_cells = lq.shape[-1] // 2
-            lq[..., n_cells:2 * n_cells].clamp_(LOG_S2_MIN, LOG_S2_MAX)
+            lq[..., n_cells:2 * n_cells].clamp_(_log_s2_lo, _log_s2_hi)
 
     # Reconstruct sigma/theta from best alpha/Lq params via KKT analytical solution.
     # During optimization, params_tensor[-1] is never read (sigma/theta are always
@@ -799,6 +812,8 @@ def Lq_optimize_torch_OU(
                     fix_alpha=fix_alpha,
                     ou_lambda=best_params[ou_lambda_idx],
                     ou_lambda_mode=ou_lambda_mode,
+                    log_s2_clamp=(_log_s2_lo, _log_s2_hi),
+                    root_mode=root_mode,
                 )
             other_params = torch.cat(
                 (sigma.unsqueeze(-1), theta), dim=-1
@@ -862,7 +877,7 @@ def Lq_optimize_torch_BM(
     wandb_flag: whether to use wandb
     window: number of recent iterations to check for convergence
     tol: convergence tolerance
-    approx: approximation method for Poisson likelihood expectation
+    approx: approximation method for Poisson/NB likelihood expectation
     nb: whether to use negative binomial likelihood
     lib: library size normalization
     const: whether to include constant terms in likelihood
@@ -873,11 +888,16 @@ def Lq_optimize_torch_BM(
     pagel_lambda = params[-1].clone().detach()
     n_trees = len(x_tensor_list)
 
-    def _clamp_lq_log_s2_bm_():
+    _log_r_lo, _log_r_hi = DEFAULT_LOG_R_CLAMP
+    _log_s2_lo, _log_s2_hi = DEFAULT_LOG_S2_CLAMP
+
+    def _clamp_bm_params_(param_list):
         with torch.no_grad():
-            for lq in params[:n_trees]:
+            if nb:
+                param_list[-2].clamp_(_log_r_lo, _log_r_hi)
+            for lq in param_list[:n_trees]:
                 n_cells = lq.shape[-1] // 2
-                lq[..., n_cells:2 * n_cells].clamp_(LOG_S2_MIN, LOG_S2_MAX)
+                lq[..., n_cells:2 * n_cells].clamp_(_log_s2_lo, _log_s2_hi)
 
     # optimize q parameters
     for i in range(len(params)-1):
@@ -891,17 +911,14 @@ def Lq_optimize_torch_BM(
     else: # optimize lambda
         params[-1] = params[-1].requires_grad_(True)
 
-    with torch.no_grad():
-        if nb:
-            params[-2].clamp_(-5, 5)
-    _clamp_lq_log_s2_bm_()
+    _clamp_bm_params_(params)
 
     optimizer = torch.optim.Adam([p for p in params if p.requires_grad], lr=learning_rate)
     
     # Track best parameters for gradient-based params
     best_params = [p.clone().detach() for p in params[:-1]] + [
         torch.zeros((batch_size, 3), dtype=params[0].dtype, device=device)
-    ]
+    ] # q, (lambda, mu, sigma)
     best_loss = torch.full((batch_size, ), float("inf"), dtype=params[0].dtype, device=device)
 
     # Track loss history for convergence checking
@@ -932,11 +949,12 @@ def Lq_optimize_torch_BM(
 
             loss, mu, sigma = Lq_neg_log_lik_torch(
                 Lq_params, r_param, safe_lambda, 0, x_tensor, # mode=0 for BM likelihood
-                None, share, None, None, device, approx, None, None, nb, lib, const
+                None, share, None, None, device, approx, None, None, nb, lib, const,
+                log_s2_clamp=(_log_s2_lo, _log_s2_hi),
             )
-            active_loss_list.append(loss)
+            active_loss_list.append(loss) # list of (b,)
 
-        active_joint_loss = torch.stack(active_loss_list, dim=-1).sum(dim=-1) # (num_active,)
+        active_joint_loss = torch.stack(active_loss_list, dim=-1).sum(dim=-1) # (b, t) -> (b,)
 
         # update best params for not yet converged genes
         with torch.no_grad():
@@ -957,11 +975,12 @@ def Lq_optimize_torch_BM(
                 )
             
             # update improved bm params
-            if mode == 2:
+            if mode == 2: # update lambda
                 best_params[-1][mask, 0] = torch.sigmoid(params[-1][mask].clone().detach())
             else:
                 best_params[-1][mask, 0] = params[-1][mask].clone().detach()
             
+            # update improved mu and sigma from active outputs
             best_params[-1][mask, 1] = mu[mask[active_batch]].clone().detach()
             best_params[-1][mask, 2] = sigma[mask[active_batch]].clone().detach()
 
@@ -975,8 +994,7 @@ def Lq_optimize_torch_BM(
         # Store loss history
         loss_history.append(joint_loss.clone().detach())
 
-        # Early exit for persistent NaN/inf losses (cumulative; see note
-        # in ou_optimize_torch).
+        # Early exit for persistent NaN/inf losses
         with torch.no_grad():
             is_bad = ~torch.isfinite(joint_loss)
             nan_streak = torch.where(is_bad & ~converged_mask, nan_streak + 1, nan_streak)
@@ -1004,9 +1022,9 @@ def Lq_optimize_torch_BM(
                 if converged_mask.all(): # break if all genes have converged
                     break
 
-        # backpropagate for not yet converged genes, skipping non-finite
-        # losses so one bad gene can't poison the shared Adam state
+        # backpropagate for not yet converged genes from active gene outputs
         active_loss_flat = active_joint_loss[~converged_mask[active_batch]]
+        # skipping non-finite losses so one bad gene can't poison others
         valid_mask = torch.isfinite(active_loss_flat)
         if not valid_mask.any():
             continue
@@ -1014,10 +1032,7 @@ def Lq_optimize_torch_BM(
         loss.backward()
         optimizer.step()
 
-        with torch.no_grad():
-            if nb:
-                params[-2].clamp_(-5, 5)
-        _clamp_lq_log_s2_bm_()
+        _clamp_bm_params_(params)
 
     # warning if not all genes have converged
     print(f"\nChecking convergence for bm{mode} ELBO...")
@@ -1025,12 +1040,12 @@ def Lq_optimize_torch_BM(
     non_converged = ~converged_mask
     slow_genes = non_converged & ~nan_failed_genes
     if nan_failed_genes.any():
-        print(f"\n⚠️  {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
+        print(f"\nWARNING: {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
         for i in range(batch_size):
             if nan_failed_genes[i]:
                 print(f"   {gene_names[i]}: NaN loss (skipped after {nan_patience} iters)")
     if slow_genes.any():
-        print(f"\n⚠️  {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
+        print(f"\nWARNING: {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")
         for i in range(batch_size):
@@ -1040,19 +1055,14 @@ def Lq_optimize_torch_BM(
                     f"   {gene_names[i]}: {rd:.2e} | " +
                     f"{best_loss[i].item():.2e}"
                 )
-        print(f"\n💡 Recommendations for non-converged genes:")
+        print(f"\nRecommendations for non-converged genes:")
         print(f"   - Increase max_iter (current: {max_iter})")
         print(f"   - Increase learning_rate (current: {learning_rate})")
         print(f"   - Increase tol (current: {tol})")
         print(f"   - Decrease window (current: {window})")
         print(f"   - Check data quality for these genes")
 
-    with torch.no_grad():
-        if nb:
-            best_params[-2].clamp_(-5, 5)
-        for lq in best_params[:n_trees]:
-            n_cells = lq.shape[-1] // 2
-            lq[..., n_cells:2 * n_cells].clamp_(LOG_S2_MIN, LOG_S2_MAX)
+    _clamp_bm_params_(best_params)
 
     return best_params, best_loss
 
@@ -1116,8 +1126,7 @@ def optimize_torch_BM(
         params = torch.stack((params, mu, sigma), dim=-1)
         return params, joint_loss
 
-    # optimize lambda
-    params *= -2.0 # initialize lambda to sigmoid(-2)=0.1
+    # optimize lambda (caller passes logit init, e.g. -2 -> sigmoid(-2)~=0.12)
     params.requires_grad_(True) # pagel_lambda
     optimizer = torch.optim.Adam([params], lr=learning_rate)
 
@@ -1210,12 +1219,12 @@ def optimize_torch_BM(
     non_converged = ~converged_mask
     slow_genes = non_converged & ~nan_failed_genes
     if nan_failed_genes.any():
-        print(f"\n⚠️  {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
+        print(f"\nWARNING: {nan_failed_genes.sum().item()} gene(s) failed (persistent NaN loss):")
         for i in range(batch_size):
             if nan_failed_genes[i]:
                 print(f"   {gene_names[i]}: NaN loss (skipped after {nan_patience} iters)")
     if slow_genes.any():
-        print(f"\n⚠️  {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
+        print(f"\nWARNING: {slow_genes.sum().item()}/{batch_size} gene(s) did not converge:")
         print(f"   Gene Name | Relative Decrease | Final Loss")
         print(f"   {'-' * 25}")
         for i in range(batch_size):
@@ -1225,7 +1234,7 @@ def optimize_torch_BM(
                     f"   {gene_names[i]}: {rd:.2e} | " +
                     f"{best_loss[i].item():.2e}"
                 )
-        print(f"\n💡 Recommendations for non-converged genes:")
+        print(f"\nRecommendations for non-converged genes:")
         print(f"   - Increase max_iter (current: {max_iter})")
         print(f"   - Increase learning_rate (current: {learning_rate})")
         print(f"   - Increase tol (current: {tol})")

@@ -1,24 +1,35 @@
+"""Selection-style BM-vs-OU test for latent expression evolution."""
+
 import argparse
-import pandas as pd
+import logging
+import os
+import shutil
+
 import numpy as np
+import pandas as pd
 import torch
-from torch.distributions.chi2 import Chi2
 import wandb
 from statsmodels.stats.multitest import multipletests
-import os
-import logging
+from torch.distributions.chi2 import Chi2
 
 logger = logging.getLogger(__name__)
 
 from .preprocess import process_data_OU, process_data_BM
 from .optimize import Lq_optimize_torch_OU, Lq_optimize_torch_BM
-from .qparam import export_mean_std_tensor, log_s2_from_std_tensor
+
+
+def _lq_to_mean_std(lq):
+    """Convert internal [mean, log_s2] q-params to [mean, std] for export."""
+    n_cells = lq.shape[-1] // 2
+    mean = lq[..., :n_cells]
+    std = torch.exp(lq[..., n_cells:2 * n_cells] / 2)
+    return torch.cat((mean, std), dim=-1)
 
 
 def gene_expression_selection(
     tree_files, gene_files, regime_files, library_files, outfile, device, batch_size,
     max_iter, learning_rate, wandb_flag, window, tol, approx, nb, rnull, kkt, const,
-    null_model="bm", prefix="sel", resume=False, bm_lambda_mode=2, ou_lambda_mode=2
+    null_model="bm", prefix="sel", resume=False, bm_lambda_mode=2, ou_lambda_mode=2,
 ):
     """
     Selection test: BM or fixed-alpha OU (H0, neutral) vs OU (H1, selection).
@@ -80,7 +91,7 @@ def gene_expression_selection(
         actual_batch = len(gene_names)
 
         # Check if batch already completed
-        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx}.pt")
+        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx+1}.pt")
         if resume and os.path.exists(ckpt_file):
             logger.info(f"Batch {batch_idx+1}/{n_batches} already done, skipping")
             continue
@@ -93,13 +104,10 @@ def gene_expression_selection(
 
         if null_model == "bm":
             # --- H0: BM (neutral) ---
-            s_init_bm = [
-                x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
-                for x in x_tensor_list
-            ]
+            # init q: mean = x, std = 1 (log_s2 ~= 0)
             q_params_bm = [
-                torch.cat((x_tensor_list[i], log_s2_from_std_tensor(s_init_bm[i])), dim=-1)
-                for i in range(len(x_tensor_list))
+                torch.cat((x, torch.zeros_like(x)), dim=-1)
+                for x in x_tensor_list
             ]
             log_r_bm = torch.zeros((actual_batch,), dtype=torch.float32, device=device)
             bm_lambda_init = torch.ones((actual_batch,), dtype=torch.float32, device=device)
@@ -124,7 +132,7 @@ def gene_expression_selection(
             )
 
             # H0 q params: list of (batch, 2*n_cells) per clone
-            h0_q = [export_mean_std_tensor(p).detach().cpu() for p in h0_params[:-2]]
+            h0_q = [_lq_to_mean_std(p).detach().cpu() for p in h0_params[:-2]]
 
             # H0 result columns: r, mu, sigma
             h0_r = h0_params[-2].exp().unsqueeze(-1)  # (batch, 1)
@@ -134,19 +142,16 @@ def gene_expression_selection(
         else:
             # --- H0: OU with alpha fixed at ~0 (fixed_ou) ---
             x_tensor_ou_h0 = [x.unsqueeze(1) for x in x_tensor_list]
-            s_init_h0 = [
-                x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
-                for x in x_tensor_ou_h0
-            ]
+            # init q: mean = x, std = 1 (log_s2 ~= 0)
             q_params_h0 = [
-                torch.cat((x_tensor_ou_h0[i], log_s2_from_std_tensor(s_init_h0[i])), dim=-1)
-                for i in range(len(x_tensor_ou_h0))
+                torch.cat((x, torch.zeros_like(x)), dim=-1)
+                for x in x_tensor_ou_h0
             ]
             log_r_h0 = torch.zeros((actual_batch, 1), dtype=torch.float32, device=device)
             ou_params_h0 = torch.ones(
                 (actual_batch, 1, n_regimes + 2), dtype=torch.float32, device=device
             )
-            ou_params_h0[:, :, 0] = -20.0  # alpha ≈ 0
+            ou_params_h0[:, :, 0] = -20.0  # alpha ~= 0
             init_params_h0 = q_params_h0 + [log_r_h0] + [ou_params_h0]
 
             h0_params, h0_loss = Lq_optimize_torch_OU(
@@ -176,7 +181,7 @@ def gene_expression_selection(
             h0_loss = h0_loss.squeeze(1)
 
             # H0 q params
-            h0_q = [export_mean_std_tensor(p).detach().cpu() for p in h0_params[:-2]]
+            h0_q = [_lq_to_mean_std(p).detach().cpu() for p in h0_params[:-2]]
 
             # H0 result columns: r, alpha(~0), sigma, theta
             h0_result = torch.cat(
@@ -187,13 +192,10 @@ def gene_expression_selection(
 
         # --- H1: OU with alpha free ---
         x_tensor_ou = [x.unsqueeze(1) for x in x_tensor_list]
-        s_init_ou = [
-            x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
-            for x in x_tensor_ou
-        ]
+        # init q: mean = x, std = 1 (log_s2 ~= 0)
         q_params_ou = [
-            torch.cat((x_tensor_ou[i], log_s2_from_std_tensor(s_init_ou[i])), dim=-1)
-            for i in range(len(x_tensor_ou))
+            torch.cat((x, torch.zeros_like(x)), dim=-1)
+            for x in x_tensor_ou
         ]
         log_r_ou = torch.zeros((actual_batch, 1), dtype=torch.float32, device=device)
         ou_lambda_init = torch.ones((actual_batch, 1), dtype=torch.float32, device=device)
@@ -229,7 +231,7 @@ def gene_expression_selection(
         h1_loss = h1_loss.squeeze(1)
 
         # H1 q params
-        h1_q = [export_mean_std_tensor(p).detach().cpu() for p in h1_params[:len(x_tensor_ou)]]
+        h1_q = [_lq_to_mean_std(p).detach().cpu() for p in h1_params[:len(x_tensor_ou)]]
 
         # LRT: 2 * (H0_nll - H1_nll)
         lr_stat = 2 * (h0_loss - h1_loss)
@@ -269,7 +271,7 @@ def gene_expression_selection(
     bm_q_list = []
     ou_q_list = []
     for batch_idx in range(n_batches):
-        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx}.pt")
+        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx+1}.pt")
         ckpt_data = torch.load(ckpt_file, weights_only=False)
         results_list.append(ckpt_data['results'])
         genes.extend(ckpt_data['genes'])
@@ -323,7 +325,6 @@ def gene_expression_selection(
         df.to_csv(os.path.join(outdir, f"{prefix}_ou_q_params_{i}.tsv"), sep="\t")
 
     # Clean up checkpoint directory
-    import shutil
     shutil.rmtree(ckpt_dir)
     logger.info(f"Results saved to {outfile}")
 

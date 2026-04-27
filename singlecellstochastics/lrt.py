@@ -1,14 +1,22 @@
+"""Differential-expression likelihood-ratio test orchestration."""
+
+import hashlib
+
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-import pandas as pd
-import hashlib
-import os
 
-from .optimize import ou_optimize_scipy, ou_optimize_torch, Lq_optimize_torch_OU
 from .em import run_em
 from .importance import importance_sampling
-from .qparam import export_mean_std_tensor, log_s2_from_std_array
+from .optimize import Lq_optimize_torch_OU, ou_optimize_torch
+
+
+def _lq_to_mean_std(lq):
+    """Convert internal [mean, log_s2] q-params to [mean, std] for export."""
+    n_cells = lq.shape[-1] // 2
+    mean = lq[..., :n_cells]
+    std = torch.exp(lq[..., n_cells:2 * n_cells] / 2)
+    return torch.cat((mean, std), dim=-1)
 
 
 def _gene_seed(gene_names, mode, base_seed=42):
@@ -41,7 +49,6 @@ def likelihood_ratio_test(
     tol,
     approx,
     em_iter,
-    pseudo,
     batch_start,
     prior,
     init,
@@ -54,14 +61,9 @@ def likelihood_ratio_test(
     mix,
     h0_step_callback=None,
     h1_step_callback=None,
-    clamp_log_r_before_forward=False,
     grad_clip_norm=None,
-    log_alpha_clamp=None,
-    log_r_clamp=None,
     seed_per_gene=False,
-    s_init_floor=None,
-    disable_param_sanitize=False,
-    disable_grad_sanitize=True,
+    root_mode="stationary",
 ):
     """
     Hypothesis testing for lineage-specific gene expression change.
@@ -74,7 +76,6 @@ def likelihood_ratio_test(
     tol: convergence tolerance
     approx: approximation method
     em_iter: number of EM iterations
-    pseudo: pseudo count for reverse softplus read counts as inital mean
     batch_start: start index of the batch
     prior: prior for alpha
     init: whether to initialize with OU optimization
@@ -88,58 +89,11 @@ def likelihood_ratio_test(
 
     Returns: (batch_size, N_sim) numpy array of params and losses for null and alternative models
     """
-    # Initialize OU means with expression data
-    if pseudo > 0:
-        x_pseudo = [
-            np.maximum(x, pseudo) for x in expr
-        ]  # add small value to avoid log(0)
-        m_init = [
-            np.log(np.expm1(x)) if approx != "exp"
-            else np.log(x)
-            for x in x_pseudo
-        ] # reverse read counts through softplus or exp
-    else:
-        m_init = expr
-
-    # Initialize q standard deviation with expression data.
-    # Optionally cap the per-cell init at `s_init_floor` (e.g. 1.0) so that
-    # high-variance genes (e.g. ribosomal) don't start with q_s² in the
-    # thousands — which inflates MC noise on log p(x|z) and pushes Adam
-    # toward pathological optima.
-    s_init = [
-        np.tile(
-            np.maximum(1e-6, np.std(x, axis=-1, keepdims=True)),
-            (1, 1, x.shape[-1])
-        ) for x in m_init
-    ]
-    if s_init_floor is not None:
-        s_init = [np.minimum(s, float(s_init_floor)) for s in s_init]
-
-    '''
-    # use the first gene as the example gene
-    m_first = [
-        m[0:1, 0:1, :] for m in m_init
-    ] # (n_cells,)
-
-    # init OU parameters with one example gene
-    ou_params_init = np.ones((n_regimes + 2))  # shape: (n_regimes+2)
-    ou_params_init_h0 = ou_optimize_scipy(
-        ou_params_init,
-        1,
-        m_first,
-        diverge_list,
-        share_list,
-        epochs_list,
-        beta_list,
-        device=device,
-    )  # (B, S, n_regimes+2)
-    '''
-
-    # Initialize OU means for torch
+    # Initialize OU means for torch: q-mean = x
     m_init_tensor = [
-        torch.tensor(m, dtype=dtype, device=device) for m in m_init
+        torch.tensor(x, dtype=dtype, device=device) for x in expr
     ]  # list of (batch_size, N_sim, n_cells)
-    
+
     # Initialize OU parameters
     batch_size, N_sim, _ = m_init_tensor[0].shape
     ou_params_init = torch.ones(
@@ -163,19 +117,15 @@ def likelihood_ratio_test(
             gene_names,
             window,
             tol,
-            kkt
+            kkt,
+            root_mode=root_mode,
         )
         ou_params_init = ou_params_h0
 
-    # Initialize q log-variance for torch. The optimizer stores [mean, log_s2]
-    # internally; output conversion below still writes mean + q_std files.
-    log_s2_init_tensor = [
-        torch.tensor(log_s2_from_std_array(s), dtype=dtype, device=device) for s in s_init
-    ]
-
-    # Initialize all Lq parameters for torch
+    # Initialize all Lq parameters for torch.
+    # The optimizer stores [mean, log_s2] internally; init q-std = 1 (log_s2 ~= 0).
     pois_params_init = [
-        torch.cat((m_init_tensor[i], log_s2_init_tensor[i]), dim=-1) for i in range(len(m_init))
+        torch.cat((m, torch.zeros_like(m)), dim=-1) for m in m_init_tensor
     ]  # list of (batch_size, N_sim, 2*n_cells)
 
     # Initialize dispersion parameter for negative binomial
@@ -221,13 +171,9 @@ def likelihood_ratio_test(
             library_list_tensor,
             const,
             step_callback=h0_step_callback,
-            clamp_log_r_before_forward=clamp_log_r_before_forward,
             grad_clip_norm=grad_clip_norm,
-            log_alpha_clamp=log_alpha_clamp,
-            log_r_clamp=log_r_clamp,
             seed_per_call=(_gene_seed(gene_names, mode=1) if seed_per_gene else None),
-            disable_param_sanitize=disable_param_sanitize,
-            disable_grad_sanitize=disable_grad_sanitize,
+            root_mode=root_mode,
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
         h0_params, h0_loss = run_em(
@@ -251,7 +197,8 @@ def likelihood_ratio_test(
             kkt,
             nb,
             library_list_tensor,
-            const
+            const,
+            root_mode=root_mode,
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     
     # optimize Lq for alternative model
@@ -279,13 +226,9 @@ def likelihood_ratio_test(
             library_list_tensor,
             const,
             step_callback=h1_step_callback,
-            clamp_log_r_before_forward=clamp_log_r_before_forward,
             grad_clip_norm=grad_clip_norm,
-            log_alpha_clamp=log_alpha_clamp,
-            log_r_clamp=log_r_clamp,
             seed_per_call=(_gene_seed(gene_names, mode=2) if seed_per_gene else None),
-            disable_param_sanitize=disable_param_sanitize,
-            disable_grad_sanitize=disable_grad_sanitize,
+            root_mode=root_mode,
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
         h1_params, h1_loss = run_em(
@@ -309,7 +252,8 @@ def likelihood_ratio_test(
             kkt,
             nb,
             library_list_tensor,
-            const
+            const,
+            root_mode=root_mode,
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     
     # Optional: grid search for alpha when fixing other parameters
@@ -374,9 +318,9 @@ def likelihood_ratio_test(
         plt.ylabel("-ELBO")
         plt.grid(True, which="both", ls="--", alpha=0.6)
         best_idx = int(np.argmin(h0_elbos))
-        plt.scatter(alphas[best_idx], h0_elbos[best_idx], color="red", zorder=5, label="h0 best α")
+        plt.scatter(alphas[best_idx], h0_elbos[best_idx], color="red", zorder=5, label="h0 best alpha")
         best_idx = int(np.argmin(h1_elbos))
-        plt.scatter(alphas[best_idx], h1_elbos[best_idx], color="green", zorder=5, label="h1 best α")
+        plt.scatter(alphas[best_idx], h1_elbos[best_idx], color="green", zorder=5, label="h1 best alpha")
         plt.legend()
         plt.savefig(f"{batch_start}_elbo.png")
         plt.close()
@@ -421,11 +365,11 @@ def likelihood_ratio_test(
     # Output variational parameters as mean + std for compatibility with
     # existing q-mean-std files. Internally h*_params store mean + log_s2.
     h0_q_params = [
-        export_mean_std_tensor(n).clone().detach().cpu().numpy()
+        _lq_to_mean_std(n).clone().detach().cpu().numpy()
         for n in h0_params[:-2]
     ]
     h1_q_params = [
-        export_mean_std_tensor(n).clone().detach().cpu().numpy()
+        _lq_to_mean_std(n).clone().detach().cpu().numpy()
         for n in h1_params[:-2]
     ]
 

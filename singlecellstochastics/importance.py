@@ -1,27 +1,33 @@
+"""Importance-sampling likelihood refinement for fitted variational models."""
+
+import os
+
 import torch
 import pandas as pd
 
+from .defaults import DEFAULT_LOG_S2_CLAMP
+from .likelihood import ou_covariance_root_prior_torch
 from .weights import theta_weight_W_torch
-from .qparam import std_from_log_s2_tensor
 
 def importance_sampling(
     params,
     mode,
     x_tensor,
-    diverge_list_torch, 
-    share_list_torch, 
-    epochs_list_torch, 
-    beta_list_torch, 
+    diverge_list_torch,
+    share_list_torch,
+    epochs_list_torch,
+    beta_list_torch,
     device,
     nb,
     lib,
     n_samples,
-    mix
+    mix,
+    log_s2_clamp=DEFAULT_LOG_S2_CLAMP,
 ):
     """
     Estimate the real log-likelihood using importance sampling.
     Using samples z_i ~ q(z|x), we estimate:
-    log p(x) ≈ log_sum_exp(log p(x,z_i) - log q(z_i|x)) - log(n_samples)
+    log p(x) ~= log_sum_exp(log p(x,z_i) - log q(z_i|x)) - log(n_samples)
     
     Args:
         params: list of (Lq_params_tree1, ..., Lq_params_treeN, log_r, ou_params)
@@ -38,7 +44,13 @@ def importance_sampling(
     Returns:
         negative log_likelihood: (batch_size, N_sim)
     """
-    log_r = params[-2].unsqueeze(0) # add dim for samples
+    mix = float(mix)
+    if not 0 <= mix <= 1:
+        raise ValueError(f"mix must be in [0, 1], got {mix}")
+
+    # params[-2] is (batch_size, N_sim).  Keep it aligned to the gene/sim axes
+    # and broadcast only over samples and cells: (1, B, N, 1).
+    log_r = params[-2].unsqueeze(-1)
     ou_params = [params[-1][..., :1], params[-1][..., 1:]] # split alpha and others for ou likelihood
     ntree = len(x_tensor)
 
@@ -48,7 +60,9 @@ def importance_sampling(
         # sample z_i ~ q(z|x) for each tree
         n_cells = x_tensor[i].shape[-1]
         q_mean = params[i][:, :, :n_cells]
-        q_std = std_from_log_s2_tensor(params[i][:, :, n_cells:2*n_cells])
+        q_std = torch.exp(torch.clamp(
+            params[i][:, :, n_cells:2*n_cells], log_s2_clamp[0], log_s2_clamp[1]
+        ) / 2)
         dist_q = torch.distributions.Normal(q_mean, q_std)
         samples_q = dist_q.sample((n_samples,)) # (n_samples, batch_size, N_sim, n_cells)
 
@@ -61,14 +75,9 @@ def importance_sampling(
         alpha = alpha[:, :, None, None]  # (batch_size, N_sim, 1, 1)
         sigma2 = sigma2[:, :, None, None]  # (batch_size, N_sim, 1, 1)
         diverge = diverge_list_torch[i][None, None, :, :]  # (1, 1, n_cells, n_cells)
-        share = share_list_torch[i][None, None, :, :]  # (1, 1, n_cells, n_cells)
 
         # OU covariance matrix
-        V = (
-            (sigma2 / (2 * alpha))
-            * torch.exp(-alpha * diverge)
-            * (1 - torch.exp(-2 * alpha * share))
-        )  # (batch_size, N_sim, n_cells, n_cells)
+        V = sigma2 * ou_covariance_root_prior_torch(alpha, diverge)
         
         # OU mean
         if mode == 1:
@@ -104,6 +113,11 @@ def importance_sampling(
                     logits = torch.log(mu) - log_r
                 )
             log_p_x_given_z = dist_nb.log_prob(x_tensor[i].unsqueeze(0))  # (n_samples, batch_size, N_sim, n_cells)
+            if log_p_x_given_z.shape != samples_q.shape:
+                raise RuntimeError(
+                    "Importance-sampling observation log-prob has shape "
+                    f"{tuple(log_p_x_given_z.shape)}, expected {tuple(samples_q.shape)}"
+                )
             log_p_x_given_z = log_p_x_given_z.sum(dim=-1)  # (n_samples, batch_size, N_sim)
 
             # log p(x,z_i) = log p(z_i) + log p(x_i|z_i)
@@ -137,6 +151,11 @@ def importance_sampling(
                     logits = torch.log(mu) - log_r
                 )
             log_p_x_given_z = dist_nb.log_prob(x_tensor[i].unsqueeze(0))  # (n_samples, batch_size, N_sim, n_cells)
+            if log_p_x_given_z.shape != samples_mixed.shape:
+                raise RuntimeError(
+                    "Importance-sampling observation log-prob has shape "
+                    f"{tuple(log_p_x_given_z.shape)}, expected {tuple(samples_mixed.shape)}"
+                )
             log_p_x_given_z = log_p_x_given_z.sum(dim=-1)  # (n_samples, batch_size, N_sim)
 
             # log p(x,z_i) = log p(z_i) + log p(x_i|z_i)
@@ -162,9 +181,15 @@ def importance_sampling(
     print(f"ESS: {ESS}")
     df = pd.DataFrame(
         log_p_q[..., 0].detach().cpu().numpy(),
-        index=[f"sample_{i}" for i in range(log_p_q.shape[0])],
+        index=[f"h{mode - 1}_sample_{i}" for i in range(log_p_q.shape[0])],
         columns=[f"batch_{j}" for j in range(log_p_q.shape[1])]
     )
-    df.to_csv(f"IS{n_samples}_mix{mix}_weights.tsv", sep="\t", mode="a")
+    weight_file = f"IS{n_samples}_mix{mix}_weights.tsv"
+    df.to_csv(
+        weight_file,
+        sep="\t",
+        mode="a",
+        header=not os.path.exists(weight_file),
+    )
 
     return -log_likelihood

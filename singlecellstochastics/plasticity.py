@@ -1,24 +1,27 @@
+"""Expression-heritability test based on BM Pagel-lambda likelihoods."""
+
 import argparse
-import pandas as pd
+import logging
+import os
+import shutil
+import time
+
 import numpy as np
+import pandas as pd
 import torch
-from torch.distributions.chi2 import Chi2
 import wandb
 from statsmodels.stats.multitest import multipletests
-import os
-import time
-import logging
+from torch.distributions.chi2 import Chi2
 
 logger = logging.getLogger(__name__)
 
 from .preprocess import process_data_BM
 from .optimize import Lq_optimize_torch_BM, optimize_torch_BM
-from .qparam import log_s2_from_std_tensor
 
 def gene_expression_plasticity(
     tree_files, gene_files, library_files, outfile, device, batch_size,
     max_iter, learning_rate, wandb_flag, window, tol, model="nb",
-    approx="softplus_MC", const=False, resume=False
+    approx="softplus_MC", const=False, resume=False,
 ):
     if wandb_flag:
         wandb.login()
@@ -57,7 +60,7 @@ def gene_expression_plasticity(
         actual_batch = len(gene_names)
 
         # Check if batch already completed
-        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx}.pt")
+        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx+1}.pt")
         if resume and os.path.exists(ckpt_file):
             logger.info(f"Batch {batch_idx+1}/{n_batches} already done, skipping")
             continue
@@ -68,21 +71,18 @@ def gene_expression_plasticity(
             for x in x_list
         ]
 
-        bm_params_init = torch.ones(
-            (actual_batch, ), dtype=torch.float32, device=device
-        ) * (-2 if model in ("nb", "pois") else 1)
+        # Pagel's lambda logit init: sigmoid(-2) ~= 0.12
+        bm_params_init = torch.full(
+            (actual_batch,), -2.0, dtype=torch.float32, device=device
+        )
 
         if model in ("nb", "pois"):
             nb = (model == "nb")
 
-            # init parameters for variational optimization
-            s_init_tensor = [
-                x.std(dim=-1, keepdim=True).clamp(min=1e-6).expand_as(x)
-                for x in x_tensor_list
-            ]  # list of (actual_batch, n_cells)
+            # init q: mean = x, std = 1 (log_s2 ~= 0)
             q_params_init = [
-                torch.cat((x_tensor_list[i], log_s2_from_std_tensor(s_init_tensor[i])), dim=-1)
-                for i in range(len(x_tensor_list))
+                torch.cat((x, torch.zeros_like(x)), dim=-1)
+                for x in x_tensor_list
             ]
 
             log_r = torch.zeros(
@@ -203,7 +203,7 @@ def gene_expression_plasticity(
     results_list = []
     genes = []
     for batch_idx in range(n_batches):
-        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx}.pt")
+        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx+1}.pt")
         ckpt_data = torch.load(ckpt_file, weights_only=False)
         results_list.append(ckpt_data['results'])
         genes.extend(ckpt_data['genes'])
@@ -238,7 +238,6 @@ def gene_expression_plasticity(
     results_df.to_csv(outfile, sep="\t", index=False)
 
     # Clean up checkpoint directory
-    import shutil
     shutil.rmtree(ckpt_dir)
     logger.info(f"Results saved to {outfile}")
 
@@ -282,7 +281,7 @@ def run_plasticity_test():
         tree, expression, library, args.outfile, device=device, batch_size=args.batch,
         max_iter=args.iter, learning_rate=args.lr, wandb_flag=args.wandb,
         window=args.window, tol=args.tol, model=args.model, approx=args.approx,
-        const=args.const, resume=args.resume
+        const=args.const, resume=args.resume,
     )
 
     elapsed = time.time() - start_time

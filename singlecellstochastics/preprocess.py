@@ -1,3 +1,10 @@
+"""Input preprocessing for LAVOUS workflows.
+
+The functions in this module align count matrices to tree leaves, normalize
+branch lengths, assign regimes to lineages, and precompute covariance helper
+matrices consumed by the BM/OU likelihood code.
+"""
+
 import numpy as np
 import pandas as pd
 from Bio import Phylo
@@ -278,7 +285,7 @@ def process_data_BM(tree_files, gene_files, library_files, device):
         mrca_idx = np.zeros((len(cells), len(cells)), dtype=int)
         for i in range(len(cells)):
             for j in range(len(cells)):
-                # Fast set intersection
+                # Fast set intersection for paths
                 common_ancestors = cell_paths[i] & cell_paths[j]
                 # Find the deepest (last in path) ancestor
                 for ancestor in cell_lineages[i]:
@@ -291,7 +298,7 @@ def process_data_BM(tree_files, gene_files, library_files, device):
             [sum(x.branch_length for x in paths[name]) for name in node_names],
             dtype=np.float32,
         )
-        share_mat = depth[mrca_idx]  # depth of MRCA
+        share_mat = depth[mrca_idx]  # depth of each MRCA (i, j)
         share_torch = torch.tensor(share_mat, dtype=torch.float32, device=device)
         share_list_torch.append(share_torch)
 

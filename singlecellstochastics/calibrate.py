@@ -83,6 +83,11 @@ def _load_meta(chi_path, meta_arg):
 
 def _h0_params_from_tsv(chi_df):
     """Convert TSV rows -> (n_genes, 4) array in [log_r, log_alpha, sigma, theta0] form."""
+    required = ["h0_r", "h0_alpha", "h0_sigma", "h0_theta"]
+    missing = [col for col in required if col not in chi_df.columns]
+    if missing:
+        raise ValueError(f"Missing required H0 parameter columns in --chi: {missing}")
+
     h0_r = chi_df["h0_r"].to_numpy(dtype=np.float64)
     h0_alpha = chi_df["h0_alpha"].to_numpy(dtype=np.float64)
     h0_sigma = chi_df["h0_sigma"].to_numpy(dtype=np.float64)
@@ -103,36 +108,35 @@ def _h0_params_from_tsv(chi_df):
     return h0[valid], valid
 
 
+def _normalize_result_columns(chi_df):
+    """Support current result files and older files that used LR for delta NLL."""
+    if "delta_nll" not in chi_df.columns:
+        if "LR" not in chi_df.columns:
+            raise ValueError("Result table must contain either 'delta_nll' or legacy 'LR'.")
+        chi_df = chi_df.rename(columns={"LR": "delta_nll"})
+
+    if "lrt" not in chi_df.columns:
+        insert_at = chi_df.columns.get_loc("delta_nll") + 1
+        chi_df.insert(insert_at, "lrt", 2 * chi_df["delta_nll"].to_numpy(dtype=np.float64))
+
+    return chi_df
+
+
 def _build_lrt_kwargs(meta, device, dtype):
     """Reconstruct the lrt_kwargs needed to run LRT on simulated data."""
-    log_alpha_clamp = None
-    if meta.get("log_alpha_clamp"):
-        lo, hi = meta["log_alpha_clamp"].split(",")
-        log_alpha_clamp = (float(lo), float(hi))
-    log_r_clamp = None
-    if meta.get("log_r_clamp"):
-        lo, hi = meta["log_r_clamp"].split(",")
-        log_r_clamp = (float(lo), float(hi))
-
     return dict(
         max_iter=meta["iter"], learning_rate=meta["lr"],
         dtype=dtype, device=device, wandb_flag=None,
         window=min(meta["window"], meta["iter"]), tol=meta["tol"],
         approx=meta["approx"],
-        em_iter=meta.get("em_iter", 0), pseudo=meta.get("pseudo", 0),
+        em_iter=meta.get("em_iter", 0),
         prior=meta.get("prior", 1.0), init=meta.get("init", False),
         kkt=meta.get("kkt", True), grid=meta.get("grid", 0),
         nb=meta.get("nb", True),
         importance=meta.get("importance", 0), const=meta.get("const", False),
         mix=meta.get("mix", 1.0),
-        clamp_log_r_before_forward=meta.get("clamp_log_r_before_forward", False),
         grad_clip_norm=meta.get("grad_clip_norm", None),
-        log_alpha_clamp=log_alpha_clamp,
-        log_r_clamp=log_r_clamp,
         seed_per_gene=meta.get("seed_per_gene", False),
-        s_init_floor=meta.get("s_init_floor", None),
-        disable_param_sanitize=meta.get("disable_param_sanitize", False),
-        disable_grad_sanitize=not meta.get("enable_grad_sanitize", False),
     )
 
 
@@ -163,6 +167,7 @@ def run_calibrate():
 
     # Read chi-squared output
     chi_df = pd.read_csv(chi_path, sep="\t")
+    chi_df = _normalize_result_columns(chi_df)
     chi_df = chi_df.sort_values("ID").reset_index(drop=True)
     logger.info(f"Read {len(chi_df)} genes from {chi_path}")
 
@@ -176,7 +181,7 @@ def run_calibrate():
 
     # Preprocess (we need tree topology + cells_list to simulate; library_list for sampling)
     tree_files = meta["tree"].split(",")
-    gene_files = meta["expr"].split(",")
+    gene_files = meta["expression"].split(",")
     regime_files = meta["regime"].split(",")
     library_files = meta["library"].split(",") if meta.get("library") else [None] * len(tree_files)
 
@@ -201,7 +206,7 @@ def run_calibrate():
     )
 
     nb = meta.get("nb", True)
-    lr_obs = chi_df["LR"].to_numpy(dtype=np.float64)
+    delta_nll_obs = chi_df["delta_nll"].to_numpy(dtype=np.float64)
 
     # === sim_all mode ===
     if args.sim_all:
@@ -236,11 +241,11 @@ def run_calibrate():
         # Compute empirical p-values
         results_emp = {}
         for i, row in chi_df.iterrows():
-            obs_lr = lr_obs[i]
-            if not np.isfinite(obs_lr):
+            obs_delta_nll = delta_nll_obs[i]
+            if not np.isfinite(obs_delta_nll):
                 p_emp = np.nan
             else:
-                p_emp = (np.sum(null_LRs >= obs_lr) + 1) / (len(null_LRs) + 1)
+                p_emp = (np.sum(null_LRs >= obs_delta_nll) + 1) / (len(null_LRs) + 1)
             results_emp[i] = list(row.values[: -3]) + [p_emp]
 
         out_path = os.path.join(outdir, f"{prefix}_empirical-all.tsv")
@@ -267,12 +272,12 @@ def run_calibrate():
         # Map valid index back to row index
         valid_idx = np.flatnonzero(valid)
         for j, i in enumerate(valid_idx):
-            obs_lr = lr_obs[i]
-            if not np.isfinite(obs_lr):
+            obs_delta_nll = delta_nll_obs[i]
+            if not np.isfinite(obs_delta_nll):
                 p_emp = np.nan
             else:
                 null_row = null_LRs_each[j, :]
-                p_emp = (np.sum(null_row >= obs_lr) + 1) / (len(null_row) + 1)
+                p_emp = (np.sum(null_row >= obs_delta_nll) + 1) / (len(null_row) + 1)
             results_emp[int(i)] = list(chi_df.iloc[i].values[: -3]) + [p_emp]
         # Genes excluded from valid pool keep p=NaN so output_results pushes them to end
         for i in np.flatnonzero(~valid):

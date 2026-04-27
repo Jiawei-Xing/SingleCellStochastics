@@ -1,3 +1,5 @@
+"""Utilities for comparing simulation truth with LAVOUS result tables."""
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -57,8 +59,16 @@ def compare_results():
     truth = np.array([False]*n_neg + [True]*n_pos)
 
     # ROC and AUC
-    result_oup_neg = np.sign(df_oup_neg["h1_theta1"].values - df_oup_neg["h1_theta0"].values) * (-np.log10(df_oup_neg["p"].values))
-    result_oup_pos = np.sign(df_oup_pos["h1_theta1"].values - df_oup_pos["h1_theta0"].values) * (-np.log10(df_oup_pos["p"].values))
+    # Detect H1 regime-specific theta columns produced by `lavous-diff`
+    theta_cols = sorted(c for c in df_oup_neg.columns if c.startswith("h1_theta_"))
+    if len(theta_cols) < 2:
+        raise ValueError(
+            "Expected at least two 'h1_theta_<regime>' columns in OUP result; "
+            f"found {theta_cols}."
+        )
+    null_col, alt_col = theta_cols[0], theta_cols[1]
+    result_oup_neg = np.sign(df_oup_neg[alt_col].values - df_oup_neg[null_col].values) * (-np.log10(df_oup_neg["p"].values))
+    result_oup_pos = np.sign(df_oup_pos[alt_col].values - df_oup_pos[null_col].values) * (-np.log10(df_oup_pos["p"].values))
     p_oup = np.concatenate((result_oup_neg, result_oup_pos))
     fpr1, tpr1, _ = roc_curve(truth, p_oup)
     roc_auc1 = auc(fpr1, tpr1)

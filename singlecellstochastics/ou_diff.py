@@ -1,17 +1,20 @@
-import torch
+"""Command-line workflow for OU differential-expression testing."""
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import time
+
 import numpy as np
 import pandas as pd
-import argparse
+import torch
 import wandb
-import os
-import json
-import time
-import gc
-import logging
-import shutil
-from .preprocess import process_data_OU
+
 from .lrt import likelihood_ratio_test
-from .output import save_result, output_results
+from .output import output_model_params, output_results, save_result
+from .preprocess import process_data_OU
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +25,7 @@ def parse_args():
     )
     # Required inputs
     parser.add_argument("--tree", type=str, required=True, help="Newick tree file (comma-separated if multiple clones)")
-    parser.add_argument("--expr", type=str, required=True, help="Cell by gene count matrix (comma-separated if multiple clones)")
+    parser.add_argument("--expression", type=str, required=True, help="Cell by gene count matrix (comma-separated if multiple clones)")
     parser.add_argument("--regime", type=str, required=True, help="Regime file (comma-separated if multiple clones)")
     parser.add_argument("--null", type=str, required=True, help="Regime for null hypothesis")
 
@@ -43,8 +46,10 @@ def parse_args():
     parser.add_argument("--no_nb", action="store_false", dest="nb", help="Use Poisson instead of NB (default: NB)")
     parser.add_argument("--no_kkt", action="store_false", dest="kkt", help="Disable KKT constraint (default: use KKT)")
     parser.add_argument("--prior", type=float, default=1.0, help="L2 prior on log alpha (default: 1.0)")
-    parser.add_argument("--pseudo", type=float, default=0, help="Pseudo count for initial mean (default: 0)")
     parser.add_argument("--const", action="store_true", help="Include constant terms in likelihood")
+    parser.add_argument("--root_mode", type=str, default="stationary",
+                        choices=["stationary", "fixed"],
+                        help="OU root prior: 'stationary' (theta0, sigma^2/(2 alpha)) or 'fixed' (deterministic theta0). Default: stationary.")
 
     # Optional features
     parser.add_argument("--annot", type=str, default=None, help="Gene annotation file")
@@ -56,32 +61,16 @@ def parse_args():
     parser.add_argument("--keep_ckpt", action="store_true", help="Keep checkpoint files after combining results")
     parser.add_argument("--log", type=str, default=None, help="Path to log file")
     parser.add_argument("--wandb", type=str, default=None, help="Wandb run name")
-    #parser.add_argument("--selection", type=str, default=None, help="Selection test TSV to reuse OU H1 as diff test H0 (skip H0 optimization)")
 
     # Importance sampling (empirical-null calibration is a separate CLI: run-calibrate)
     parser.add_argument("--importance", type=int, default=0, help="Number of importance samples (default: 0)")
     parser.add_argument("--mix", type=float, default=1, help="Weight for q(z) in importance sampling mixture (default: 1)")
 
-    # Numerical safety knobs (off by default for backward compat)
-    parser.add_argument("--clamp_log_r_before_forward", action="store_true",
-                        help="Clamp log_r BEFORE the forward pass (default: post-step). Avoids leaked out-of-range values.")
+    # Numerical safety knobs
     parser.add_argument("--grad_clip_norm", type=float, default=None,
                         help="Gradient norm clip per parameter tensor. Bounds bad MC steps. e.g. 10.")
-    parser.add_argument("--log_alpha_clamp", type=str, default=None,
-                        help="Comma-separated 'lo,hi' for log_alpha clamp post-step (e.g. -3,5). Prevents alpha→0/∞.")
-    parser.add_argument("--log_r_clamp", type=str, default=None,
-                        help="Comma-separated 'lo,hi' for log_r clamp (e.g. -5,8). Default = -5,5 (legacy). "
-                             "Raise upper bound for genes that need Poisson-like dispersion (r >> 1).")
     parser.add_argument("--seed_per_gene", action="store_true",
                         help="Re-seed RNG per-gene-batch from a hash of gene_names. Removes batch-order dependence.")
-    parser.add_argument("--s_init_floor", type=float, default=None,
-                        help="Cap initial q-std at this value (e.g. 1.0). Reduces MC variance for high-count genes.")
-    parser.add_argument("--disable_param_sanitize", action="store_true",
-                        help=argparse.SUPPRESS)
-    parser.add_argument("--enable_grad_sanitize", action="store_true",
-                        help="Opt in to replacing non-finite gradient entries with 0 before Adam. Default: disabled.")
-    parser.add_argument("--disable_grad_sanitize", action="store_true",
-                        help=argparse.SUPPRESS)
 
     return parser.parse_args()
 
@@ -109,7 +98,7 @@ def run_diff_test():
 
     # Parse comma-separated file lists
     tree_files = args.tree.split(",")
-    gene_files = args.expr.split(",")
+    gene_files = args.expression.split(",")
     regime_files = args.regime.split(",")
     library_files = args.library.split(",") if args.library else [None] * len(tree_files)
     window = min(args.window, args.iter)
@@ -126,17 +115,6 @@ def run_diff_test():
     n_regimes = len(regimes)
     batch_size = min(args.batch, len(df_list[0].columns))
 
-    # Parse log_alpha_clamp "lo,hi"
-    log_alpha_clamp = None
-    if args.log_alpha_clamp:
-        lo, hi = args.log_alpha_clamp.split(",")
-        log_alpha_clamp = (float(lo), float(hi))
-
-    log_r_clamp = None
-    if args.log_r_clamp:
-        lo, hi = args.log_r_clamp.split(",")
-        log_r_clamp = (float(lo), float(hi))
-
     # Common kwargs for likelihood_ratio_test
     lrt_kwargs = dict(
         n_regimes=n_regimes,
@@ -147,22 +125,14 @@ def run_diff_test():
         max_iter=args.iter, learning_rate=args.lr,
         dtype=dtype, device=device, wandb_flag=args.wandb,
         window=window, tol=args.tol, approx=args.approx,
-        em_iter=args.em_iter, pseudo=args.pseudo,
+        em_iter=args.em_iter,
         prior=args.prior, init=args.init, kkt=args.kkt,
         grid=args.grid, nb=args.nb, library_list=library_list,
         importance=args.importance, const=args.const, mix=args.mix,
-        clamp_log_r_before_forward=args.clamp_log_r_before_forward,
         grad_clip_norm=args.grad_clip_norm,
-        log_alpha_clamp=log_alpha_clamp,
-        log_r_clamp=log_r_clamp,
         seed_per_gene=args.seed_per_gene,
-        s_init_floor=args.s_init_floor,
-        disable_param_sanitize=args.disable_param_sanitize,
-        disable_grad_sanitize=(not args.enable_grad_sanitize) or args.disable_grad_sanitize,
+        root_mode=args.root_mode,
     )
-
-    # Load selection test results for H0 reuse
-    sel_df = None
 
     output_dir = args.outdir
     prefix = args.prefix
@@ -184,7 +154,7 @@ def run_diff_test():
         batch_genes = df_list[0].columns[batch_start : batch_start + batch_size]
 
         # Check if batch already completed
-        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx}.pt")
+        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx+1}.pt")
         if args.resume and os.path.exists(ckpt_file):
             logger.info(f"Batch {batch_idx+1}/{n_batches} already done, skipping")
             continue
@@ -206,8 +176,10 @@ def run_diff_test():
         )
 
         # Build results dict for this batch
-        batch_results = save_result(batch_start, batch_size, batch_genes,
-            h0_params, h1_params, h0_loss, h1_loss, {}, args.approx)
+        batch_results = save_result(
+            batch_start, batch_size, batch_genes,
+            h0_params, h1_params, h0_loss, h1_loss, {},
+        )
 
         # Save checkpoint
         ckpt_data = {
@@ -232,62 +204,73 @@ def run_diff_test():
     h1_q_params = []
 
     for batch_idx in range(n_batches):
-        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx}.pt")
+        ckpt_file = os.path.join(ckpt_dir, f"batch_{batch_idx+1}.pt")
         ckpt_data = torch.load(ckpt_file, weights_only=False)
 
         results.update(ckpt_data['results'])
 
-        # Accumulate q params
-        if sel_df is None:
-            if h0_q_params:
-                h0_q_params = [np.concatenate([h0_q_params[i], ckpt_data['h0_q'][i]], axis=0) for i in range(len(ckpt_data['h0_q']))]
-            else:
-                h0_q_params = [n for n in ckpt_data['h0_q']]
-        if h1_q_params:
-            h1_q_params = [np.concatenate([h1_q_params[i], ckpt_data['h1_q'][i]], axis=0) for i in range(len(ckpt_data['h1_q']))]
+        # Accumulate q params across batches
+        if h0_q_params:
+            h0_q_params = [
+                np.concatenate([h0_q_params[i], ckpt_data['h0_q'][i]], axis=0)
+                for i in range(len(ckpt_data['h0_q']))
+            ]
         else:
-            h1_q_params = [n for n in ckpt_data['h1_q']]
+            h0_q_params = list(ckpt_data['h0_q'])
+        if h1_q_params:
+            h1_q_params = [
+                np.concatenate([h1_q_params[i], ckpt_data['h1_q'][i]], axis=0)
+                for i in range(len(ckpt_data['h1_q']))
+            ]
+        else:
+            h1_q_params = list(ckpt_data['h1_q'])
 
     # === Output results ===
 
-    # Chi-squared results
+    # Chi-squared results and long-form model parameters.
     output_results(results, os.path.join(output_dir, f"{prefix}_chi-squared.tsv"), regimes)
+    output_model_params(results, os.path.join(output_dir, f"{prefix}_model-params.tsv"), regimes)
 
-    # Sidecar meta.json — everything run-calibrate needs to reconstruct lrt_kwargs
+    # Sidecar meta.json: everything run-calibrate needs to reconstruct lrt_kwargs.
     meta = {
-        "tree": args.tree, "expr": args.expr, "regime": args.regime,
+        "tree": args.tree, "expression": args.expression, "regime": args.regime,
         "library": args.library, "null": args.null,
         "iter": args.iter, "lr": args.lr, "window": args.window, "tol": args.tol,
         "dtype": args.dtype, "approx": args.approx, "nb": args.nb, "kkt": args.kkt,
-        "prior": args.prior, "pseudo": args.pseudo, "const": args.const,
+        "prior": args.prior, "const": args.const,
         "init": args.init, "em_iter": args.em_iter, "grid": args.grid,
         "importance": args.importance, "mix": args.mix,
-        "clamp_log_r_before_forward": args.clamp_log_r_before_forward,
         "grad_clip_norm": args.grad_clip_norm,
-        "log_alpha_clamp": args.log_alpha_clamp,
-        "log_r_clamp": args.log_r_clamp,
         "seed_per_gene": args.seed_per_gene,
-        "s_init_floor": args.s_init_floor,
-        "disable_param_sanitize": args.disable_param_sanitize,
-        "enable_grad_sanitize": args.enable_grad_sanitize,
+        "root_mode": args.root_mode,
     }
     with open(os.path.join(output_dir, f"{prefix}_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
-    # Variational parameters (skip h0_q if reusing from selection)
-    if sel_df is None:
-        for i in range(len(h0_q_params)):
-            df = pd.DataFrame(h0_q_params[i][:,0,:], index=df_list[i].columns, columns=cells_list[i]*2)
-            df.to_csv(os.path.join(output_dir, f"{prefix}_h0_q-mean-std_{i}.tsv"), sep="\t")
+    # Variational parameters: leaf q_mean and q_std for H0 and H1, one TSV per tree
+    for i in range(len(h0_q_params)):
+        columns = (
+            [f"q_mean_{cell}" for cell in cells_list[i]]
+            + [f"q_std_{cell}" for cell in cells_list[i]]
+        )
+        pd.DataFrame(
+            h0_q_params[i][:, 0, :], index=df_list[i].columns, columns=columns
+        ).to_csv(os.path.join(output_dir, f"{prefix}_h0_q-mean-std_{i}.tsv"), sep="\t")
     for i in range(len(h1_q_params)):
-        df = pd.DataFrame(h1_q_params[i][:,0,:], index=df_list[i].columns, columns=cells_list[i]*2)
-        df.to_csv(os.path.join(output_dir, f"{prefix}_h1_q-mean-std_{i}.tsv"), sep="\t")
+        columns = (
+            [f"q_mean_{cell}" for cell in cells_list[i]]
+            + [f"q_std_{cell}" for cell in cells_list[i]]
+        )
+        pd.DataFrame(
+            h1_q_params[i][:, 0, :], index=df_list[i].columns, columns=columns
+        ).to_csv(os.path.join(output_dir, f"{prefix}_h1_q-mean-std_{i}.tsv"), sep="\t")
 
     # Clean up checkpoint directory
     if not args.keep_ckpt:
         shutil.rmtree(ckpt_dir)
     elapsed = time.time() - start_time
     logger.info(f"Results saved to {output_dir}/{prefix}_chi-squared.tsv")
+    logger.info(f"Model parameters saved to {output_dir}/{prefix}_model-params.tsv")
     logger.info(f"For empirical-null calibration: run-calibrate --chi {output_dir}/{prefix}_chi-squared.tsv --sim_all <N>")
     logger.info(f"Total running time: {elapsed:.1f}s ({elapsed/60:.1f}min)")
 

@@ -1,3 +1,10 @@
+"""Gaussian tree likelihoods for BM and OU latent expression models.
+
+The likelihoods here operate on latent Gaussian expression values or their
+variational expectations. Observation-model terms live in `elbo.py`; this module
+only handles the tree-structured BM/OU Gaussian prior.
+"""
+
 import numpy as np
 import torch
 from scipy.special import logsumexp
@@ -24,9 +31,54 @@ def _apply_pagel_lambda_to_cov(V, raw_lambda, mode, reference):
     return lam[..., None, None] * V + (1.0 - lam[..., None, None]) * diag_v
 
 
+def ou_covariance_fixed_root_numpy(alpha, diverge, share):
+    """OU covariance factor when the root latent state is fixed."""
+    return (
+        (1 / (2 * alpha))
+        * np.exp(-alpha * diverge)
+        * (1 - np.exp(-2 * alpha * share))
+    )
+
+
+def ou_covariance_root_prior_numpy(alpha, diverge):
+    """OU covariance factor with stationary root prior around theta0."""
+    return (1 / (2 * alpha)) * np.exp(-alpha * diverge)
+
+
+def ou_covariance_fixed_root_torch(alpha, diverge, share):
+    """OU covariance factor when the root latent state is fixed."""
+    return (
+        (1 / (2 * alpha))
+        * torch.exp(-alpha * diverge)
+        * (1 - torch.exp(-2 * alpha * share))
+    )
+
+
+def ou_covariance_root_prior_torch(alpha, diverge):
+    """OU covariance factor with stationary root prior around theta0."""
+    return (1 / (2 * alpha)) * torch.exp(-alpha * diverge)
+
+
+def _ou_cov_numpy(alpha, diverge, share, root_mode):
+    if root_mode == "fixed":
+        return ou_covariance_fixed_root_numpy(alpha, diverge, share)
+    if root_mode == "stationary":
+        return ou_covariance_root_prior_numpy(alpha, diverge)
+    raise ValueError(f"Invalid root_mode: {root_mode}")
+
+
+def _ou_cov_torch(alpha, diverge, share, root_mode):
+    if root_mode == "fixed":
+        return ou_covariance_fixed_root_torch(alpha, diverge, share)
+    if root_mode == "stationary":
+        return ou_covariance_root_prior_torch(alpha, diverge)
+    raise ValueError(f"Invalid root_mode: {root_mode}")
+
+
 # calculate negative log likelihood of OU
 def ou_neg_log_lik_numpy(
-    params, mode, expr_list, diverge_list, share_list, epochs_list, beta_list
+    params, mode, expr_list, diverge_list, share_list, epochs_list, beta_list,
+    root_mode="stationary"
 ):
     """
     Compute negative log likelihood of OU along tree adapted from EvoGeneX.
@@ -58,13 +110,11 @@ def ou_neg_log_lik_numpy(
         beta = beta_list[i]
         n_regimes = beta[0].shape[1]
 
-        # V: covariance matrix from trees (excluding variance sigma2)
-        V = (
-            (1 / (2 * alpha))
-            * np.exp(-alpha * diverge)
-            * (1 - np.exp(-2 * alpha * share))
-        )
-        
+        # V: covariance matrix from trees (excluding variance sigma2).
+        # root_mode="stationary": root ~ N(theta0, sigma2/(2*alpha))
+        # root_mode="fixed":      root deterministically equals theta0
+        V = _ou_cov_numpy(alpha, diverge, share, root_mode)
+
         # diff = observed expression - expected values (n_cells, 1)
         if mode == 1:
             W = np.ones(n_cells)  # expected values at leaves are same as theta0 at root
@@ -93,10 +143,11 @@ def ou_neg_log_lik_numpy(
 
 # calculate negative log likelihood of OU
 def ou_neg_log_lik_numpy_kkt(
-    params, mode, expr_list, diverge_list, share_list, epochs_list, beta_list
+    params, mode, expr_list, diverge_list, share_list, epochs_list, beta_list,
+    root_mode="stationary"
 ):
     """
-    Compute negative log likelihood of OU along tree with KKT conditionadapted from EvoGeneX.
+    Compute negative log likelihood of OU along tree with KKT condition, adapted from EvoGeneX.
     Use expression data directly as the OU output.
     Assume the same OU parameters for all trees and average likelihoods with log-sum-exp trick.
 
@@ -110,7 +161,6 @@ def ou_neg_log_lik_numpy_kkt(
     V: covariance matrix from trees (n_cells, n_cells)
     W: theta weight (n_cells, n_regimes)
     """
-    #alpha = np.logaddexp(0, param) # softplus to keep positive
     alpha = params[0]
     n_trees = len(diverge_list)
 
@@ -124,13 +174,10 @@ def ou_neg_log_lik_numpy_kkt(
         epochs = epochs_list[i]
         beta = beta_list[i]
 
-        # V: covariance matrix from trees (excluding variance sigma2)
-        V = (
-            (1 / (2 * alpha))
-            * np.exp(-alpha * diverge)
-            * (1 - np.exp(-2 * alpha * share))
-        )
-        
+        # V: covariance matrix from trees (excluding variance sigma2).
+        # See ou_neg_log_lik_numpy for root_mode semantics.
+        V = _ou_cov_numpy(alpha, diverge, share, root_mode)
+
         # diff = observed expression - expected values (n_cells, 1)
         if mode == 1:
             W = np.ones((n_cells, 1))  # expected values at leaves are same as theta0 at root
@@ -174,7 +221,7 @@ def ou_neg_log_lik_numpy_kkt(
 # calculate expectation of negative OU log likelihood with torch
 def ou_neg_log_lik_torch(
     params_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device,
-    pagel_lambda=None, pagel_lambda_mode=1
+    pagel_lambda=None, pagel_lambda_mode=1, root_mode="stationary"
 ):
     """
     Same OU likelihood with torch. Used for ELBO with torch.
@@ -197,12 +244,13 @@ def ou_neg_log_lik_torch(
     alpha = alpha[:, :, None, None]  # (batch_size, N_sim, 1, 1)
     sigma2 = sigma2[:, :, None, None]  # (batch_size, N_sim, 1, 1)
     diverge = diverge[None, None, :, :]  # (1, 1, n_cells, n_cells)
-    share = share[None, None, :, :]  # (1, 1, n_cells, n_cells)
-    V = (
-        (1 / (2 * alpha))
-        * torch.exp(-alpha * diverge)
-        * (1 - torch.exp(-2 * alpha * share))
-    )  # (batch_size, N_sim, n_cells, n_cells)
+    if root_mode == "fixed":
+        share_b = share[None, None, :, :]
+        V = ou_covariance_fixed_root_torch(alpha, diverge, share_b)
+    elif root_mode == "stationary":
+        V = ou_covariance_root_prior_torch(alpha, diverge)
+    else:
+        raise ValueError(f"Invalid root_mode: {root_mode}")
     V = _apply_pagel_lambda_to_cov(
         V,
         pagel_lambda,
@@ -250,14 +298,13 @@ def ou_neg_log_lik_torch(
     exp = (y.squeeze(-1) ** 2).sum(dim=-1)  # sum(y^2) = y^T y = ||y||^2 (batch, N_sim)
 
     # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V_reg), dim1=-2, dim2=-1), dim=-1)
-    # cholesky: trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
+    # Cholesky: trace(V^{-1} Sigma) = ||diag(L^{-1} Sigma)||_F^2.
     S_half = torch.diag_embed(
         torch.sqrt(sigma2_q)
-    )  # Σ^{1/2} = diag(σ_i), shape (..., n, n)
-    Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Σ^{1/2}
+    )  # Sigma^{1/2} = diag(sigma_i), shape (..., n, n)
+    Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Sigma^{1/2}
     tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch, N_sim)
 
-    #const = n_cells * torch.log(torch.tensor(2 * torch.pi, device=device))
     loss = 0.5 * (
         log_det
         + n_cells * torch.log(sigma2).squeeze(-1).squeeze(-1)
@@ -298,7 +345,7 @@ def psd_safe_cholesky(V, base_jitter=1e-6, max_tries=7):
 # calculate expectation of negative OU log likelihood with torch
 def ou_neg_log_lik_torch_kkt(
     param_batch, sigma2_q, mode, expr_batch, diverge, share, epochs, beta, device,
-    pagel_lambda=None, pagel_lambda_mode=1
+    pagel_lambda=None, pagel_lambda_mode=1, root_mode="stationary"
 ):
     """
     Same OU likelihood with torch. Used for ELBO with torch.
@@ -317,18 +364,20 @@ def ou_neg_log_lik_torch_kkt(
 
     # Compute V for all batches (broadcast alpha)
     alpha = alpha[:, :, None, None]  # (batch_size, N_sim, 1, 1)
-    V = (
-        (1 / (2 * alpha))
-        * torch.exp(-alpha * diverge)
-        * (1 - torch.exp(-2 * alpha * share))
-    )  # (batch_size, N_sim, n_cells, n_cells)
+    if root_mode == "fixed":
+        share_b = share[None, None, :, :]
+        V = ou_covariance_fixed_root_torch(alpha, diverge[None, None, :, :], share_b)
+    elif root_mode == "stationary":
+        V = ou_covariance_root_prior_torch(alpha, diverge[None, None, :, :])
+    else:
+        raise ValueError(f"Invalid root_mode: {root_mode}")
     V = _apply_pagel_lambda_to_cov(
         V,
         pagel_lambda,
         pagel_lambda_mode,
         alpha.squeeze(-1).squeeze(-1),
     )
-    
+
     # Compute W and diff
     if mode == 1:
         W = torch.ones(
@@ -387,11 +436,14 @@ def ou_neg_log_lik_torch_kkt(
     # cholesky: theta = (S.T @ S)^-1 @ S.T @ y
     S = torch.linalg.solve_triangular(L, W, upper=False) # L^{-1} W
     y = torch.linalg.solve_triangular(L, expr_batch.unsqueeze(-1), upper=False)   # L^{-1} expr
-    # Use magma backend to avoid cusolver SVD failure on large matrices.
-    prev_lib = torch.backends.cuda.preferred_linalg_library()
-    torch.backends.cuda.preferred_linalg_library("magma")
-    theta = torch.linalg.lstsq(S, y).solution  # (batch, N_sim, n_regimes, 1)
-    torch.backends.cuda.preferred_linalg_library(prev_lib)
+    # Use magma backend on CUDA to avoid cusolver SVD failure on large matrices.
+    if S.is_cuda:
+        prev_lib = torch.backends.cuda.preferred_linalg_library()
+        torch.backends.cuda.preferred_linalg_library("magma")
+        theta = torch.linalg.lstsq(S, y).solution  # (batch, N_sim, n_regimes, 1)
+        torch.backends.cuda.preferred_linalg_library(prev_lib)
+    else:
+        theta = torch.linalg.lstsq(S, y).solution  # (batch, N_sim, n_regimes, 1)
     if TRACE.enabled:
         nan_t, inf_t = nan_inf_count(theta)
         TRACE.write("theta_n_nan", nan_t)
@@ -405,11 +457,11 @@ def ou_neg_log_lik_torch_kkt(
     sigma2 = r.square().sum(dim=(-2, -1)) / n_cells # (batch_size, N_sim)
 
     # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V_reg), dim1=-2, dim2=-1), dim=-1)
-    # cholesky: trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
+    # Cholesky: trace(V^{-1} Sigma) = ||diag(L^{-1} Sigma)||_F^2.
     S_half = torch.diag_embed(
         torch.sqrt(sigma2_q)
-    )  # Σ^{1/2} = diag(σ_i), shape (..., n, n)
-    Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Σ^{1/2}
+    )  # Sigma^{1/2} = diag(sigma_i), shape (..., n, n)
+    Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Sigma^{1/2}
     tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch, N_sim)
     sigma2 += tr_term / n_cells
 
@@ -417,7 +469,6 @@ def ou_neg_log_lik_torch_kkt(
         TRACE.write("sigma2_kkt", float(sigma2.reshape(-1)[0].detach().cpu()))
         TRACE.write("ou_loss_n_nan", int(torch.isnan(0.5 * (log_det + n_cells * torch.log(sigma2))).sum().detach().cpu()))
 
-    #const = n_cells * torch.log(torch.tensor(2 * torch.pi, device=device))
     loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood
 
     sigma = sigma2.sqrt()  # (batch_size, N_sim)
@@ -487,41 +538,12 @@ def bm_neg_log_lik_torch_kkt(
         torch.log(torch.diagonal(L, dim1=-2, dim2=-1)), dim=-1
     )  # (batch_size,)
 
-    '''
-    diff = expr_batch - root_mean.unsqueeze(-1)  # (batch_size, n_cells)
-    d = diff.unsqueeze(-1)  # (batch_size, n_cells, 1)
+    # tr_term = trace(V^{-1} Sigma) = ||L^{-1} Sigma^{1/2}||_F^2.
+    S_half = torch.diag_embed(torch.sqrt(sigma2_q))
+    Y = torch.linalg.solve_triangular(L, S_half, upper=False)
+    tr_term = (Y ** 2).sum(dim=(-2, -1))  # (batch_size,)
 
-    # exp = (d.transpose(-2, -1) @ torch.linalg.solve(V, d)).squeeze(-1).squeeze(-1)  # (batch_size, N_sim)
-    # cholesky: d^T V^{-1} d = ||L^{-1} d||^2
-    y = torch.linalg.solve_triangular(
-        L, d, upper=False
-    )  # y = L^{-1} d (batch_size, n_cells, 1)
-    exp = (y.squeeze(-1) ** 2).sum(dim=-1)  # (batch_size,)
-    '''
-
-    # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V), dim1=-2, dim2=-1), dim=-1)
-    # cholesky: trace(V^{-1} Σ) = ||diag(L^{-1} Σ)||_F^2
-    S_half = torch.diag_embed(
-        torch.sqrt(sigma2_q)
-    )  # Σ^{1/2} = diag(σ_i), shape (..., n, n)
-    Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Σ^{1/2}
-    tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch_size, N_sim)
-
-    # # --- OPTIMIZED TRACE TERM ---
-    # # We want tr(V^{-1} Σ). Since Σ is diagonal (sigma2_q), 
-    # # this equals sum(diag(V^{-1}) * sigma2_q).
-    # # Z = L^{-1}, obtained by solving L * Z = I
-    # # Using expand() avoids allocating memory for the identity matrices.
-    # I = torch.eye(n_cells, device=device, dtype=V.dtype).expand_as(V)
-    # Z = torch.linalg.solve_triangular(L, I, upper=False) # (batch_size, n_cells, n_cells)
-    
-    # # diag(V^{-1}) is the sum of squares of the columns of Z
-    # V_inv_diag = (Z ** 2).sum(dim=-2) # (batch_size, n_cells)
-    
-    # # tr_term = sum_i (V^{-1})_{ii} * sigma^2_{q, i}
-    # tr_term = (V_inv_diag * sigma2_q).sum(dim=-1)  # (batch_size,)
-
-    sigma2 = exp / n_cells + tr_term / n_cells # (batch_size,)
+    sigma2 = exp / n_cells + tr_term / n_cells  # (batch_size,)
     sigma = sigma2.sqrt()  # (batch_size,)
 
     loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood (w/o constant)

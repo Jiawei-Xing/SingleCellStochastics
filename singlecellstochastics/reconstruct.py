@@ -1,3 +1,5 @@
+"""Gaussian belief propagation for latent expression history reconstruction."""
+
 import argparse
 import numpy as np
 import pandas as pd
@@ -57,7 +59,10 @@ def _make_transition_fn(model, params):
     if model == "ou":
         ou_params = params
         def transition_fn(node):
-            alpha, sig2, theta = ou_params[node.regime]
+            params_for_regime = ou_params.get(node.regime, ou_params.get("shared"))
+            if params_for_regime is None:
+                raise KeyError(f"No OU parameters for regime {node.regime!r}.")
+            alpha, sig2, theta = params_for_regime
             return get_ou_params(alpha, sig2, theta, node.dist)
         return transition_fn
     else:  # bm
@@ -118,9 +123,12 @@ def downward_pass(node, transition_fn, root_prior=None):
 # Parsers
 # ==========================================
 
-def load_tree_from_newick(newick_path):
+def load_tree_from_newick(newick_path, normalize=True):
     phylo_tree = Phylo.read(newick_path, "newick")
     internal_counter = [0]
+    total_length = max(phylo_tree.depths().values()) if normalize else 1.0
+    if total_length == 0:
+        total_length = 1.0
 
     def convert_clade(clade):
         name = clade.name if clade.name else f"Internal_{internal_counter[0]}"
@@ -128,6 +136,7 @@ def load_tree_from_newick(newick_path):
             internal_counter[0] += 1
 
         dist = clade.branch_length if clade.branch_length is not None else 0.0
+        dist = dist / total_length
         node = TreeNode(name=name, dist=dist)
 
         if clade.clades:
@@ -139,28 +148,148 @@ def load_tree_from_newick(newick_path):
 
     return convert_clade(phylo_tree.root)
 
-def apply_regimes(root, regime_tsv_path):
-    df_regimes = pd.read_csv(regime_tsv_path, index_col=0)
-    all_nodes = {n.name: n for n in get_all_nodes(root)}
-    for node_name, row in df_regimes.iterrows():
-        if str(node_name) in all_nodes:
-            all_nodes[str(node_name)].regime = str(row['regime'])
 
-def apply_expression_data(root, expr_tsv_path):
+def _path_to_node(root, target_name):
+    if root.name == target_name:
+        return [root]
+    for child in root.children:
+        path = _path_to_node(child, target_name)
+        if path:
+            return [root] + path
+    return None
+
+
+def _mrca_by_leaf_names(root, leaf1, leaf2):
+    path1 = _path_to_node(root, leaf1)
+    path2 = _path_to_node(root, leaf2)
+    if path1 is None:
+        raise ValueError(f"Leaf or node {leaf1!r} from regime file is not in the tree.")
+    if path2 is None:
+        raise ValueError(f"Leaf or node {leaf2!r} from regime file is not in the tree.")
+
+    mrca = root
+    for node1, node2 in zip(path1, path2):
+        if node1 is node2:
+            mrca = node1
+        else:
+            break
+    return mrca
+
+
+def apply_regimes(root, regime_tsv_path):
+    df_regimes = pd.read_csv(regime_tsv_path, sep=None, engine="python")
+    df_regimes.columns = [str(col).strip() for col in df_regimes.columns]
+    all_nodes = {n.name: n for n in get_all_nodes(root)}
+
+    if {"node_name", "regime"}.issubset(df_regimes.columns):
+        for _, row in df_regimes.iterrows():
+            node_name = str(row["node_name"])
+            if node_name in all_nodes:
+                all_nodes[node_name].regime = str(row["regime"])
+    elif {"node", "node2", "regime"}.issubset(df_regimes.columns):
+        for _, row in df_regimes.iterrows():
+            node1 = str(row["node"])
+            node2 = "" if pd.isna(row["node2"]) else str(row["node2"])
+            node = all_nodes[node1] if node2 == "" else _mrca_by_leaf_names(root, node1, node2)
+            node.regime = str(row["regime"])
+    else:
+        raise ValueError(
+            "Regime file must contain either columns 'node_name,regime' "
+            "or 'node,node2,regime'."
+        )
+
+
+def propagate_regimes(node):
+    """Propagate the regime from each node down to descendants left as 'default'.
+
+    Regime files often label only leaves or named clade roots. The transition
+    function used during reconstruction needs a regime for every node, so any
+    node still flagged as ``'default'`` inherits the closest ancestor regime.
+    """
+    for child in node.children:
+        if child.regime == "default":
+            child.regime = node.regime
+        propagate_regimes(child)
+
+
+def _read_counts_for_gene(counts_tsv_path, gene, cells):
+    if counts_tsv_path is None:
+        return {cell: None for cell in cells}
+    counts = pd.read_csv(counts_tsv_path, sep="\t", index_col=0)
+    if gene not in counts.columns:
+        raise ValueError(f"Gene {gene!r} not found in count matrix {counts_tsv_path}.")
+    return counts.loc[cells, gene].to_dict()
+
+
+def _wide_q_table_to_leaf_df(df_expr, gene, counts_tsv_path=None):
+    if gene is None:
+        raise ValueError("--gene is required when --expression is a wide q-parameter table.")
+    if gene not in df_expr.index:
+        raise ValueError(f"Gene {gene!r} not found in q-parameter table.")
+
+    named_mean_cols = [col for col in df_expr.columns if str(col).startswith("q_mean_")]
+    named_std_cols = [col for col in df_expr.columns if str(col).startswith("q_std_")]
+    if named_mean_cols and named_std_cols:
+        cells = [str(col)[len("q_mean_"):] for col in named_mean_cols]
+        std_cols = [f"q_std_{cell}" for cell in cells]
+        missing = [col for col in std_cols if col not in df_expr.columns]
+        if missing:
+            raise ValueError(f"Missing q-std columns in q-parameter table: {missing[:5]}")
+    else:
+        if df_expr.shape[1] % 2 != 0:
+            raise ValueError("Wide q-parameter table must have mean and std columns for each cell.")
+        n_cells = df_expr.shape[1] // 2
+        named_mean_cols = list(df_expr.columns[:n_cells])
+        std_cols = list(df_expr.columns[n_cells:])
+        cells = [str(col)[:-2] if str(col).endswith(".1") else str(col) for col in named_mean_cols]
+
+    row = df_expr.loc[gene]
+    read_counts = _read_counts_for_gene(counts_tsv_path, gene, cells)
+    return pd.DataFrame(
+        {
+            "q_mean": row[named_mean_cols].to_numpy(dtype=float),
+            "q_std": row[std_cols].to_numpy(dtype=float),
+            "read_count": [read_counts[cell] for cell in cells],
+        },
+        index=cells,
+    )
+
+
+def apply_expression_data(root, expr_tsv_path, gene=None, counts_tsv_path=None):
     df_expr = pd.read_csv(expr_tsv_path, sep='\t', index_col=0)
+    if not {"q_mean", "q_std"}.issubset(df_expr.columns):
+        df_expr = _wide_q_table_to_leaf_df(df_expr, gene, counts_tsv_path)
+
     leaves = {n.name: n for n in get_leaves(root)}
     for cell_name, row in df_expr.iterrows():
         if str(cell_name) in leaves:
             leaf = leaves[str(cell_name)]
             leaf.q_mu = row['q_mean']
             leaf.q_var = row['q_std']**2
-            leaf.read_count = row['read_count']
+            leaf.read_count = row['read_count'] if 'read_count' in row and pd.notna(row['read_count']) else None
 
-def load_ou_params(ou_tsv_path):
-    df_ou = pd.read_csv(ou_tsv_path, sep='\t', index_col=0)
+
+def load_ou_params(ou_tsv_path, gene=None, hypothesis="h1"):
+    df_ou = pd.read_csv(ou_tsv_path, sep=None, engine='python')
     ou_params = {}
-    for regime, row in df_ou.iterrows():
-        ou_params[str(regime)] = (row['alpha'], row['sigma']**2, row['theta'])
+
+    if {"regime", "alpha", "sigma", "theta"}.issubset(df_ou.columns):
+        if "gene" in df_ou.columns and gene is not None:
+            df_ou = df_ou[df_ou["gene"].astype(str) == str(gene)]
+        if "hypothesis" in df_ou.columns:
+            df_ou = df_ou[df_ou["hypothesis"].astype(str) == hypothesis]
+        if df_ou.empty:
+            raise ValueError(
+                f"No OU parameters found in {ou_tsv_path} for "
+                f"gene={gene!r}, hypothesis={hypothesis!r}."
+            )
+        for _, row in df_ou.iterrows():
+            ou_params[str(row["regime"])] = (row['alpha'], row['sigma']**2, row['theta'])
+    else:
+        df_ou = pd.read_csv(ou_tsv_path, sep=None, engine='python', index_col=0)
+        for regime, row in df_ou.iterrows():
+            ou_params[str(regime)] = (row['alpha'], row['sigma']**2, row['theta'])
+
     return ou_params
 
 def load_bm_params(tsv_path):
@@ -364,11 +493,15 @@ def plot_circular_tree(root, outer, output_path):
 def run_reconst():
     parser = argparse.ArgumentParser(description="1D Ancestral State Reconstruction via Belief Propagation")
     parser.add_argument("--tree", required=True, help="Path to Newick tree file (.nwk)")
-    parser.add_argument("--expression", required=True, help="Path to leaf expression data (TSV)")
+    parser.add_argument("--expression", required=True, help="Path to leaf expression data or wide q-parameter table (TSV)")
+    parser.add_argument("--gene", required=False, help="Gene to reconstruct when --expression or --ou contain multiple genes")
+    parser.add_argument("--counts", required=False, help="Raw count matrix used to add read_count values when --expression is a wide q table")
     parser.add_argument("--model", required=False, type=str, choices=["ou", "bm"], default="ou", help="Model type: 'ou' (Ornstein-Uhlenbeck, default) or 'bm' (Brownian Motion)")
     parser.add_argument("--regime", required=False, help="Path to node regime mapping (TSV, ou model only)")
     parser.add_argument("--ou", required=False, help="Path to OU parameters table (TSV, ou model only)")
     parser.add_argument("--bm", required=False, help="Path to BM parameters table (TSV, bm model only)")
+    parser.add_argument("--hypothesis", required=False, choices=["h0", "h1"], default="h1", help="Hypothesis to use from long-form OU parameter tables")
+    parser.add_argument("--no_normalize_tree", action="store_true", help="Use raw Newick branch lengths instead of the fitted model's normalized tree scale")
     parser.add_argument("--no_outer", action='store_false', help="Whether to plot read counts as bars outside the tree")
     parser.add_argument("--out_fig", required=False, default="history.png", help="Path to save the output figure (e.g., plot.png)")
     parser.add_argument("--out_tsv", required=False, default="history.tsv", help="Path to save the inferred true means and vars (TSV)")
@@ -378,17 +511,21 @@ def run_reconst():
     plt.close('all')
 
     print("Loading data...")
-    root = load_tree_from_newick(args.tree)
-    apply_expression_data(root, args.expression)
+    root = load_tree_from_newick(args.tree, normalize=not args.no_normalize_tree)
+    apply_expression_data(root, args.expression, gene=args.gene, counts_tsv_path=args.counts)
     root.dist = 0.0
 
     if args.model == "ou":
         if not args.regime or not args.ou:
             parser.error("--regime and --ou are required for the OU model")
         apply_regimes(root, args.regime)
-        ou_params = load_ou_params(args.ou)
+        propagate_regimes(root)
+        ou_params = load_ou_params(args.ou, gene=args.gene, hypothesis=args.hypothesis)
         transition_fn = _make_transition_fn("ou", ou_params)
-        r_alpha, r_sig2, r_theta = ou_params[root.regime]
+        root_params = ou_params.get(root.regime, ou_params.get("shared"))
+        if root_params is None:
+            parser.error(f"No OU parameters found for root regime {root.regime!r}")
+        r_alpha, r_sig2, r_theta = root_params
         root_prior = (r_theta, r_sig2 / (2 * r_alpha))
     else:  # bm
         if not args.bm:

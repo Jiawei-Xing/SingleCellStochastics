@@ -1,4 +1,7 @@
+"""EM-style alternation between E and M steps for the LAVOUS ELBO."""
+
 from .optimize import Lq_optimize_torch_OU
+
 
 def run_em(
     init_params,
@@ -20,35 +23,18 @@ def run_em(
     prior,
     kkt,
     nb,
-    library_list_tensor
+    library_list_tensor,
+    const,
+    root_mode="stationary",
 ):
-    """
-    Run EM algorithm for Lq optimization.
+    """Alternate ELBO E-steps (variational params) and M-steps (OU params).
 
-    init_params: (batch_size, N_sim, all_param_dim)
-    mode: 1 for H0, 2 for H1
-    x_original_tensor: list of (batch_size, N_sim, n_regimes)
-    gene_names: list of gene names
-    diverge_list_torch: list of (batch_size, N_sim, n_regimes)
-    share_list_torch: list of (batch_size, N_sim, n_regimes)
-    epochs_list_torch: list of (batch_size, N_sim, n_regimes)
-    beta_list_torch: list of (batch_size, N_sim, n_regimes)
-    max_iter: int
-    learning_rate: float
-    device: str
-    wandb_flag: bool
-    window: int
-    tol: float
-    approx: str
-    em_iter: int
-    prior: float
-    kkt: bool
-    Returns: (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
+    Returns (params, loss) using the same layout as ``Lq_optimize_torch_OU``.
     """
-    for i in range(em_iter):
-        # E-step
-        h0_params, h0_loss = Lq_optimize_torch_OU(
-            init_params,
+
+    def _step(params, em_phase):
+        return Lq_optimize_torch_OU(
+            params,
             mode,
             x_tensor_list,
             gene_names,
@@ -63,63 +49,22 @@ def run_em(
             window,
             tol,
             approx,
-            "e",
+            em_phase,
             prior,
             kkt,
             nb,
-            library_list_tensor
-        )  # (batch_size, N_sim, all_param_dim)
+            library_list_tensor,
+            const,
+            root_mode=root_mode,
+        )
 
-        # M-step
-        h0_params, h0_loss = Lq_optimize_torch_OU(
-            h0_params,
-            mode,
-            x_tensor_list,
-            gene_names,
-            diverge_list_torch,
-            share_list_torch,
-            epochs_list_torch,
-            beta_list_torch,
-            max_iter,
-            learning_rate,
-            device,
-            wandb_flag,
-            window,
-            tol,
-            approx,
-            "m",
-            prior,
-            kkt,
-            nb,
-            library_list_tensor
-        )  # (batch_size, N_sim, all_param_dim)
+    params = init_params
+    for _ in range(em_iter):
+        params, _ = _step(params, "e")
+        params, _ = _step(params, "m")
 
-        # update init_params for next iteration
-        init_params = h0_params
-
-    # run last E-step
-    h0_params, h0_loss = Lq_optimize_torch_OU(
-        init_params,
-        mode,
-        x_tensor_list,
-        gene_names,
-        diverge_list_torch,
-        share_list_torch,
-        epochs_list_torch,
-        beta_list_torch,
-        max_iter,
-        learning_rate,
-        device,
-        wandb_flag,
-        window,
-        tol,
-        approx,
-        "e",
-        prior,
-        kkt,
-        nb,
-        library_list_tensor
-    )  # (batch_size, N_sim, all_param_dim)
-
-    h0_params = [p.clone().detach() for p in h0_params]
-    return h0_params, h0_loss.clone().detach()
+    # Final E-step so the returned variational beliefs are consistent with
+    # the last M-step OU parameters.
+    params, loss = _step(params, "e")
+    params = [p.clone().detach() for p in params]
+    return params, loss.clone().detach()

@@ -1,3 +1,5 @@
+"""Standalone stochastic expression simulator for tree-structured BM/OU models."""
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -295,14 +297,14 @@ def simulate(
     read_counts = {}
     read_counts_latent = {}
     plots = []
-    for i in range(n_genes):
-        print(f"Simulating gene {i+1}/{n_genes}...", flush=True)
+    for gene_idx in range(n_genes):
+        print(f"Simulating gene {gene_idx+1}/{n_genes}...", flush=True)
         plot = []
-        
+
         # Clean the tree from any previous genes
         reset_all_nodes_expr(tree)
         reset_all_nodes_read_counts(tree)
-        
+
         get_latent_gene_expression_at_tips(tree=tree, test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma=sigma, background_model=bg_model)
         clamp_latent_gene_expression_at_tips(tree)
         if dispersion is None:
@@ -313,21 +315,21 @@ def simulate(
         else:
             get_NB_sampled_read_counts(tree, dispersion)
 
-        read_counts[i] = {node.name: node.read_count for node in tree.get_terminals()}
-        read_counts_latent[i] = {node.name: node.expr for node in tree.get_terminals()}
+        read_counts[gene_idx] = {node.name: node.read_count for node in tree.get_terminals()}
+        read_counts_latent[gene_idx] = {node.name: node.expr for node in tree.get_terminals()}
 
         # BM-OU expr
         for clade in tree.find_clades():
             path = tree.get_path(clade)
-            for i in range(len(path) - 1):
-                clade1 = path[i]
-                clade2 = path[i + 1]
+            for j in range(len(path) - 1):
+                clade1 = path[j]
+                clade2 = path[j + 1]
                 depth1 = sum(n.branch_length for n in tree.get_path(clade1))
                 depth2 = sum(n.branch_length for n in tree.get_path(clade2))
                 x = (depth1, depth2)
                 y = (clade1.expr, clade2.expr)
                 regime = clade2.regime
-                
+
                 if regime == test_regime:
                     plot.append((x, y, "h1"))
                 else:

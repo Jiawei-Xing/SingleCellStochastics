@@ -1,3 +1,5 @@
+"""Null-simulation helpers for empirical calibration."""
+
 import numpy as np
 
 

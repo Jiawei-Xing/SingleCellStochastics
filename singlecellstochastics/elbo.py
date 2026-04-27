@@ -1,25 +1,31 @@
+"""Evidence lower bound for LAVOUS latent-expression models.
+
+This module combines the Gaussian tree prior from `likelihood.py` with
+softplus/exponential count-observation expectations from `approx.py`.
+"""
+
 import numpy as np
 import torch
 
+from .defaults import DEFAULT_LOG_S2_CLAMP
 from .likelihood import ou_neg_log_lik_torch, ou_neg_log_lik_torch_kkt, bm_neg_log_lik_torch_kkt
 from .approx import E_log_softplus_taylor, E_softplus_taylor, E_log_softplus_MC, E_softplus_MC, E_log_exp, E_exp, E_log_r_softplus_MC, E_log_r_exp
-from .qparam import s2_from_log_s2
 from .trace import TRACE, nan_inf_count
     
 # calculate negative log likelihood of ELBO with torch
 def Lq_neg_log_lik_torch(
-    Lq_params, 
+    Lq_params,
     log_r,
-    ou_params, 
-    mode, 
-    x_tensor, 
-    diverge, 
-    share, 
-    epochs, 
-    beta, 
-    device, 
-    approx, 
-    prior, 
+    ou_params,
+    mode,
+    x_tensor,
+    diverge,
+    share,
+    epochs,
+    beta,
+    device,
+    approx,
+    prior,
     kkt,
     nb,
     lib,
@@ -27,6 +33,8 @@ def Lq_neg_log_lik_torch(
     fix_alpha=False,
     ou_lambda=None,
     ou_lambda_mode=1,
+    log_s2_clamp=DEFAULT_LOG_S2_CLAMP,
+    root_mode="stationary",
 ):
     """
     ELBO for approximating model evidence.
@@ -50,10 +58,11 @@ def Lq_neg_log_lik_torch(
     """
     n_cells = x_tensor.shape[-1]
     m = Lq_params[..., :n_cells]  # (batch_size, ..., n_cells)
-    # The second half stores log(s2), not a raw std. A strictly-positive
-    # variance parameter prevents sqrt(s2) in the MC expectation from receiving
-    # a negative value after GPU/batched-autograd updates.
-    s2 = s2_from_log_s2(Lq_params[..., n_cells:2*n_cells])  # (batch_size, ..., n_cells)
+    # Second half stores log(s2). Clamp to keep s2 strictly positive and bounded
+    # so the MC sqrt(s2) is well-defined under GPU/batched autograd.
+    s2 = torch.exp(torch.clamp(
+        Lq_params[..., n_cells:2*n_cells], log_s2_clamp[0], log_s2_clamp[1]
+    ))  # (batch_size, ..., n_cells)
 
     if TRACE.enabled:
         m0 = m.reshape(-1, n_cells)[0].detach().cpu().numpy()
@@ -85,8 +94,9 @@ def Lq_neg_log_lik_torch(
             ou_params, s2, mode, m, diverge, share, epochs, beta, device,
             pagel_lambda=ou_lambda,
             pagel_lambda_mode=ou_lambda_mode,
+            root_mode=root_mode,
         )  # (batch_size, N_sim)
-        
+
         if const:
             term1 += n_cells/2 * (1 + torch.log(2 * torch.tensor(torch.pi, device=device)))
 
@@ -95,6 +105,7 @@ def Lq_neg_log_lik_torch(
             ou_params, s2, mode, m, diverge, share, epochs, beta, device,
             pagel_lambda=ou_lambda,
             pagel_lambda_mode=ou_lambda_mode,
+            root_mode=root_mode,
         )  # (batch_size, N_sim)
 
         if const:
@@ -119,10 +130,9 @@ def Lq_neg_log_lik_torch(
     # term2: Negative binomial -log lik
     else:
         log_r_raw = log_r  # save pre-cleanup value for trace
-        # Do not replace NaN log_r with 0. A NaN dispersion parameter should
-        # surface as a failed step, not silently become r=1.
-        log_r = torch.clamp(log_r, min=-5, max=5).unsqueeze(-1)
-        r = torch.exp(log_r)  # dispersion parameter, clamped to [~0.007, ~148]
+        # log_r is clamped to its bounds in the optimizer
+        log_r = log_r.unsqueeze(-1)
+        r = torch.exp(log_r)
         if approx == "softplus_MC":
             E_log_approx = E_log_softplus_MC(m, s2)
             E_log_r_approx = E_log_r_softplus_MC(m, s2, r, lib)

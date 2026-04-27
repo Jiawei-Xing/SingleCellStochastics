@@ -1,6 +1,6 @@
-import scanpy as sc
+"""Baseline differential-expression wrapper using Scanpy rank_genes_groups."""
+
 import pandas as pd
-import anndata as ad
 import argparse
 import csv
 import os
@@ -23,6 +23,9 @@ def run_dea():
     expr_file = args.expr
     outdir = args.outdir
     outfile = args.outfile
+
+    import anndata as ad
+    import scanpy as sc
 
     # cells in metastatic regime
     met = []
