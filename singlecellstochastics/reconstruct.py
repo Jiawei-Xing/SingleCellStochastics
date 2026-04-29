@@ -26,6 +26,7 @@ class TreeNode:
         self.q_mu = None
         self.q_var = None
         self.read_count = None
+        self.library_size = 1.0
 
         # Internal Storage
         self.up_lam = 0.0
@@ -54,23 +55,6 @@ def get_bm_params(sigma_sq, t):
     """BM transition: Mean stays same (F=1, c=0), variance grows by sig2*t."""
     return 1.0, 0.0, sigma_sq * t
 
-def _make_transition_fn(model, params):
-    """Create a transition function (node -> F, c, Q) based on model type."""
-    if model == "ou":
-        ou_params = params
-        def transition_fn(node):
-            params_for_regime = ou_params.get(node.regime, ou_params.get("shared"))
-            if params_for_regime is None:
-                raise KeyError(f"No OU parameters for regime {node.regime!r}.")
-            alpha, sig2, theta = params_for_regime
-            return get_ou_params(alpha, sig2, theta, node.dist)
-        return transition_fn
-    else:  # bm
-        sigma_sq = params
-        def transition_fn(node):
-            return get_bm_params(sigma_sq, node.dist)
-        return transition_fn
-
 def upward_pass(node, transition_fn):
     for child in node.children:
         upward_pass(child, transition_fn)
@@ -81,11 +65,10 @@ def upward_pass(node, transition_fn):
         node.up_lam += 1.0 / node.q_var
         node.up_eta += node.q_mu / node.q_var
 
-    if node.dist > 0:
-        F, c, Q = transition_fn(node)
-        denom = Q * node.up_lam + 1.0
-        node.msg_to_p_lam = (F**2 * node.up_lam) / denom
-        node.msg_to_p_eta = F * (node.up_eta - node.up_lam * c) / denom
+    F, c, Q = transition_fn(node)
+    denom = Q * node.up_lam + 1.0
+    node.msg_to_p_lam = (F**2 * node.up_lam) / denom
+    node.msg_to_p_eta = F * (node.up_eta - node.up_lam * c) / denom
 
 def downward_pass(node, transition_fn, root_prior=None):
     if root_prior is not None:
@@ -221,52 +204,54 @@ def _read_counts_for_gene(counts_tsv_path, gene, cells):
     return counts.loc[cells, gene].to_dict()
 
 
-def _wide_q_table_to_leaf_df(df_expr, gene, counts_tsv_path=None):
+def _library_sizes(library_tsv_path, cells):
+    if library_tsv_path is None:
+        return {cell: 1.0 for cell in cells}
+    lib_df = pd.read_csv(library_tsv_path, sep="\t", index_col=0, header=None)
+    lib_df.index = lib_df.index.astype(str)
+    return {cell: float(lib_df.loc[cell].iloc[0]) if cell in lib_df.index else 1.0
+            for cell in cells}
+
+
+def apply_expression_data(root, expr_tsv_path, gene, counts_tsv_path=None, library_tsv_path=None):
     if gene is None:
-        raise ValueError("--gene is required when --expression is a wide q-parameter table.")
+        raise ValueError("--gene is required to select a row from the wide q-parameter table.")
+
+    df_expr = pd.read_csv(expr_tsv_path, sep='\t', index_col=0)
     if gene not in df_expr.index:
         raise ValueError(f"Gene {gene!r} not found in q-parameter table.")
 
-    named_mean_cols = [col for col in df_expr.columns if str(col).startswith("q_mean_")]
-    named_std_cols = [col for col in df_expr.columns if str(col).startswith("q_std_")]
-    if named_mean_cols and named_std_cols:
-        cells = [str(col)[len("q_mean_"):] for col in named_mean_cols]
-        std_cols = [f"q_std_{cell}" for cell in cells]
-        missing = [col for col in std_cols if col not in df_expr.columns]
-        if missing:
-            raise ValueError(f"Missing q-std columns in q-parameter table: {missing[:5]}")
-    else:
-        if df_expr.shape[1] % 2 != 0:
-            raise ValueError("Wide q-parameter table must have mean and std columns for each cell.")
-        n_cells = df_expr.shape[1] // 2
-        named_mean_cols = list(df_expr.columns[:n_cells])
-        std_cols = list(df_expr.columns[n_cells:])
-        cells = [str(col)[:-2] if str(col).endswith(".1") else str(col) for col in named_mean_cols]
+    mean_cols = [col for col in df_expr.columns if str(col).startswith("q_mean_")]
+    if not mean_cols:
+        raise ValueError("Expression TSV must have q_mean_<cell>/q_std_<cell> columns from the diff test.")
+    cells = [str(col)[len("q_mean_"):] for col in mean_cols]
+    std_cols = [f"q_std_{cell}" for cell in cells]
+    missing = [col for col in std_cols if col not in df_expr.columns]
+    if missing:
+        raise ValueError(f"Missing q_std columns in q-parameter table: {missing[:5]}")
 
     row = df_expr.loc[gene]
+    q_means = row[mean_cols].to_numpy(dtype=float)
+    q_stds = row[std_cols].to_numpy(dtype=float)
     read_counts = _read_counts_for_gene(counts_tsv_path, gene, cells)
-    return pd.DataFrame(
-        {
-            "q_mean": row[named_mean_cols].to_numpy(dtype=float),
-            "q_std": row[std_cols].to_numpy(dtype=float),
-            "read_count": [read_counts[cell] for cell in cells],
-        },
-        index=cells,
-    )
-
-
-def apply_expression_data(root, expr_tsv_path, gene=None, counts_tsv_path=None):
-    df_expr = pd.read_csv(expr_tsv_path, sep='\t', index_col=0)
-    if not {"q_mean", "q_std"}.issubset(df_expr.columns):
-        df_expr = _wide_q_table_to_leaf_df(df_expr, gene, counts_tsv_path)
+    libraries = _library_sizes(library_tsv_path, cells)
 
     leaves = {n.name: n for n in get_leaves(root)}
-    for cell_name, row in df_expr.iterrows():
-        if str(cell_name) in leaves:
-            leaf = leaves[str(cell_name)]
-            leaf.q_mu = row['q_mean']
-            leaf.q_var = row['q_std']**2
-            leaf.read_count = row['read_count'] if 'read_count' in row and pd.notna(row['read_count']) else None
+    for cell, mean, std in zip(cells, q_means, q_stds):
+        if cell in leaves:
+            leaf = leaves[cell]
+            leaf.q_mu = mean
+            leaf.q_var = std**2
+            rc = read_counts[cell]
+            leaf.read_count = rc if pd.notna(rc) else None
+            leaf.library_size = libraries[cell]
+
+    missing_leaves = [name for name, leaf in leaves.items() if leaf.q_mu is None]
+    if missing_leaves:
+        raise ValueError(
+            f"{len(missing_leaves)} tree leaves have no q-params row "
+            f"(first 5: {missing_leaves[:5]}). The q-parameter table must cover every leaf."
+        )
 
 
 def load_ou_params(ou_tsv_path, gene=None, hypothesis="h1"):
@@ -292,15 +277,31 @@ def load_ou_params(ou_tsv_path, gene=None, hypothesis="h1"):
 
     return ou_params
 
-def load_bm_params(tsv_path):
+def load_bm_params(tsv_path, gene=None):
     """
-    Reads TSV with header: mu  sigma
+    Reads BM parameters from the selection-test output (columns h0_mu, h0_sigma
+    in a per-gene table) or from a one-row TSV with bare mu/sigma columns.
     Returns (sigma_sq, root_prior) where root_prior = (mu, sigma_sq).
     """
     df = pd.read_csv(tsv_path, sep=None, engine='python')
-    mu_val = df['mu'].iloc[0]
-    sigma_val = df['sigma'].iloc[0]
-    sigma_sq = sigma_val**2
+
+    if {"h0_mu", "h0_sigma"}.issubset(df.columns):
+        if "gene" in df.columns:
+            if gene is None:
+                raise ValueError("--gene is required when reading BM params from selection-test output.")
+            row = df[df["gene"].astype(str) == str(gene)]
+            if row.empty:
+                raise ValueError(f"Gene {gene!r} not found in {tsv_path}.")
+            mu_val = float(row["h0_mu"].iloc[0])
+            sigma_val = float(row["h0_sigma"].iloc[0])
+        else:
+            mu_val = float(df["h0_mu"].iloc[0])
+            sigma_val = float(df["h0_sigma"].iloc[0])
+    else:
+        mu_val = float(df["mu"].iloc[0])
+        sigma_val = float(df["sigma"].iloc[0])
+
+    sigma_sq = sigma_val ** 2
     root_prior = (mu_val, sigma_sq)
     return sigma_sq, root_prior
 
@@ -378,23 +379,24 @@ def plot_circular_tree(root, outer, output_path):
     v_min, v_max = min(vars_array), max(vars_array)
     mu_min, mu_max = min(mus_array), max(mus_array)
 
-    valid_rcs = [leaf.read_count for leaf in leaves if leaf.read_count is not None]
+    leaf_rc_norm = {
+        leaf.name: leaf.read_count / leaf.library_size
+        for leaf in leaves
+        if leaf.read_count is not None and leaf.library_size > 0
+    }
+    valid_rcs = list(leaf_rc_norm.values())
     rc_max = max(valid_rcs) if valid_rcs else 1.0
-    rc_min = min(valid_rcs) if valid_rcs else 0.0
-
-    if outer:
-        global_min = min(mu_min, rc_min)
-        global_max = max(mu_max, rc_max)
-    else:
-        global_min = mu_min
-        global_max = mu_max
 
     norm_var = mcolors.Normalize(vmin=v_min - (v_max - v_min)*0.15, vmax=v_max)
 
-    # Diverging colormap centered on root: blue=low, white=root, red=high
+    # Diverging colormap centered on root: blue=low, white=root, red=high.
+    # Tree color scale uses only mu range; read-count bars have their own Oranges cmap below.
     root_mu = root.true_mu
+    eps = max(abs(root_mu) * 1e-3, 1e-6)
+    vmin_mu = min(mu_min, root_mu - eps)
+    vmax_mu = max(mu_max, root_mu + eps)
     cmap_mu = plt.cm.RdBu_r
-    norm_mu = mcolors.TwoSlopeNorm(vcenter=root_mu, vmin=global_min, vmax=global_max)
+    norm_mu = mcolors.TwoSlopeNorm(vcenter=root_mu, vmin=vmin_mu, vmax=vmax_mu)
 
     cmap_var = plt.cm.Blues
 
@@ -455,14 +457,15 @@ def plot_circular_tree(root, outer, output_path):
         norm_rc = mcolors.Normalize(vmin=0, vmax=rc_max)
         bar_base = max_r * 1.04
         for leaf in leaves:
-            if leaf.read_count is not None and leaf.read_count > 0:
-                bar_len = (leaf.read_count / rc_max) * (max_r * 0.15)
+            rc_norm = leaf_rc_norm.get(leaf.name)
+            if rc_norm is not None and rc_norm > 0:
+                bar_len = (rc_norm / rc_max) * (max_r * 0.15)
                 x0 = bar_base * np.cos(leaf.theta)
                 y0 = bar_base * np.sin(leaf.theta)
                 x1 = (bar_base + bar_len) * np.cos(leaf.theta)
                 y1 = (bar_base + bar_len) * np.sin(leaf.theta)
                 ax2.plot([x0, x1], [y0, y1],
-                         color=cmap_rc(norm_rc(leaf.read_count)), lw=1.5,
+                         color=cmap_rc(norm_rc(rc_norm)), lw=1.5,
                          solid_capstyle='butt')
 
     margin = max_r * 1.25 if outer else max_r * 1.10
@@ -481,8 +484,6 @@ def plot_circular_tree(root, outer, output_path):
     cbar2.ax.set_title("Value", loc='left', fontsize=10)
 
     plt.savefig(output_path, dpi=200, bbox_inches='tight')
-    if output_path.endswith('.png'):
-        plt.savefig(output_path.replace('.png', '.pdf'), bbox_inches='tight')
     plt.close()
     print(f"Successfully saved figure to {output_path}")
 
@@ -493,13 +494,14 @@ def plot_circular_tree(root, outer, output_path):
 def run_reconst():
     parser = argparse.ArgumentParser(description="1D Ancestral State Reconstruction via Belief Propagation")
     parser.add_argument("--tree", required=True, help="Path to Newick tree file (.nwk)")
-    parser.add_argument("--expression", required=True, help="Path to leaf expression data or wide q-parameter table (TSV)")
-    parser.add_argument("--gene", required=False, help="Gene to reconstruct when --expression or --ou contain multiple genes")
-    parser.add_argument("--counts", required=False, help="Raw count matrix used to add read_count values when --expression is a wide q table")
+    parser.add_argument("--q_params", required=True, help="Path to wide q-parameter table from diff test (TSV with q_mean_<cell>/q_std_<cell> columns)")
+    parser.add_argument("--gene", required=True, help="Gene row to reconstruct from --q_params")
+    parser.add_argument("--read_counts", required=False, help="Raw count matrix used to add read_count values")
+    parser.add_argument("--library", required=False, help="Library size TSV (no header row; column 0 = cell name, column 1 = library size) used to normalize read_count bars in the plot")
     parser.add_argument("--model", required=False, type=str, choices=["ou", "bm"], default="ou", help="Model type: 'ou' (Ornstein-Uhlenbeck, default) or 'bm' (Brownian Motion)")
     parser.add_argument("--regime", required=False, help="Path to node regime mapping (TSV, ou model only)")
     parser.add_argument("--ou", required=False, help="Path to OU parameters table (TSV, ou model only)")
-    parser.add_argument("--bm", required=False, help="Path to BM parameters table (TSV, bm model only)")
+    parser.add_argument("--bm", required=False, help="Path to BM parameters table (TSV, bm model only) — accepts selection-test output (per-gene rows with h0_mu/h0_sigma) or a one-row TSV with mu/sigma")
     parser.add_argument("--hypothesis", required=False, choices=["h0", "h1"], default="h1", help="Hypothesis to use from long-form OU parameter tables")
     parser.add_argument("--no_normalize_tree", action="store_true", help="Use raw Newick branch lengths instead of the fitted model's normalized tree scale")
     parser.add_argument("--no_outer", action='store_false', help="Whether to plot read counts as bars outside the tree")
@@ -512,7 +514,7 @@ def run_reconst():
 
     print("Loading data...")
     root = load_tree_from_newick(args.tree, normalize=not args.no_normalize_tree)
-    apply_expression_data(root, args.expression, gene=args.gene, counts_tsv_path=args.counts)
+    apply_expression_data(root, args.q_params, gene=args.gene, counts_tsv_path=args.read_counts, library_tsv_path=args.library)
     root.dist = 0.0
 
     if args.model == "ou":
@@ -521,17 +523,30 @@ def run_reconst():
         apply_regimes(root, args.regime)
         propagate_regimes(root)
         ou_params = load_ou_params(args.ou, gene=args.gene, hypothesis=args.hypothesis)
-        transition_fn = _make_transition_fn("ou", ou_params)
-        root_params = ou_params.get(root.regime, ou_params.get("shared"))
+        root_params = ou_params.get(root.regime, ou_params.get("shared")) # shared: h0
         if root_params is None:
             parser.error(f"No OU parameters found for root regime {root.regime!r}")
         r_alpha, r_sig2, r_theta = root_params
+        alpha_floor = 1e-6
+        if r_alpha < alpha_floor:
+            print(f"Warning: root regime alpha={r_alpha:.2e} is below {alpha_floor:.0e}; "
+                  f"flooring to avoid blow-up of stationary prior variance.")
+            r_alpha = alpha_floor
         root_prior = (r_theta, r_sig2 / (2 * r_alpha))
+
+        def transition_fn(node):
+            p = ou_params.get(node.regime, ou_params.get("shared"))
+            if p is None:
+                raise KeyError(f"No OU parameters for regime {node.regime!r}.")
+            alpha, sig2, theta = p
+            return get_ou_params(alpha, sig2, theta, node.dist)
     else:  # bm
         if not args.bm:
             parser.error("--bm is required for the BM model")
-        sigma_sq, root_prior = load_bm_params(args.bm)
-        transition_fn = _make_transition_fn("bm", sigma_sq)
+        sigma_sq, root_prior = load_bm_params(args.bm, gene=args.gene)
+
+        def transition_fn(node):
+            return get_bm_params(sigma_sq, node.dist)
 
     print("Running upward pass (leaves -> root)...")
     upward_pass(root, transition_fn)

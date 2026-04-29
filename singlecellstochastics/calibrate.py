@@ -56,8 +56,16 @@ def parse_args():
 
     p.add_argument("--seed", type=int, default=42,
                    help="RNG seed for null simulation (default: 42).")
-    p.add_argument("--cache", action="store_true",
-                   help="Reuse cached sim_all_null_LRs_{N}.pkl if present.")
+    p.add_argument("--cache", default=None,
+                   help="Path to a null-LR pickle. If it exists, load and skip "
+                        "simulation; otherwise simulate and write to this path.")
+    p.add_argument("--batch", type=int, default=1000,
+                   help="Chunk size for the LRT call on simulated data (default: 1000). "
+                        "For --sim_each, total fits per chunk = batch * sim_each.")
+    p.add_argument("--pool_top_drop", type=float, default=0.0,
+                   help="(--sim_all only) Drop the top fraction of genes by observed lrt "
+                        "from the H0 parameter pool to reduce contamination from true "
+                        "positives. Default 0 (no filter); typical 0.05-0.2.")
     return p.parse_args()
 
 
@@ -81,8 +89,12 @@ def _load_meta(chi_path, meta_arg):
         return json.load(f), meta_path
 
 
-def _h0_params_from_tsv(chi_df):
-    """Convert TSV rows -> (n_genes, 4) array in [log_r, log_alpha, sigma, theta0] form."""
+def _h0_params_from_tsv(chi_df, pool_top_drop=0.0):
+    """Convert TSV rows -> (n_genes, 4) array in [log_r, log_alpha, sigma, theta0] form.
+
+    If ``pool_top_drop > 0``, also drop the top fraction of genes by observed lrt
+    to reduce contamination of the H0 pool by true positives.
+    """
     required = ["h0_r", "h0_alpha", "h0_sigma", "h0_theta"]
     missing = [col for col in required if col not in chi_df.columns]
     if missing:
@@ -101,6 +113,21 @@ def _h0_params_from_tsv(chi_df):
             "they will be excluded from the null-simulation parameter pool."
         )
 
+    if pool_top_drop > 0:
+        if "lrt" not in chi_df.columns:
+            raise ValueError("--pool_top_drop > 0 but 'lrt' column missing from --chi.")
+        lrt_vals = chi_df["lrt"].to_numpy(dtype=np.float64)
+        finite_lrt = np.isfinite(lrt_vals)
+        if finite_lrt.any():
+            threshold = np.quantile(lrt_vals[finite_lrt], 1.0 - pool_top_drop)
+            top_mask = finite_lrt & (lrt_vals >= threshold)
+            n_dropped = int((valid & top_mask).sum())
+            valid &= ~top_mask
+            logger.info(
+                f"Pool contamination filter: dropping {n_dropped} genes with lrt >= "
+                f"{threshold:.3f} (top {pool_top_drop:.0%})."
+            )
+
     log_r = np.log(np.where(valid, h0_r, 1.0))
     log_alpha = np.log(np.where(valid, h0_alpha, 1.0))
 
@@ -108,27 +135,14 @@ def _h0_params_from_tsv(chi_df):
     return h0[valid], valid
 
 
-def _normalize_result_columns(chi_df):
-    """Support current result files and older files that used LR for delta NLL."""
-    if "delta_nll" not in chi_df.columns:
-        if "LR" not in chi_df.columns:
-            raise ValueError("Result table must contain either 'delta_nll' or legacy 'LR'.")
-        chi_df = chi_df.rename(columns={"LR": "delta_nll"})
-
-    if "lrt" not in chi_df.columns:
-        insert_at = chi_df.columns.get_loc("delta_nll") + 1
-        chi_df.insert(insert_at, "lrt", 2 * chi_df["delta_nll"].to_numpy(dtype=np.float64))
-
-    return chi_df
-
-
 def _build_lrt_kwargs(meta, device, dtype):
     """Reconstruct the lrt_kwargs needed to run LRT on simulated data."""
+    max_iter = meta.get("iter", 10000)
     return dict(
-        max_iter=meta["iter"], learning_rate=meta["lr"],
+        max_iter=max_iter, learning_rate=meta.get("lr", 1e-1),
         dtype=dtype, device=device, wandb_flag=None,
-        window=min(meta["window"], meta["iter"]), tol=meta["tol"],
-        approx=meta["approx"],
+        window=min(meta.get("window", 200), max_iter), tol=meta.get("tol", 1e-4),
+        approx=meta.get("approx", "softplus_MC"),
         em_iter=meta.get("em_iter", 0),
         prior=meta.get("prior", 1.0), init=meta.get("init", False),
         kkt=meta.get("kkt", True), grid=meta.get("grid", 0),
@@ -136,7 +150,8 @@ def _build_lrt_kwargs(meta, device, dtype):
         importance=meta.get("importance", 0), const=meta.get("const", False),
         mix=meta.get("mix", 1.0),
         grad_clip_norm=meta.get("grad_clip_norm", None),
-        seed_per_gene=meta.get("seed_per_gene", False),
+        seed_per_gene=meta.get("seed_per_gene", True),
+        root_mode=meta.get("root_mode", "stationary"),
     )
 
 
@@ -167,7 +182,6 @@ def run_calibrate():
 
     # Read chi-squared output
     chi_df = pd.read_csv(chi_path, sep="\t")
-    chi_df = _normalize_result_columns(chi_df)
     chi_df = chi_df.sort_values("ID").reset_index(drop=True)
     logger.info(f"Read {len(chi_df)} genes from {chi_path}")
 
@@ -206,37 +220,41 @@ def run_calibrate():
     )
 
     nb = meta.get("nb", True)
-    delta_nll_obs = chi_df["delta_nll"].to_numpy(dtype=np.float64)
+    root_mode = meta.get("root_mode", "stationary")
+    delta_nll_obs = chi_df["lrt"].to_numpy(dtype=np.float64) / 2.0
 
     # === sim_all mode ===
     if args.sim_all:
-        cache_path = os.path.join(outdir, f"sim_all_null_LRs_{args.sim_all}.pkl")
         null_LRs = None
-        if args.cache and os.path.exists(cache_path):
-            try:
-                with open(cache_path, "rb") as f:
-                    null_LRs = pickle.load(f)
-                logger.info(f"Loaded cached null LRs from {cache_path}")
-            except Exception as e:
-                logger.info(f"Cache load failed ({e}); regenerating.")
-                null_LRs = None
+        if args.cache and os.path.exists(args.cache):
+            with open(args.cache, "rb") as f:
+                null_LRs = pickle.load(f)
+            logger.info(f"Loaded cached null LRs from {args.cache}")
 
         if null_LRs is None:
-            ou_params, _ = _h0_params_from_tsv(chi_df)
+            ou_params, _ = _h0_params_from_tsv(chi_df, pool_top_drop=args.pool_top_drop)
             logger.info(f"Simulating {args.sim_all} null datasets from {len(ou_params)} H0 params...")
             x_sim = simulate_null_all(
                 tree_list, ou_params, args.sim_all, cells_list,
-                library_list=library_list, nb=nb,
+                library_list=library_list, nb=nb, root_mode=root_mode,
             )
             x_sim = [np.expand_dims(x, axis=1) for x in x_sim]
-            gene_names = ["sim_all"] * args.sim_all
-            _, h0_loss_sim, _, h1_loss_sim, _, _ = likelihood_ratio_test(
-                x_sim, gene_names=gene_names, batch_start=0, **lrt_kwargs
-            )
-            null_LRs = h0_loss_sim[:, 0] - h1_loss_sim[:, 0]
-            with open(cache_path, "wb") as f:
-                pickle.dump(null_LRs, f)
-            logger.info(f"Cached null LRs to {cache_path}")
+
+            chunks = []
+            for s in range(0, args.sim_all, args.batch):
+                e = min(s + args.batch, args.sim_all)
+                logger.info(f"  Fitting LRT on sims {s}:{e}...")
+                chunk = [x[s:e] for x in x_sim]
+                gn = [f"sim_all_{i}" for i in range(s, e)]
+                _, h0_loss_sim, _, h1_loss_sim, _, _ = likelihood_ratio_test(
+                    chunk, gene_names=gn, batch_start=s, **lrt_kwargs
+                )
+                chunks.append(h0_loss_sim[:, 0] - h1_loss_sim[:, 0])
+            null_LRs = np.concatenate(chunks)
+            if args.cache:
+                with open(args.cache, "wb") as f:
+                    pickle.dump(null_LRs, f)
+                logger.info(f"Cached null LRs to {args.cache}")
 
         # Compute empirical p-values
         results_emp = {}
@@ -255,18 +273,37 @@ def run_calibrate():
     # === sim_each mode ===
     elif args.sim_each:
         ou_params, valid = _h0_params_from_tsv(chi_df)
-        # simulate_null_each expects (batch, 1, param_dim)
-        h0_params_each = ou_params[:, None, :]
-        logger.info(f"Simulating {args.sim_each} per-gene null datasets for {len(ou_params)} genes...")
-        x_sim = simulate_null_each(
-            tree_list, h0_params_each, args.sim_each, cells_list,
-            library_list=library_list, nb=nb,
-        )
-        gene_names_each = [f"sim_each_{i}" for i in range(len(ou_params))]
-        _, h0_loss_sim, _, h1_loss_sim, _, _ = likelihood_ratio_test(
-            x_sim, gene_names=gene_names_each, batch_start=0, **lrt_kwargs
-        )
-        null_LRs_each = h0_loss_sim - h1_loss_sim  # (n_valid_genes, sim_each)
+        null_LRs_each = None
+        if args.cache and os.path.exists(args.cache):
+            with open(args.cache, "rb") as f:
+                null_LRs_each = pickle.load(f)
+            logger.info(f"Loaded cached null LRs from {args.cache}")
+
+        if null_LRs_each is None:
+            # simulate_null_each expects (batch, 1, param_dim)
+            h0_params_each = ou_params[:, None, :]
+            n_valid = len(ou_params)
+            logger.info(f"Simulating {args.sim_each} per-gene null datasets for {n_valid} genes...")
+            x_sim = simulate_null_each(
+                tree_list, h0_params_each, args.sim_each, cells_list,
+                library_list=library_list, nb=nb, root_mode=root_mode,
+            )
+
+            chunks = []
+            for s in range(0, n_valid, args.batch):
+                e = min(s + args.batch, n_valid)
+                logger.info(f"  Fitting LRT on genes {s}:{e}...")
+                chunk = [x[s:e] for x in x_sim]
+                gn = [f"sim_each_{i}" for i in range(s, e)]
+                _, h0_loss_sim, _, h1_loss_sim, _, _ = likelihood_ratio_test(
+                    chunk, gene_names=gn, batch_start=s, **lrt_kwargs
+                )
+                chunks.append(h0_loss_sim - h1_loss_sim)
+            null_LRs_each = np.concatenate(chunks, axis=0)  # (n_valid, sim_each)
+            if args.cache:
+                with open(args.cache, "wb") as f:
+                    pickle.dump(null_LRs_each, f)
+                logger.info(f"Cached null LRs to {args.cache}")
 
         results_emp = {}
         # Map valid index back to row index

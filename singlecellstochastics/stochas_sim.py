@@ -163,7 +163,8 @@ def get_latent_gene_expression_at_tips(
     optim: float = None,
     alpha: float = None,
     sigma: float = None,
-    background_model: str = "OU"
+    background_model: str = "OU",
+    root_mode: str = "stationary"
 ) -> None:
     """
     Recursively simulate latent gene expression values at the tips of a phylogenetic tree under the OU or BM process.
@@ -171,19 +172,32 @@ def get_latent_gene_expression_at_tips(
     Args:
         tree: A Biopython `Tree` object.
         test_regime (str, optional): Regime label for which to apply the test OU process.
-        root_expr (float, optional): Expression value at the root node.
+        root_expr (float, optional): Expression value at the root node (and the OU attractor of the background regime).
         optim (float, optional): Optimal expression value (theta) for the OU process.
         alpha (float, optional): Selective strength parameter for the OU process.
         sigma (float, optional): Variance parameter for the OU/BM process.
         background_model (str, optional): Model for background lineages ("OU" or "BM").
+        root_mode (str, optional): "stationary" samples the root from N(root_expr, sigma^2/(2*alpha))
+            using background-regime params (matches the reconstructor's stationary prior); "fixed" uses
+            root_expr directly. BM background only supports "fixed".
 
     Returns:
         None
     """
+    if root_mode == "fixed":
+        sampled_root = root_expr
+    elif root_mode == "stationary":
+        if background_model != "OU":
+            raise ValueError("root_mode='stationary' requires background_model='OU' (BM has no stationary distribution).")
+        std = np.sqrt(np.maximum(sigma**2 / (2 * alpha), 1e-10))
+        sampled_root = float(np.random.normal(loc=root_expr, scale=std))
+    else:
+        raise ValueError("root_mode must be 'stationary' or 'fixed'.")
+
     def set_expr(node, parent_expr):
-        # If at root, set its expression to the root expression
+        # If at root, set its expression to the (possibly sampled) root expression
         if node == tree.root:
-            new_expr = root_expr
+            new_expr = sampled_root
         else:
             # Make sure node has a regime assigned
             if not hasattr(node, "regime"):
@@ -272,7 +286,8 @@ def simulate(
     alpha: float = None,
     sigma: float = None,
     dispersion: float = None,
-    bg_model: str = "OU"
+    bg_model: str = "OU",
+    root_mode: str = "stationary"
 ) -> tuple[list[str], dict[int, dict[str, int]]]:
     """
     Simulate gene expression data for multiple genes along a phylogenetic tree.
@@ -305,7 +320,7 @@ def simulate(
         reset_all_nodes_expr(tree)
         reset_all_nodes_read_counts(tree)
 
-        get_latent_gene_expression_at_tips(tree=tree, test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma=sigma, background_model=bg_model)
+        get_latent_gene_expression_at_tips(tree=tree, test_regime=test_regime, root_expr=root_expr, optim=optim, alpha=alpha, sigma=sigma, background_model=bg_model, root_mode=root_mode)
         clamp_latent_gene_expression_at_tips(tree)
         if dispersion is None:
             for node in tree.get_terminals():
@@ -424,28 +439,42 @@ def write_read_counts(
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir, f"readcounts_{label}.tsv"), 'w') as f:
         # Write header for all gene names
-        f.write("\t" + "\t".join(str(i) for i in range(1, n_genes + 1)) + "\n")
+        f.write("\t" + "\t".join("Gene_" + str(i) for i in range(1, n_genes + 1)) + "\n")
         # Write read counts for each cell for all genes
         for cell in cells:
             counts = [str(read_counts[gene][cell]) for gene in range(n_genes)]
             f.write(f"{cell}\t" + "\t".join(counts) + "\n")
 
 
-def plot_sim_tree(tree, output_path, test_regime=None):
+def plot_sim_tree(tree, output_path, test_regime=None, outer=True):
     """
-    Plot simulated expression on a circular phylogenetic tree,
-    matching the style of reconstruct.plot_circular_tree().
+    Plot simulated expression on a circular phylogenetic tree using Cartesian
+    rendering, matching the style of reconstruct.plot_circular_tree().
 
     Args:
         tree: Biopython Tree with .expr and .read_count set on all nodes.
         output_path: Path for the output PNG.
-        test_regime: Regime label for the test lineage (highlighted separately).
+        test_regime: Regime label for the test lineage (unused, kept for API).
+        outer: If True, draw raw-read-count bars on the outer ring.
     """
+    def count_terminals(clade):
+        if clade.is_terminal():
+            return 1
+        return sum(count_terminals(c) for c in clade.clades)
+
+    def ladderize(clade):
+        if clade.is_terminal():
+            return
+        for child in clade.clades:
+            ladderize(child)
+        clade.clades.sort(key=count_terminals, reverse=True)
+
+    ladderize(tree.root)
+
     all_nodes = list(tree.find_clades())
     leaves = list(tree.get_terminals())
     depths = tree.depths()
 
-    # Assign polar coordinates
     angles = list(np.linspace(0, 2 * np.pi, len(leaves), endpoint=False))
     leaf_idx = [0]
 
@@ -460,73 +489,91 @@ def plot_sim_tree(tree, output_path, test_regime=None):
             node.theta_coord = np.mean([c.theta_coord for c in node.clades])
 
     assign_coords(tree.root)
-
     max_r = max(n.r_coord for n in all_nodes)
 
-    # Expression color scale
     exprs = [n.expr for n in all_nodes if n.expr is not None]
     expr_min, expr_max = min(exprs), max(exprs)
 
     valid_rcs = [leaf.read_count for leaf in leaves
                  if hasattr(leaf, 'read_count') and leaf.read_count is not None]
-    rc_max = max(valid_rcs) if valid_rcs else expr_max
-    rc_min = min(valid_rcs) if valid_rcs else expr_min
 
-    global_min = min(expr_min, rc_min)
-    global_max = max(expr_max, rc_max)
+    root_mu = tree.root.expr
+    eps = max(abs(root_mu) * 1e-3, 1e-6)
+    vmin_mu = min(expr_min, root_mu - eps)
+    vmax_mu = max(expr_max, root_mu + eps)
+    cmap_mu = plt.cm.RdBu_r
+    norm_mu = mcolors.TwoSlopeNorm(vcenter=root_mu, vmin=vmin_mu, vmax=vmax_mu)
 
-    norm = mcolors.Normalize(
-        vmin=global_min - (global_max - global_min) * 0.15,
-        vmax=global_max
-    )
-    cmap = plt.cm.Reds
-
-    fig, ax = plt.subplots(1, 1, subplot_kw={'projection': 'polar'}, figsize=(7, 7))
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10), dpi=200)
+    ax.set_aspect("equal")
 
     def draw_tree(node):
-        if node.clades:
-            thetas = [c.theta_coord for c in node.clades]
-            th_min, th_max = min(thetas), max(thetas)
-            arc_th = np.linspace(th_min, th_max, 100)
-            ax.plot(arc_th, [node.r_coord] * 100,
-                    color=cmap(norm(node.expr)), lw=1.5, zorder=1)
+        if not node.clades:
+            return
+        cr = node.r_coord
+        col_parent = cmap_mu(norm_mu(node.expr))
 
-            for child in node.clades:
-                r_vals = np.linspace(node.r_coord, child.r_coord, 20)
-                val_interp = np.linspace(node.expr, child.expr, 20)
-                for k in range(len(r_vals) - 1):
-                    ax.plot([child.theta_coord, child.theta_coord],
-                            [r_vals[k], r_vals[k + 1]],
-                            color=cmap(norm(val_interp[k])),
-                            lw=1.5, zorder=1, solid_capstyle='butt')
-                draw_tree(child)
+        child_thetas = sorted([c.theta_coord for c in node.clades])
+        if len(child_thetas) >= 2:
+            t_min, t_max = child_thetas[0], child_thetas[-1]
+            if t_max - t_min > np.pi:
+                t_min, t_max = t_max, t_min + 2 * np.pi
+            arc_t = np.linspace(t_min, t_max, max(20, int(abs(t_max - t_min) * 50)))
+            ax.plot(cr * np.cos(arc_t), cr * np.sin(arc_t),
+                    color=col_parent, linewidth=0.8, solid_capstyle='round')
+
+        for child in node.clades:
+            col_child = cmap_mu(norm_mu(child.expr))
+            n_seg = 20
+            r_vals = np.linspace(cr, child.r_coord, n_seg + 1)
+            c1 = np.array(mcolors.to_rgba(col_parent))
+            c2 = np.array(mcolors.to_rgba(col_child))
+            for i in range(n_seg):
+                frac = i / n_seg
+                col = c1 * (1 - frac) + c2 * frac
+                x0 = r_vals[i] * np.cos(child.theta_coord)
+                y0 = r_vals[i] * np.sin(child.theta_coord)
+                x1 = r_vals[i + 1] * np.cos(child.theta_coord)
+                y1 = r_vals[i + 1] * np.sin(child.theta_coord)
+                ax.plot([x0, x1], [y0, y1], color=col, linewidth=0.8,
+                        solid_capstyle='butt')
+            draw_tree(child)
 
     draw_tree(tree.root)
+    ax.set_title("Simulated Expression", fontsize=13, pad=12)
+    ax.axis('off')
 
-    # Outer ring: read counts
-    if valid_rcs:
-        rc_max_val = max(valid_rcs) if valid_rcs else 1.0
-        ax.fill_between(np.linspace(0, 2 * np.pi, 100),
-                         max_r * 1.05, max_r * 1.20, color='#FFF5F0', alpha=0.5)
+    if outer and valid_rcs:
+        cmap_rc = plt.cm.Oranges
+        rc_max = max(valid_rcs)
+        norm_rc = mcolors.Normalize(vmin=0, vmax=rc_max)
+        bar_base = max_r * 1.04
         for leaf in leaves:
             rc = getattr(leaf, 'read_count', None)
             if rc is not None and rc > 0:
-                bar_len = (rc / rc_max_val) * (max_r * 0.15)
-                ax.plot([leaf.theta_coord, leaf.theta_coord],
-                        [max_r * 1.05, max_r * 1.05 + bar_len],
-                        color=cmap(norm(rc)), lw=2.0, solid_capstyle='butt')
+                bar_len = (rc / rc_max) * (max_r * 0.15)
+                x0 = bar_base * np.cos(leaf.theta_coord)
+                y0 = bar_base * np.sin(leaf.theta_coord)
+                x1 = (bar_base + bar_len) * np.cos(leaf.theta_coord)
+                y1 = (bar_base + bar_len) * np.sin(leaf.theta_coord)
+                ax.plot([x0, x1], [y0, y1],
+                        color=cmap_rc(norm_rc(rc)), lw=1.5,
+                        solid_capstyle='butt')
+        margin = max_r * 1.25
+    else:
+        margin = max_r * 1.10
 
-    ax.axis('off')
-    ax.set_title("Simulated Expression", pad=20)
+    ax.set_xlim(-margin, margin)
+    ax.set_ylim(-margin, margin)
 
-    plt.subplots_adjust(bottom=0.25)
-    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-    cbar = fig.colorbar(sm, ax=ax, orientation='horizontal',
-                        fraction=0.046, pad=0.1, shrink=0.7)
+    plt.subplots_adjust(bottom=0.18)
+    sm_mu = plt.cm.ScalarMappable(norm=norm_mu, cmap=cmap_mu)
+    cbar = fig.colorbar(sm_mu, ax=ax, orientation='horizontal',
+                        fraction=0.046, pad=0.08, shrink=0.7)
     cbar.ax.set_title("Value", loc='left', fontsize=10)
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved simulation tree plot to {output_path}")
 
@@ -546,6 +593,7 @@ def run_stochas_sim():
     parser.add_argument("--dispersion", type=float, default=None, help="Dispersion for negative binomial sampling (default: no sampling; 0: Poisson)")
     parser.add_argument("--plot", action="store_true", help="Whether to plot the gene expression evolution (default: False)")
     parser.add_argument("--bg", type=str, default="OU", help="OU or BM for background simulation")
+    parser.add_argument("--root_mode", type=str, default="stationary", choices=["stationary", "fixed"], help="Root sampling: 'stationary' draws from N(root, sigma^2/(2*alpha)) of the background regime (matches reconstructor prior); 'fixed' uses --root verbatim. BM background only supports 'fixed'.")
     parser.add_argument("--tree_plot", action="store_true", help="Plot simulated expression on circular tree (uses last gene)")
     args = parser.parse_args()
 
@@ -553,7 +601,7 @@ def run_stochas_sim():
     tree = read_tree(args.tree)
     tree = assign_nodes_to_regimes(tree, args.regime)
 
-    plots, cells, read_counts = simulate(tree, args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma, args.dispersion, args.bg)
+    plots, cells, read_counts = simulate(tree, args.n_genes, args.root, args.test, args.optim, args.alpha, args.sigma, args.dispersion, args.bg, args.root_mode)
     if args.plot:
         plot(plots, args.n_genes, args.out, args.label)
     write_read_counts(read_counts, cells, args.n_genes, args.out, args.label)

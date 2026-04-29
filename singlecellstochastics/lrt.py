@@ -19,11 +19,15 @@ def _lq_to_mean_std(lq):
     return torch.cat((mean, std), dim=-1)
 
 
-def _gene_seed(gene_names, mode, base_seed=42):
-    """Return a deterministic seed depending only on the gene_names tuple +
-    mode. The same gene gets the same MC sequence regardless of which batch
-    it was placed in. Differences between H0 and H1 use mode in the hash."""
-    key = "|".join(sorted(str(g) for g in gene_names)) + f"|mode={mode}"
+def _gene_seed(gene_names, base_seed=42):
+    """Return a deterministic seed from the sorted batch gene_names.
+
+    All genes in a batch share this seed (one torch.manual_seed call) but
+    receive distinct noise via positional indexing into the batched MC draw.
+    H0 and H1 share the seed (common random numbers) so the LRT difference
+    has lower variance. Reproducibility holds for a fixed input file and
+    fixed --batch size; changing batch composition changes the seed."""
+    key = "|".join(sorted(str(g) for g in gene_names))
     h = hashlib.sha1(key.encode("utf-8")).hexdigest()
     return (int(h[:8], 16) ^ int(base_seed)) & 0x7fffffff
 
@@ -62,7 +66,7 @@ def likelihood_ratio_test(
     h0_step_callback=None,
     h1_step_callback=None,
     grad_clip_norm=None,
-    seed_per_gene=False,
+    seed_per_gene=True,
     root_mode="stationary",
 ):
     """
@@ -172,7 +176,7 @@ def likelihood_ratio_test(
             const,
             step_callback=h0_step_callback,
             grad_clip_norm=grad_clip_norm,
-            seed_per_call=(_gene_seed(gene_names, mode=1) if seed_per_gene else None),
+            seed_per_call=(_gene_seed(gene_names) if seed_per_gene else None),
             root_mode=root_mode,
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
@@ -227,7 +231,7 @@ def likelihood_ratio_test(
             const,
             step_callback=h1_step_callback,
             grad_clip_norm=grad_clip_norm,
-            seed_per_call=(_gene_seed(gene_names, mode=2) if seed_per_gene else None),
+            seed_per_call=(_gene_seed(gene_names) if seed_per_gene else None),
             root_mode=root_mode,
         )  # (batch_size, N_sim, all_param_dim), (batch_size, N_sim)
     else: # EM
@@ -357,6 +361,13 @@ def likelihood_ratio_test(
             importance,
             mix
         )
+
+    # Strip the L2 prior on log_alpha from the returned losses
+    if prior > 0:
+        h0_log_alpha = h0_params[-1][..., 0]
+        h1_log_alpha = h1_params[-1][..., 0]
+        h0_loss = h0_loss - 0.5 * prior * h0_log_alpha ** 2
+        h1_loss = h1_loss - 0.5 * prior * h1_log_alpha ** 2
 
     # combine logr and ou params
     h0_model_params = torch.cat((h0_params[-2].unsqueeze(-1), h0_params[-1]), dim=-1)

@@ -395,7 +395,13 @@ def Lq_optimize_torch_OU(
     nb: whether to use negative binomial likelihood
     lib: library size normalization
     const: whether to include constant terms in likelihood
-    
+    ou_lambda_mode: Pagel's lambda mode for the OU process.
+        0 -> lambda fixed at 0 (star-tree / no phylogenetic signal),
+        1 -> lambda fixed at 1 (standard OU, default),
+        2 -> lambda optimized via sigmoid(params[ou_lambda_idx]).
+        Mode 2 also adds ou_lambda to the trainable params and to the
+        returned best_params tuple.
+
     Returns: (batch_size, N_sim) numpy array of params and losses
     """
     if seed_per_call is not None:
@@ -468,29 +474,29 @@ def Lq_optimize_torch_OU(
         log_s2_clamp if log_s2_clamp is not None else DEFAULT_LOG_S2_CLAMP
     )
 
-    def _clamp_lq_log_s2_():
+    def _clamp_lq_log_s2_(param_list):
         with torch.no_grad():
-            for lq in params_tensor[:n_trees]:
+            for lq in param_list[:n_trees]:
                 n_cells = lq.shape[-1] // 2
                 lq[..., n_cells:2 * n_cells].clamp_(_log_s2_lo, _log_s2_hi)
 
-    # Pre-loop clamps are domain bounds, not NaN repair. NaN-to-zero parameter
-    # resets were removed so invalid parameters surface instead of silently
-    # becoming plausible values.
+    # Pre-loop clamps are domain bounds
     with torch.no_grad():
         if nb:
             params_tensor[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
         if _log_alpha_clamp is not None:
             lo, hi = _log_alpha_clamp
             params_tensor[log_alpha_idx].clamp_(float(lo), float(hi))
-    _clamp_lq_log_s2_()
+    _clamp_lq_log_s2_(params_tensor)
 
     # Track best parameters for all parameter types
     best_params = [p.clone().detach() for p in params_tensor]
     best_loss = torch.full(
         (batch_size, N_sim), float("inf"), dtype=params[0].dtype, device=device
     )
-    optimizer = torch.optim.Adam(params_tensor, lr=learning_rate)
+    optimizer = torch.optim.Adam(
+        [p for p in params_tensor if p.requires_grad], lr=learning_rate
+    )
 
     # Track loss history for convergence checking
     loss_history = []
@@ -613,9 +619,7 @@ def Lq_optimize_torch_OU(
         # Store loss history
         loss_history.append(joint_loss.clone().detach())
 
-        # Early exit for persistent NaN/inf losses (cumulative; see note
-        # in ou_optimize_torch; consecutive streaks miss intermittent bad
-        # genes and let them run to max_iter).
+        # Early exit for persistent NaN/inf losses
         with torch.no_grad():
             is_bad = ~torch.isfinite(joint_loss)
             nan_streak = torch.where(is_bad & ~converged_mask, nan_streak + 1, nan_streak)
@@ -633,13 +637,6 @@ def Lq_optimize_torch_OU(
             loss = active_loss_flat[valid_mask].sum()
             loss.backward()
 
-            # Sanitise gradients: replace NaN/Inf gradient entries with 0
-            # so a single bad MC sample for one gene cannot pollute the
-            # whole shared Adam state. Then optionally clip the gradient
-            # norm of each parameter tensor.
-            # Also count how many NaN/Inf entries appeared per param per
-            # step so ablation traces can show whether the sanitize is
-            # load-bearing or a no-op in practice.
             if tracing:
                 for pname, pidx in [("log_r", log_r_idx), ("log_alpha", log_alpha_idx), ("lq0", 0)]:
                     pt = params_tensor[pidx]
@@ -708,16 +705,11 @@ def Lq_optimize_torch_OU(
             with torch.no_grad():
                 params_tensor[log_r_idx].clamp_(_log_r_lo, _log_r_hi)
 
-        # No post-step NaN-to-zero parameter reset: invalid parameters should
-        # fail visibly rather than being converted to plausible values.
-
-        # Keep log_alpha in a numerically well-conditioned range. The clamp is
-        # skipped for fixed-alpha calls so explicit BM-like nulls remain intact.
         if _log_alpha_clamp is not None:
             lo, hi = _log_alpha_clamp
             with torch.no_grad():
                 params_tensor[log_alpha_idx].clamp_(float(lo), float(hi))
-        _clamp_lq_log_s2_()
+        _clamp_lq_log_s2_(params_tensor)
 
         if tracing:
             TRACE.write("log_r_post_clamp", float(params_tensor[log_r_idx].reshape(-1)[0].detach().cpu()))
@@ -781,14 +773,9 @@ def Lq_optimize_torch_OU(
         if _log_alpha_clamp is not None:
             lo, hi = _log_alpha_clamp
             best_params[log_alpha_idx].clamp_(float(lo), float(hi))
-        for lq in best_params[:n_trees]:
-            n_cells = lq.shape[-1] // 2
-            lq[..., n_cells:2 * n_cells].clamp_(_log_s2_lo, _log_s2_hi)
+    _clamp_lq_log_s2_(best_params)
 
     # Reconstruct sigma/theta from best alpha/Lq params via KKT analytical solution.
-    # During optimization, params_tensor[-1] is never read (sigma/theta are always
-    # recomputed inside ou_neg_log_lik_torch_kkt), so we skip storing it in the loop
-    # and reconstruct here to avoid GPU memory corruption from CUDA backward errors.
     if kkt:
         with torch.no_grad():
             for i in range(n_trees):
@@ -819,7 +806,7 @@ def Lq_optimize_torch_OU(
                 (sigma.unsqueeze(-1), theta), dim=-1
             )
             if mode == 1:
-                best_params[other_ou_idx][:, :, :2] = other_params
+                best_params[other_ou_idx][..., :2] = other_params
             else:
                 best_params[other_ou_idx] = other_params
 

@@ -69,8 +69,12 @@ def parse_args():
     # Numerical safety knobs
     parser.add_argument("--grad_clip_norm", type=float, default=None,
                         help="Gradient norm clip per parameter tensor. Bounds bad MC steps. e.g. 10.")
-    parser.add_argument("--seed_per_gene", action="store_true",
-                        help="Re-seed RNG per-gene-batch from a hash of gene_names. Removes batch-order dependence.")
+    parser.add_argument("--no_seed_per_gene", dest="seed_per_gene",
+                        action="store_false",
+                        help="Disable per-batch RNG seeding from gene_names hash (default: enabled). "
+                             "With seeding on, results are reproducible for a fixed input + batch size, "
+                             "and H0/H1 share MC samples (CRN) for lower LRT variance.")
+    parser.set_defaults(seed_per_gene=True)
 
     return parser.parse_args()
 
@@ -111,7 +115,7 @@ def run_diff_test():
         regime_list, library_list
     ) = process_data_OU(tree_files, gene_files, regime_files, library_files, args.null, device)
 
-    regimes = list(dict.fromkeys(x for sub in regime_list for x in sub))
+    regimes = list(dict.fromkeys(x for sub in regime_list for x in sub)) # flatten and de-dup
     n_regimes = len(regimes)
     batch_size = min(args.batch, len(df_list[0].columns))
 
@@ -183,14 +187,9 @@ def run_diff_test():
 
         # Save checkpoint
         ckpt_data = {
-            'batch_start': batch_start,
-            'batch_genes': list(batch_genes),
             'results': batch_results,
             'h0_q': h0_q,  # list of numpy arrays
             'h1_q': h1_q,
-            'h0_params': h0_params,
-            'h0_loss': h0_loss,
-            'h1_loss': h1_loss,
         }
         torch.save(ckpt_data, ckpt_file)
         logger.info(f"Batch {batch_idx+1}/{n_batches} done ({min(batch_start+batch_size, n_genes)}/{n_genes} genes)")

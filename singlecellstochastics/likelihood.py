@@ -8,71 +8,51 @@ only handles the tree-structured BM/OU Gaussian prior.
 import numpy as np
 import torch
 from scipy.special import logsumexp
+import warnings
 
 from .weights import theta_weight_W_numpy, theta_weight_W_torch
 from .trace import TRACE, cov_diag, nan_inf_count
 
 
-def _bounded_pagel_lambda(raw_lambda, mode, reference):
-    if mode == 0:
-        return torch.zeros_like(reference)
-    if mode == 1 or raw_lambda is None:
-        return torch.ones_like(reference)
-    if mode == 2:
-        return torch.sigmoid(raw_lambda)
-    raise ValueError(f"Invalid Pagel lambda mode: {mode}")
-
-
 def _apply_pagel_lambda_to_cov(V, raw_lambda, mode, reference):
-    lam = _bounded_pagel_lambda(raw_lambda, mode, reference)
+    """Mix V with diag(V) by a per-batch lambda.
+
+    mode 0: lam=0 (star tree). mode 1: lam=1 (no-op if raw_lambda is None).
+    mode 2: lam=sigmoid(raw_lambda).
+    """
     if mode == 1 and raw_lambda is None:
         return V
+    if mode == 0:
+        lam = torch.zeros_like(reference)
+    elif mode == 1:
+        lam = torch.ones_like(reference)
+    elif mode == 2:
+        lam = torch.sigmoid(raw_lambda)
+    else:
+        raise ValueError(f"Invalid Pagel lambda mode: {mode}")
+    lam = lam[..., None, None]
     diag_v = torch.diag_embed(torch.diagonal(V, dim1=-2, dim2=-1))
-    return lam[..., None, None] * V + (1.0 - lam[..., None, None]) * diag_v
+    return lam * V + (1.0 - lam) * diag_v
 
 
 def ou_covariance_fixed_root_numpy(alpha, diverge, share):
-    """OU covariance factor when the root latent state is fixed."""
-    return (
-        (1 / (2 * alpha))
-        * np.exp(-alpha * diverge)
-        * (1 - np.exp(-2 * alpha * share))
-    )
+    """OU covariance factor with root fixed at theta0."""
+    return (1 / (2 * alpha)) * np.exp(-alpha * diverge) * (1 - np.exp(-2 * alpha * share))
 
 
 def ou_covariance_root_prior_numpy(alpha, diverge):
-    """OU covariance factor with stationary root prior around theta0."""
+    """OU covariance factor with stationary root prior N(theta0, sigma2/(2 alpha))."""
     return (1 / (2 * alpha)) * np.exp(-alpha * diverge)
 
 
 def ou_covariance_fixed_root_torch(alpha, diverge, share):
-    """OU covariance factor when the root latent state is fixed."""
-    return (
-        (1 / (2 * alpha))
-        * torch.exp(-alpha * diverge)
-        * (1 - torch.exp(-2 * alpha * share))
-    )
+    """OU covariance factor with root fixed at theta0."""
+    return (1 / (2 * alpha)) * torch.exp(-alpha * diverge) * (1 - torch.exp(-2 * alpha * share))
 
 
 def ou_covariance_root_prior_torch(alpha, diverge):
-    """OU covariance factor with stationary root prior around theta0."""
+    """OU covariance factor with stationary root prior N(theta0, sigma2/(2 alpha))."""
     return (1 / (2 * alpha)) * torch.exp(-alpha * diverge)
-
-
-def _ou_cov_numpy(alpha, diverge, share, root_mode):
-    if root_mode == "fixed":
-        return ou_covariance_fixed_root_numpy(alpha, diverge, share)
-    if root_mode == "stationary":
-        return ou_covariance_root_prior_numpy(alpha, diverge)
-    raise ValueError(f"Invalid root_mode: {root_mode}")
-
-
-def _ou_cov_torch(alpha, diverge, share, root_mode):
-    if root_mode == "fixed":
-        return ou_covariance_fixed_root_torch(alpha, diverge, share)
-    if root_mode == "stationary":
-        return ou_covariance_root_prior_torch(alpha, diverge)
-    raise ValueError(f"Invalid root_mode: {root_mode}")
 
 
 # calculate negative log likelihood of OU
@@ -113,7 +93,12 @@ def ou_neg_log_lik_numpy(
         # V: covariance matrix from trees (excluding variance sigma2).
         # root_mode="stationary": root ~ N(theta0, sigma2/(2*alpha))
         # root_mode="fixed":      root deterministically equals theta0
-        V = _ou_cov_numpy(alpha, diverge, share, root_mode)
+        if root_mode == "fixed":
+            V = ou_covariance_fixed_root_numpy(alpha, diverge, share)
+        elif root_mode == "stationary":
+            V = ou_covariance_root_prior_numpy(alpha, diverge)
+        else:
+            raise ValueError(f"Invalid root_mode: {root_mode}")
 
         # diff = observed expression - expected values (n_cells, 1)
         if mode == 1:
@@ -176,7 +161,12 @@ def ou_neg_log_lik_numpy_kkt(
 
         # V: covariance matrix from trees (excluding variance sigma2).
         # See ou_neg_log_lik_numpy for root_mode semantics.
-        V = _ou_cov_numpy(alpha, diverge, share, root_mode)
+        if root_mode == "fixed":
+            V = ou_covariance_fixed_root_numpy(alpha, diverge, share)
+        elif root_mode == "stationary":
+            V = ou_covariance_root_prior_numpy(alpha, diverge)
+        else:
+            raise ValueError(f"Invalid root_mode: {root_mode}")
 
         # diff = observed expression - expected values (n_cells, 1)
         if mode == 1:
@@ -285,7 +275,7 @@ def ou_neg_log_lik_torch(
     # log_det = torch.linalg.slogdet(V_reg)[1]
     # cholesky: log|V| = 2 * sum(log diag(L))
     log_det = 2 * torch.sum(
-        torch.log(torch.diagonal(L, dim1=2, dim2=3)), dim=2
+        torch.log(torch.diagonal(L, dim1=-2, dim2=-1)), dim=-1
     )  # (batch_size, N_sim)
     
     d = diff.unsqueeze(-1)  # (batch, N_sim, n_cells, 1)
@@ -340,6 +330,26 @@ def psd_safe_cholesky(V, base_jitter=1e-6, max_tries=7):
     evals = torch.clamp(evals, min=floor)
     V_psd = (evecs * evals.unsqueeze(-2)) @ evecs.transpose(-1, -2)
     return torch.linalg.cholesky(V_psd + jitter * eye)
+
+
+def cholesky_with_fallback(V, name):
+    """Cholesky with two-stage regularization fallback.
+
+    Returns (L, jitter_used) where jitter_used is 0.0 (no jitter), 1e-6
+    (single-jitter pass), or -1.0 (psd_safe_cholesky fallback path).
+    """
+    try:
+        return torch.linalg.cholesky(V), 0.0
+    except RuntimeError:
+        warnings.warn(
+            f"Singular matrix encountered in {name} likelihood; applying regularization."
+        )
+        n_cells = V.shape[-1]
+        eye = 1e-6 * torch.eye(n_cells, device=V.device, dtype=V.dtype)
+        try:
+            return torch.linalg.cholesky(V + eye), 1e-6
+        except RuntimeError:
+            return psd_safe_cholesky(V), -1.0
 
 
 # calculate expectation of negative OU log likelihood with torch
@@ -400,20 +410,7 @@ def ou_neg_log_lik_torch_kkt(
         TRACE.write("V_max_abs", float(V.abs().max().detach().cpu()))
 
     # cholesky decomposition for det and inv of matrix
-    chol_jitter_used = 0.0
-    try:
-        L = torch.linalg.cholesky(V)  # (batch_size, N_sim, n_cells, n_cells)
-    except RuntimeError:
-        # Add regularization to prevent singular matrix
-        print("warning: singular matrix")
-        try:
-            L = torch.linalg.cholesky(
-                V + 1e-6 * torch.eye(n_cells, device=device, dtype=V.dtype)
-            )
-            chol_jitter_used = 1e-6
-        except RuntimeError:
-            L = psd_safe_cholesky(V, base_jitter=1e-6, max_tries=7)
-            chol_jitter_used = -1.0  # fallback path
+    L, chol_jitter_used = cholesky_with_fallback(V, "OU")
 
     if TRACE.enabled:
         TRACE.write("chol_jitter", chol_jitter_used)
@@ -426,16 +423,17 @@ def ou_neg_log_lik_torch_kkt(
     # log_det = torch.linalg.slogdet(V_reg)[1]
     # cholesky: log|V| = 2 * sum(log diag(L))
     log_det = 2 * torch.sum(
-        torch.log(torch.diagonal(L, dim1=2, dim2=3)), dim=2
+        torch.log(torch.diagonal(L, dim1=-2, dim2=-1)), dim=-1
     )  # (batch_size, N_sim)
     if TRACE.enabled:
         TRACE.write("logdet_V", float(log_det.reshape(-1)[0].detach().cpu()))
 
     # theta = (W.T @ V^-1 @ W)^-1 @ W.T @ V^-1 @ expr
-    # theta = np.linalg.solve(W.T @ np.linalg.solve(V, W), W.T @ np.linalg.solve(V, expr))
-    # cholesky: theta = (S.T @ S)^-1 @ S.T @ y
-    S = torch.linalg.solve_triangular(L, W, upper=False) # L^{-1} W
-    y = torch.linalg.solve_triangular(L, expr_batch.unsqueeze(-1), upper=False)   # L^{-1} expr
+    # cholesky: theta = (S.T @ S)^-1 @ S.T @ y, with S = L^{-1} W, y = L^{-1} expr.
+    # Use solve_triangular here (not L_inv @ ...) for tighter numerical stability
+    # of the GLS solve that feeds lstsq.
+    S = torch.linalg.solve_triangular(L, W, upper=False)
+    y = torch.linalg.solve_triangular(L, expr_batch.unsqueeze(-1), upper=False)
     # Use magma backend on CUDA to avoid cusolver SVD failure on large matrices.
     if S.is_cuda:
         prev_lib = torch.backends.cuda.preferred_linalg_library()
@@ -449,20 +447,17 @@ def ou_neg_log_lik_torch_kkt(
         TRACE.write("theta_n_nan", nan_t)
         TRACE.write("theta_n_inf", inf_t)
         TRACE.write("theta_kkt", theta.reshape(-1).detach().cpu().numpy())
-    
-    # sigma2 = (expr - W @ theta)^T @ V^-1 @ (expr - W @ theta) / n_cells
-    # sigma2 = (diff @ np.linalg.solve(V, diff)).item() / n_cells
-    # cholesky: sigma2 = (y - S @ theta)^T @ (y - S @ theta) / n_cells
+
+    # sigma2 = (y - S @ theta)^T @ (y - S @ theta) / n_cells
     r = y - S @ theta
     sigma2 = r.square().sum(dim=(-2, -1)) / n_cells # (batch_size, N_sim)
 
-    # tr_term = torch.sum(sigma2_q * torch.diagonal(torch.linalg.inv(V_reg), dim1=-2, dim2=-1), dim=-1)
-    # Cholesky: trace(V^{-1} Sigma) = ||diag(L^{-1} Sigma)||_F^2.
-    S_half = torch.diag_embed(
-        torch.sqrt(sigma2_q)
-    )  # Sigma^{1/2} = diag(sigma_i), shape (..., n, n)
-    Y = torch.linalg.solve_triangular(L, S_half, upper=False)  # Y = L^{-1} Sigma^{1/2}
-    tr_term = (Y**2).sum(dim=(-2, -1))  # ||Y||_F^2 = tr(Y^T Y) (batch, N_sim)
+    # trace(V^{-1} Sigma) = sum_j sigma2_q[j] * diag(V^{-1})_j,
+    # with diag(V^{-1})_i = sum_k (L^{-1})_{ki}^2. Materialize L^{-1} just for this.
+    I_eye = torch.eye(n_cells, dtype=V.dtype, device=device).expand(batch_size, N_sim, -1, -1)
+    L_inv = torch.linalg.solve_triangular(L, I_eye, upper=False)
+    diag_V_inv = (L_inv ** 2).sum(dim=-2)  # (batch_size, N_sim, n_cells)
+    tr_term = (diag_V_inv * sigma2_q).sum(dim=-1)  # (batch_size, N_sim)
     sigma2 += tr_term / n_cells
 
     if TRACE.enabled:
@@ -484,53 +479,50 @@ def bm_neg_log_lik_torch_kkt(
     """
     Brownian motion likelihood with torch. Used for ELBO with torch.
 
-    pagel_lambda: (batch_size, ) 0 for star tree, 1 for original tree
+    Profiles the root mean by GLS and sigma2 by ML, equivalent to a flat prior 
+    on the root state. 
+
+    pagel_lambda: (batch_size,) in [0, 1], 0 for star tree, 1 for original tree
     sigma2_q: (batch_size, n_cells) tensor of q variances
     expr_batch: (batch_size, n_cells) tensor of expression data
     share: (n_cells, n_cells) tensor of shared branch lengths
 
-    Returns: (batch_size,) tensor of losses
+    Returns:
+        loss: (batch_size,) tensor of -log likelihood (without 2*pi constant)
+        root_mean_gls: (batch_size,) GLS estimate of the root mean
+        sigma: (batch_size,) ML estimate of sigma (sqrt of profile sigma2)
     """
     batch_size, n_cells = expr_batch.shape
     pagel_lambda = pagel_lambda[:, None, None]  # (batch_size, 1, 1)
 
     # V: covariance matrix from trees (excluding variance sigma2)
-    diag_share = torch.diag(torch.diagonal(share, dim1=-2, dim2=-1))  # (n_cells, n_cells)
+    diag_share = torch.diag_embed(torch.diagonal(share, dim1=-2, dim2=-1))
     V = (pagel_lambda * share + (1 - pagel_lambda) * diag_share)  # (batch_size, n_cells, n_cells)
-    
+
     # cholesky decomposition for det and inv of matrix
-    try:
-        L = torch.linalg.cholesky(V)  # (batch_size, n_cells, n_cells)
-    except RuntimeError:
-        # Add regularization to prevent singular matrix
-        print("warning: singular matrix")
-        try:
-            L = torch.linalg.cholesky(
-                V + 1e-6 * torch.eye(n_cells, device=device, dtype=V.dtype)
-            )
-        except RuntimeError:
-            L = psd_safe_cholesky(V)
+    L, _ = cholesky_with_fallback(V, "BM")
 
     # 1. Setup vectors
     Y_vec = expr_batch.unsqueeze(-1)  # (batch_size, n_cells, 1)
     ones = torch.ones_like(Y_vec)
-    
-    # 2. Solve for L^{-1} Y and L^{-1} 1
-    # This replaces your original solve_triangular call
+
+    # 2. Solve for L^{-1} Y and L^{-1} 1.
+    # Use solve_triangular here (not L_inv @ ...) for tighter numerical stability
+    # of the GLS pieces.
     L_inv_Y = torch.linalg.solve_triangular(L, Y_vec, upper=False)
     L_inv_ones = torch.linalg.solve_triangular(L, ones, upper=False)
-    
+
     # 3. Calculate 1^T V^{-1} 1 and 1^T V^{-1} Y
     one_V_inv_one = (L_inv_ones.squeeze(-1) ** 2).sum(dim=-1)  # (batch_size,)
     one_V_inv_Y = (L_inv_ones.squeeze(-1) * L_inv_Y.squeeze(-1)).sum(dim=-1)  # (batch_size,)
-    
+
     # 4. Analytically compute the exact GLS mean
     root_mean_gls = one_V_inv_Y / one_V_inv_one  # (batch_size,)
-    
+
     # 5. Compute the proper residual d^T V^{-1} d using linearity:
     # L^{-1}(Y - mu*1) = L^{-1}Y - mu * L^{-1}1
-    y = L_inv_Y - root_mean_gls.unsqueeze(-1).unsqueeze(-1) * L_inv_ones
-    exp = (y.squeeze(-1) ** 2).sum(dim=-1)  # (batch_size,)
+    resid = L_inv_Y - root_mean_gls.unsqueeze(-1).unsqueeze(-1) * L_inv_ones
+    exp = (resid.squeeze(-1) ** 2).sum(dim=-1)  # (batch_size,)
 
     # log_det = torch.linalg.slogdet(V_reg)[1]
     # cholesky: log|V| = 2 * sum(log diag(L))
@@ -538,12 +530,15 @@ def bm_neg_log_lik_torch_kkt(
         torch.log(torch.diagonal(L, dim1=-2, dim2=-1)), dim=-1
     )  # (batch_size,)
 
-    # tr_term = trace(V^{-1} Sigma) = ||L^{-1} Sigma^{1/2}||_F^2.
-    S_half = torch.diag_embed(torch.sqrt(sigma2_q))
-    Y = torch.linalg.solve_triangular(L, S_half, upper=False)
-    tr_term = (Y ** 2).sum(dim=(-2, -1))  # (batch_size,)
+    # tr_term = trace(V^{-1} Sigma) = sum_j sigma2_q[j] * diag(V^{-1})_j,
+    # with diag(V^{-1})_i = sum_k (L^{-1})_{ki}^2. Materialize L^{-1} just for this.
+    I = torch.eye(n_cells, dtype=V.dtype, device=device).expand(batch_size, -1, -1)
+    L_inv = torch.linalg.solve_triangular(L, I, upper=False)
+    diag_V_inv = (L_inv ** 2).sum(dim=-2)  # (batch_size, n_cells)
+    tr_term = (diag_V_inv * sigma2_q).sum(dim=-1)  # (batch_size,)
 
-    sigma2 = exp / n_cells + tr_term / n_cells  # (batch_size,)
+    sigma2 = (exp + tr_term) / n_cells  # (batch_size,)
+    sigma2 = sigma2.clamp_min(torch.finfo(sigma2.dtype).tiny)
     sigma = sigma2.sqrt()  # (batch_size,)
 
     loss = 0.5 * (log_det + n_cells * torch.log(sigma2))  # -log likelihood (w/o constant)

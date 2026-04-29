@@ -29,7 +29,7 @@ def _lq_to_mean_std(lq):
 def gene_expression_selection(
     tree_files, gene_files, regime_files, library_files, outfile, device, batch_size,
     max_iter, learning_rate, wandb_flag, window, tol, approx, nb, rnull, kkt, const,
-    null_model="bm", prefix="sel", resume=False, bm_lambda_mode=2, ou_lambda_mode=2,
+    null_model="bm", prefix="sel", resume=False, bm_lambda_mode=1, ou_lambda_mode=1,
 ):
     """
     Selection test: BM or fixed-alpha OU (H0, neutral) vs OU (H1, selection).
@@ -238,7 +238,7 @@ def gene_expression_selection(
         chi2_dist = Chi2(torch.tensor([1.0], device=device))
         p_value = 1.0 - chi2_dist.cdf(lr_stat.clamp(min=0))
 
-        # H1 result columns: r, alpha, sigma, theta
+        # H1 result columns: r, lambda, alpha, sigma, theta
         h1_ou_result = torch.cat(
             (h1_params[-3].exp().unsqueeze(-1),
             h1_params[-2].unsqueeze(-1),
@@ -307,20 +307,22 @@ def gene_expression_selection(
         q_data = bm_q_params[i]
         if null_model == "fixed_ou":
             q_data = q_data.squeeze(1)
+        q_cols = [f"q_mean_{c}" for c in cells_list[i]] + [f"q_std_{c}" for c in cells_list[i]]
         df = pd.DataFrame(
             q_data.detach().cpu().numpy(),
             index=genes,
-            columns=cells_list[i] * 2
+            columns=q_cols
         )
         df.to_csv(os.path.join(outdir, f"{prefix}_bm_q_params_{i}.tsv"), sep="\t")
 
     # Save OU variational parameters (q_mean, q_std)
     ou_q_params = [torch.cat(q_batch, dim=0) for q_batch in zip(*ou_q_list)]
     for i in range(len(ou_q_params)):
+        q_cols = [f"q_mean_{c}" for c in cells_list[i]] + [f"q_std_{c}" for c in cells_list[i]]
         df = pd.DataFrame(
             ou_q_params[i].squeeze(1).detach().cpu().numpy(),
             index=genes,
-            columns=cells_list[i] * 2
+            columns=q_cols
         )
         df.to_csv(os.path.join(outdir, f"{prefix}_ou_q_params_{i}.tsv"), sep="\t")
 
@@ -350,10 +352,10 @@ def run_selection_test():
     parser.add_argument("--const", required=False, action="store_true", help="Include constant terms in likelihood")
     parser.add_argument("--null_model", required=False, type=str, default="bm", choices=["bm", "fixed_ou"],
                         help="Null model: 'bm' (proper BM, default) or 'fixed_ou' (OU with alpha fixed at ~0)")
-    parser.add_argument("--bm_lambda_mode", "--bm-lambda-mode", required=False, type=int, default=2, choices=[1, 2],
-                        help="BM null Pagel lambda mode: 1 fixes lambda=1; 2 optimizes lambda (default)")
-    parser.add_argument("--ou_lambda_mode", "--ou-lambda-mode", required=False, type=int, default=2, choices=[0, 1, 2],
-                        help="OU alternative Pagel lambda mode: 0 fixes lambda=0; 1 fixes lambda=1; 2 optimizes lambda (default)")
+    parser.add_argument("--bm_lambda_mode", "--bm-lambda-mode", required=False, type=int, default=1, choices=[1, 2],
+                        help="BM null Pagel lambda mode: 1 fixes lambda=1 (default); 2 optimizes lambda")
+    parser.add_argument("--ou_lambda_mode", "--ou-lambda-mode", required=False, type=int, default=1, choices=[0, 1, 2],
+                        help="OU alternative Pagel lambda mode: 0 fixes lambda=0; 1 fixes lambda=1 (default); 2 optimizes lambda")
     parser.add_argument("--log", type=str, default=None, help="Path to log file")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint if available")
     args = parser.parse_args()

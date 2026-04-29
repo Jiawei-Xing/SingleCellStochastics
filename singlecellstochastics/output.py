@@ -16,8 +16,7 @@ def save_result(
     and ``h1_loss`` are ``(batch_size, 1)`` ELBO losses.
     """
     n_regimes = h0_params.shape[2] - 3
-    delta_nll = h0_loss - h1_loss
-    lrt_stat = 2 * delta_nll
+    lrt_stat = 2 * (h0_loss - h1_loss)
     p_value = 1 - chi2.cdf(lrt_stat.flatten(), n_regimes - 1)
 
     for i in range(batch_size):
@@ -36,7 +35,7 @@ def save_result(
         result = (
             [batch_start + i, batch_genes[i], h0_r, h0_alpha, h0_sigma, h0_theta]
             + [h1_r, h1_alpha, h1_sigma] + h1_theta.tolist()
-            + [h0_loss[i, 0], h1_loss[i, 0], delta_nll[i, 0], lrt_stat[i, 0], p_value[i]]
+            + [h0_loss[i, 0], h1_loss[i, 0], lrt_stat[i, 0], p_value[i]]
         )
         results[batch_start + i] = result
     
@@ -49,7 +48,7 @@ def result_columns(regimes):
         ["ID", "gene", "h0_r", "h0_alpha", "h0_sigma", "h0_theta",
          "h1_r", "h1_alpha", "h1_sigma"]
         + [f"h1_theta_{regime}" for regime in regimes]
-        + ["h0", "h1", "delta_nll", "lrt", "p"]
+        + ["h0", "h1", "lrt", "p"]
     )
 
 

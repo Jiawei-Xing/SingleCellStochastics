@@ -17,12 +17,17 @@ def _sample_counts(z_values, log_r, lib, nb):
     return np.random.negative_binomial(r, p)
 
 
-def _simulate_ou_latent(tree, cells, log_alpha, sigma, theta0):
+def _simulate_ou_latent(tree, cells, log_alpha, sigma, theta0, root_mode="stationary"):
     alpha = np.exp(log_alpha)
     sigma2 = np.square(sigma)
 
-    std = np.sqrt(np.maximum(sigma2 / (2 * alpha), 1e-10))
-    z_root = np.random.normal(loc=theta0, scale=std)
+    if root_mode == "fixed":
+        z_root = np.array(theta0, copy=True)
+    elif root_mode == "stationary":
+        std = np.sqrt(np.maximum(sigma2 / (2 * alpha), 1e-10))
+        z_root = np.random.normal(loc=theta0, scale=std)
+    else:
+        raise ValueError(f"Invalid root_mode: {root_mode}")
     z_values = {tree.root.name: z_root}
 
     for clade in tree.get_nonterminals(order="preorder"):
@@ -39,7 +44,8 @@ def _simulate_ou_latent(tree, cells, log_alpha, sigma, theta0):
 
 
 # simulate null distribution for each gene
-def simulate_null_each(trees, h0_params, N_sim, cells_list, library_list=None, nb=True):
+def simulate_null_each(trees, h0_params, N_sim, cells_list, library_list=None, nb=True,
+                       root_mode="stationary"):
     """
     Simulate N_sim OU processes along all trees in parallel for a batch of genes.
 
@@ -66,14 +72,15 @@ def simulate_null_each(trees, h0_params, N_sim, cells_list, library_list=None, n
             else np.asarray(library_list[i].values.squeeze(), dtype=np.float64)
         )
 
-        z_sim_matrix = _simulate_ou_latent(tree, cells, log_alpha, sigma, theta0)
+        z_sim_matrix = _simulate_ou_latent(tree, cells, log_alpha, sigma, theta0, root_mode)
         x_sim_list.append(_sample_counts(z_sim_matrix, log_r, lib, nb))
 
     return x_sim_list
 
 
 # simulate null distribution for all genes
-def simulate_null_all(trees, h0_params, N_sim_all, cells_list, library_list=None, nb=True):
+def simulate_null_all(trees, h0_params, N_sim_all, cells_list, library_list=None, nb=True,
+                      root_mode="stationary"):
     """
     Sample ou params and simulate N_sim_all OU processes along all trees in parallel for all genes.
 
@@ -101,7 +108,7 @@ def simulate_null_all(trees, h0_params, N_sim_all, cells_list, library_list=None
             if library_list[i] is None
             else np.asarray(library_list[i].values.squeeze(), dtype=np.float64)
         )
-        z_sim_matrix = _simulate_ou_latent(tree, cells, log_alpha, sigma, theta0)
-        x_sim_list.append(_sample_counts(z_sim_matrix, log_r, lib, nb)[:, 0, :])
+        z_sim_matrix = _simulate_ou_latent(tree, cells, log_alpha, sigma, theta0, root_mode) #(n, 1, c)
+        x_sim_list.append(_sample_counts(z_sim_matrix, log_r, lib, nb)[:, 0, :]) # (n, c)
 
     return x_sim_list
