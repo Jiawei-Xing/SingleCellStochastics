@@ -5,6 +5,9 @@ It models latent expression on a cell lineage tree with Brownian motion (BM) or
 Ornstein-Uhlenbeck (OU) dynamics, maps latent expression through a softplus link,
 and evaluates observed counts with a negative-binomial observation model.
 
+![alt text](graphical_model.png)
+
+
 The package implements three analysis workflows:
 
 1. **Expression heritability**: tests whether expression follows lineage
