@@ -1,6 +1,7 @@
-# LAVOUS
+# LaVOUS
 
-LAVOUS is a lineage-aware variational model for single-cell RNA-seq count data.
+LaVOUS (Lineage-aware Variational Ornstein-Uhlenbeck Stochastics) 
+is a lineage-aware variational model for single-cell RNA-seq count data.
 It models latent expression on a cell lineage tree with Brownian motion (BM) or
 Ornstein-Uhlenbeck (OU) dynamics, maps latent expression through a softplus link,
 and evaluates observed counts with a negative-binomial observation model.
