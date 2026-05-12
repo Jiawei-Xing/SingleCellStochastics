@@ -362,7 +362,7 @@ def layout_circular_tree(node, r_current=0.0, leaf_angles=None):
             layout_circular_tree(child, node.r, leaf_angles)
         node.theta = np.mean([c.theta for c in node.children])
 
-def plot_circular_tree(root, outer, output_path):
+def plot_circular_tree(root, outer, output_path, tree_linewidth=3.0, bar_linewidth=None):
     # Ladderize for clean layout (same as plot_tree_circular.py)
     ladderize(root, reverse=True)
 
@@ -405,7 +405,8 @@ def plot_circular_tree(root, outer, output_path):
     for ax in (ax1, ax2):
         ax.set_aspect("equal")
 
-    tree_linewidth = 3
+    if bar_linewidth is None:
+        bar_linewidth = tree_linewidth
     colorbar_label_fontsize = 14
 
     def draw_tree(ax, node, val_func, cmap, norm):
@@ -468,7 +469,7 @@ def plot_circular_tree(root, outer, output_path):
                 x1 = (bar_base + bar_len) * np.cos(leaf.theta)
                 y1 = (bar_base + bar_len) * np.sin(leaf.theta)
                 ax2.plot([x0, x1], [y0, y1],
-                         color=cmap_rc(norm_rc(rc_norm)), linewidth=tree_linewidth,
+                         color=cmap_rc(norm_rc(rc_norm)), linewidth=bar_linewidth,
                          solid_capstyle='butt')
 
     margin = max_r * 1.25 if outer else max_r * 1.10
@@ -508,6 +509,8 @@ def run_reconst():
     parser.add_argument("--hypothesis", required=False, choices=["h0", "h1"], default="h1", help="Hypothesis to use from long-form OU parameter tables")
     parser.add_argument("--no_normalize_tree", action="store_true", help="Use raw Newick branch lengths instead of the fitted model's normalized tree scale")
     parser.add_argument("--no_outer", action='store_false', help="Whether to plot read counts as bars outside the tree")
+    parser.add_argument("--tree_linewidth", required=False, type=float, default=3.0, help="Line width for reconstructed tree branches")
+    parser.add_argument("--bar_linewidth", required=False, type=float, help="Line width for outer read-count bars; defaults to --tree_linewidth")
     parser.add_argument("--out_fig", required=False, default="history.png", help="Path to save the output figure (e.g., plot.png)")
     parser.add_argument("--out_tsv", required=False, default="history.tsv", help="Path to save the inferred true means and vars (TSV)")
 
@@ -561,7 +564,13 @@ def run_reconst():
     save_inferred_history(root, args.out_tsv, include_regime=(args.model == "ou"))
 
     print("Generating plot...")
-    plot_circular_tree(root, args.no_outer, args.out_fig)
+    plot_circular_tree(
+        root,
+        args.no_outer,
+        args.out_fig,
+        tree_linewidth=args.tree_linewidth,
+        bar_linewidth=args.bar_linewidth,
+    )
 
 
 if __name__ == "__main__":
