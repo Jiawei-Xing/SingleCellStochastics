@@ -166,7 +166,7 @@ def run_diff_test():
         # Gene names (with optional annotation)
         if args.annot:
             df_annot = pd.read_csv(args.annot, sep="\t", index_col=0, header=None)
-            batch_gene_names = df_annot.loc[batch_genes, 0].tolist()
+            batch_gene_names = df_annot.loc[batch_genes].iloc[:, 0].tolist()
         else:
             batch_gene_names = batch_genes
         logger.info(f"Batch {batch_idx+1}/{n_batches}: genes {batch_start}-{batch_start+len(batch_genes)-1}")
@@ -181,7 +181,7 @@ def run_diff_test():
 
         # Build results dict for this batch
         batch_results = save_result(
-            batch_start, batch_size, batch_genes,
+            batch_start, batch_size, batch_gene_names,
             h0_params, h1_params, h0_loss, h1_loss, {},
         )
 
@@ -233,7 +233,7 @@ def run_diff_test():
     # Sidecar meta.json: everything run-calibrate needs to reconstruct lrt_kwargs.
     meta = {
         "tree": args.tree, "expression": args.expression, "regime": args.regime,
-        "library": args.library, "null": args.null,
+        "library": args.library, "annot": args.annot, "null": args.null,
         "iter": args.iter, "lr": args.lr, "window": args.window, "tol": args.tol,
         "dtype": args.dtype, "approx": args.approx, "nb": args.nb, "kkt": args.kkt,
         "prior": args.prior, "const": args.const,

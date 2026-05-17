@@ -1,0 +1,10 @@
+clone	original_root_regime	forced_root_regime	kept_tips	kept_nodes	kept_ighg1_nodes	kept_igha1_nodes	dropped_ighg2_tips	dropped_ighg1_after_igha1_tips	dropped_other_tips
+Clonotype_1261	IGHA1	IGHG1	84	167	135	32	9	1	0
+Clonotype_133	IGHG1	IGHG1	75	149	127	22	7	0	0
+
+gene_filter	n_genes
+expressed_in_at_least_5_kept_tips	11061
+same_filter_excluding_ig_genes	10962
+
+combined_kept_tips	159
+library_factor_median_before_renorm	0.995736411

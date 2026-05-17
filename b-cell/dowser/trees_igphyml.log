@@ -1,0 +1,19 @@
+[build_trees] reading covid19.airr.tsv 
+Warning message:
+In validate_tabular(data, schema = schema) :
+  Warning: File is missing AIRR mandatory field(s): sequence, rev_comp, productive, d_call, germline_alignment, junction, junction_aa, v_cigar, d_cigar, j_cigar
+[build_trees] loaded 2456 rows, 203 clones
+[build_trees] formatClones (collapsing identical seqs, min seq = 5 )
+Warning messages:
+1: In shazam::setRegionBoundaries(unique(data[[junc_len]]), germline,  :
+  junction ends past 'sequenceImgt'
+2: In formatClones(db, traits = traits, minseq = opt$`min-seq`, num_fields = NULL,  :
+  columns cell_id c_call contain multiple values per clone, flattening with comma
+[build_trees] 94 clones passed formatClones
+[build_trees] building trees with backend: igphyml 
+Warning message:
+In buildIgphyml(data, igphyml = exec, temp_path = file.path(dir,  :
+  Dowser igphyml doesn't mask split codons!
+[build_trees] wrote trees_igphyml/trees.rds 
+[build_trees] wrote 94 Newick files to trees_igphyml/newick 
+[build_trees] done

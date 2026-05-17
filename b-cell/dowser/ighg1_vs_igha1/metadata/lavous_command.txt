@@ -1,0 +1,9 @@
+lavous-diff \
+  --tree ighg1_vs_igha1/newick/Clonotype_1261.nwk,ighg1_vs_igha1/newick/Clonotype_133.nwk \
+  --expression ighg1_vs_igha1/readcounts/Clonotype_1261.readcounts.tsv,ighg1_vs_igha1/readcounts/Clonotype_133.readcounts.tsv \
+  --regime ighg1_vs_igha1/regimes/Clonotype_1261.ighg1_vs_igha1.regime.csv,ighg1_vs_igha1/regimes/Clonotype_133.ighg1_vs_igha1.regime.csv \
+  --library ighg1_vs_igha1/library/Clonotype_1261.library.tsv,ighg1_vs_igha1/library/Clonotype_133.library.tsv \
+  --annotation ighg1_vs_igha1/metadata/gene_annotation.tsv \
+  --null IGHG1 \
+  --outdir ighg1_vs_igha1/joint_outputs/diff/full \
+  --prefix ighg1_vs_igha1_joint.full
