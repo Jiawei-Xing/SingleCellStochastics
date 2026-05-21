@@ -5,19 +5,45 @@ from scipy.stats import chi2
 from statsmodels.stats.multitest import multipletests
 
 
+def _legacy_h0(h0_regimes):
+    return h0_regimes is None
+
+
+def _h0_theta_columns(h0_regimes):
+    if _legacy_h0(h0_regimes):
+        return ["h0_theta"]
+    return [f"h0_theta_{regime}" for regime in h0_regimes]
+
+
 def save_result(
-    batch_start, batch_size, batch_genes,
-    h0_params, h1_params, h0_loss, h1_loss, results,
+    batch_start,
+    batch_size,
+    batch_genes,
+    h0_params,
+    h1_params,
+    h0_loss,
+    h1_loss,
+    results,
+    h0_regimes=None,
+    h1_regimes=None,
+    dof=None,
 ):
     """Append per-gene LRT results from one batch into ``results``.
 
     ``h0_params`` and ``h1_params`` are ``(batch_size, 1, param_dim)`` arrays
-    laid out as ``[log_r, log_alpha, sigma, theta_0, theta_1, ...]``. ``h0_loss``
-    and ``h1_loss`` are ``(batch_size, 1)`` ELBO losses.
+    laid out as ``[log_r, log_alpha, sigma, theta_0, theta_1, ...]``. In the
+    legacy test, H0 has one reported theta and ``h0_regimes`` is ``None``. For
+    a multi-theta null, ``h0_regimes`` names the H0 theta columns.
     """
-    n_regimes = h0_params.shape[2] - 3
+    h1_n_regimes = len(h1_regimes) if h1_regimes is not None else h1_params.shape[2] - 3
+    h0_n_regimes = 1 if _legacy_h0(h0_regimes) else len(h0_regimes)
+    if dof is None:
+        dof = h1_n_regimes - h0_n_regimes
+    if dof <= 0:
+        raise ValueError(f"LRT degrees of freedom must be positive, got {dof}.")
+
     lrt_stat = 2 * (h0_loss - h1_loss)
-    p_value = 1 - chi2.cdf(lrt_stat.flatten(), n_regimes - 1)
+    p_value = 1 - chi2.cdf(lrt_stat.flatten(), dof)
 
     for i in range(batch_size):
         if i >= h0_params.shape[0]:
@@ -25,34 +51,37 @@ def save_result(
         h0_r = np.exp(h0_params[i, 0, 0])
         h0_alpha = np.exp(h0_params[i, 0, 1])
         h0_sigma = np.abs(h0_params[i, 0, 2])
-        h0_theta = h0_params[i, 0, 3]
+        h0_theta = h0_params[i, 0, 3 : 3 + h0_n_regimes]
 
         h1_r = np.exp(h1_params[i, 0, 0])
         h1_alpha = np.exp(h1_params[i, 0, 1])
         h1_sigma = np.abs(h1_params[i, 0, 2])
-        h1_theta = h1_params[i, 0, 3:]
+        h1_theta = h1_params[i, 0, 3 : 3 + h1_n_regimes]
 
         result = (
-            [batch_start + i, batch_genes[i], h0_r, h0_alpha, h0_sigma, h0_theta]
-            + [h1_r, h1_alpha, h1_sigma] + h1_theta.tolist()
+            [batch_start + i, batch_genes[i], h0_r, h0_alpha, h0_sigma]
+            + h0_theta.tolist()
+            + [h1_r, h1_alpha, h1_sigma]
+            + h1_theta.tolist()
             + [h0_loss[i, 0], h1_loss[i, 0], lrt_stat[i, 0], p_value[i]]
         )
         results[batch_start + i] = result
-    
+
     return results
 
 
-def result_columns(regimes):
+def result_columns(h1_regimes, h0_regimes=None):
     """Column names for rows produced by `save_result`."""
     return (
-        ["ID", "gene", "h0_r", "h0_alpha", "h0_sigma", "h0_theta",
-         "h1_r", "h1_alpha", "h1_sigma"]
-        + [f"h1_theta_{regime}" for regime in regimes]
+        ["ID", "gene", "h0_r", "h0_alpha", "h0_sigma"]
+        + _h0_theta_columns(h0_regimes)
+        + ["h1_r", "h1_alpha", "h1_sigma"]
+        + [f"h1_theta_{regime}" for regime in h1_regimes]
         + ["h0", "h1", "lrt", "p"]
     )
 
 
-def output_results(results, output_file, regimes):
+def output_results(results, output_file, h1_regimes, h0_regimes=None):
     """
     Output saved results of likelihood ratio test for each gene to a tsv file.
     """
@@ -74,32 +103,43 @@ def output_results(results, output_file, regimes):
 
     # output results
     with open(output_file, "w") as f:
-        f.write("\t".join(result_columns(regimes) + ["q", "signif"]) + "\n")
+        f.write(
+            "\t".join(result_columns(h1_regimes, h0_regimes) + ["q", "signif"]) + "\n"
+        )
         for i in range(len(results)):
             output = "\t".join(list(map(str, results[i])))
             f.write(f"{output}\t{q_values[i]}\t{signif[i]}\n")
             f.flush()
 
 
-def output_model_params(results, output_file, regimes):
+def output_model_params(results, output_file, h1_regimes, h0_regimes=None):
     """
     Write fitted model parameters in long form.
 
     This table is easier to consume for calibration, plotting, and history
     reconstruction than the compact hypothesis-test result table.
     """
-    n_regimes = len(regimes)
+    h0_names = ["shared"] if _legacy_h0(h0_regimes) else list(h0_regimes)
+    h1_names = list(h1_regimes)
+    h0_n_regimes = len(h0_names)
+    h1_n_regimes = len(h1_names)
     header = ["ID", "gene", "hypothesis", "regime", "r", "alpha", "sigma", "theta"]
 
     rows = []
     for result in sorted(results.values(), key=lambda x: int(x[0])):
         gene_id, gene = result[0], result[1]
-        h0_r, h0_alpha, h0_sigma, h0_theta = result[2:6]
-        h1_r, h1_alpha, h1_sigma = result[6:9]
-        h1_theta = result[9:9 + n_regimes]
+        h0_r, h0_alpha, h0_sigma = result[2:5]
+        h0_theta_start = 5
+        h0_theta_end = h0_theta_start + h0_n_regimes
+        h0_theta = result[h0_theta_start:h0_theta_end]
+        h1_param_start = h0_theta_end
+        h1_r, h1_alpha, h1_sigma = result[h1_param_start : h1_param_start + 3]
+        h1_theta_start = h1_param_start + 3
+        h1_theta = result[h1_theta_start : h1_theta_start + h1_n_regimes]
 
-        rows.append([gene_id, gene, "h0", "shared", h0_r, h0_alpha, h0_sigma, h0_theta])
-        for regime, theta in zip(regimes, h1_theta):
+        for regime, theta in zip(h0_names, h0_theta):
+            rows.append([gene_id, gene, "h0", regime, h0_r, h0_alpha, h0_sigma, theta])
+        for regime, theta in zip(h1_names, h1_theta):
             rows.append([gene_id, gene, "h1", regime, h1_r, h1_alpha, h1_sigma, theta])
 
     with open(output_file, "w") as f:

@@ -1,0 +1,9 @@
+E15 rep1 FP trajectory inference summary
+cells: 934
+highly_variable_genes_used: 2000
+root_regime: FP_Rgl1
+root_cell: CCTAAGACAGCAATTC-1_1
+pca_components: 50
+neighbors: 30
+neighbor_components: 1
+rna_velocity: not computed; see velocity status file

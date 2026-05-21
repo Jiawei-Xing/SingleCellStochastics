@@ -1,0 +1,1 @@
+RNA velocity was not computed because the available inputs contain RNA counts/data only. Velocity requires spliced and unspliced count layers, or raw BAM/FASTQ inputs from which those layers can be generated.

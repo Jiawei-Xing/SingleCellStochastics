@@ -1,0 +1,13 @@
+set	dataset	leaves	mixed_clone_leaves	min_dominant_fraction	tree
+unfiltered	E11_rep1	1022	546	0.2	data/rep_trees/E11_rep1_clone_vine_tree.nwk
+unfiltered	E11_rep2	567	319	0.2	data/rep_trees/E11_rep2_clone_vine_tree.nwk
+unfiltered	E11_rep3	649	426	0.185185185185185	data/rep_trees/E11_rep3_clone_vine_tree.nwk
+unfiltered	E15_rep1	920	589	0.137931034482759	data/rep_trees/E15_rep1_clone_vine_tree.nwk
+unfiltered	E15_rep2	924	528	0.125	data/rep_trees/E15_rep2_clone_vine_tree.nwk
+unfiltered	E15_rep3	932	571	0.133333333333333	data/rep_trees/E15_rep3_clone_vine_tree.nwk
+homogeneous	E11_rep1	476	0	1	data/rep_trees_homogeneous/E11_rep1_clone_vine_tree.nwk
+homogeneous	E11_rep2	248	0	1	data/rep_trees_homogeneous/E11_rep2_clone_vine_tree.nwk
+homogeneous	E11_rep3	223	0	1	data/rep_trees_homogeneous/E11_rep3_clone_vine_tree.nwk
+homogeneous	E15_rep1	331	0	1	data/rep_trees_homogeneous/E15_rep1_clone_vine_tree.nwk
+homogeneous	E15_rep2	396	0	1	data/rep_trees_homogeneous/E15_rep2_clone_vine_tree.nwk
+homogeneous	E15_rep3	361	0	1	data/rep_trees_homogeneous/E15_rep3_clone_vine_tree.nwk
