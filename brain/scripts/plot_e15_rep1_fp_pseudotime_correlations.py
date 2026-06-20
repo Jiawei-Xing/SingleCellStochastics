@@ -227,6 +227,7 @@ def plot_correlations(table, out_prefix, label_top):
             ha="left" if dx > 0 else "right",
             va="center",
             fontsize=6.2,
+            fontstyle="italic",
             color="#6B1F1A",
             arrowprops={
                 "arrowstyle": "-",

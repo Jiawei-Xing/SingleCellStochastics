@@ -393,8 +393,9 @@ def plot_circular_tree(root, outer, output_path, tree_linewidth=3.0, bar_linewid
     # Tree color scale uses only mu range; read-count bars have their own Oranges cmap below.
     root_mu = root.true_mu
     eps = max(abs(root_mu) * 1e-3, 1e-6)
-    vmin_mu = min(mu_min, root_mu - eps)
-    vmax_mu = max(mu_max, root_mu + eps)
+    mu_radius = max(abs(mu_min - root_mu), abs(mu_max - root_mu), eps)
+    vmin_mu = root_mu - mu_radius
+    vmax_mu = root_mu + mu_radius
     cmap_mu = plt.cm.RdBu_r
     norm_mu = mcolors.TwoSlopeNorm(vcenter=root_mu, vmin=vmin_mu, vmax=vmax_mu)
 

@@ -16,12 +16,12 @@ from pathlib import Path
 mpl.rcParams.update({
     "font.family": "sans-serif",
     "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "font.size": 7,
-    "axes.titlesize": 8,
-    "axes.labelsize": 7,
-    "xtick.labelsize": 6,
-    "ytick.labelsize": 6,
-    "legend.fontsize": 6,
+    "font.size": 9,
+    "axes.titlesize": 11,
+    "axes.labelsize": 9,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 10,
+    "legend.fontsize": 8,
     "figure.dpi": 300,
     "savefig.dpi": 300,
     "axes.linewidth": 0.5,
@@ -39,15 +39,15 @@ LABELS = ["Base", "Thetas", "Theta1", "Sigma", "BM", "AlphaS", "AlphaL", "rS", "
 
 SCENARIO_DESC = {
     "Base": "Baseline",
-    "Thetas": "High θ",
-    "Theta1": "Different θ",
-    "Sigma": "High σ",
+    "Thetas": "$θ_0$=$θ_1$=3",
+    "Theta1": "$θ_1$=3",
+    "Sigma": "σ=5",
     "BM": "No α (BM)",
-    "AlphaS": "Weak α",
-    "AlphaL": "Strong α",
-    "rS": "Strong r⁻¹",
-    "rL": "Weak r⁻¹",
-    "r0": "No r (Poisson)"
+    "AlphaS": "α=0.3",
+    "AlphaL": "α=3",
+    "rS": "r=0.5",
+    "rL": "r=50",
+    "r0": "r=ꝏ (Poisson)"
 }
 
 CMAP = plt.get_cmap("tab10")
@@ -87,7 +87,7 @@ def frac_signif(df):
 # ═══════════════════════════════════════════════════════════════════════════
 # Figure 1: LR statistics + fraction significant (real vs shuffled)
 # ═══════════════════════════════════════════════════════════════════════════
-fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.5, 3.0))
+fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.4, 3.4))
 
 positions = np.arange(n)
 width = 0.35
@@ -122,7 +122,7 @@ for i, patch in enumerate(bp_shuf["boxes"]):
 
 ax1.set_xticks(positions)
 ax1.set_xticklabels(display_names, rotation=45, ha="right")
-ax1.set_ylabel("LR statistic")
+ax1.set_ylabel("Log-likelihood ratio")
 ax1.axhline(3.841, color="red", ls="--", lw=0.5, label=r"$\chi^2$(1) p=0.05")
 handles, _ = ax1.get_legend_handles_labels()
 ax1.legend(handles=handles, frameon=False, loc="upper right")
